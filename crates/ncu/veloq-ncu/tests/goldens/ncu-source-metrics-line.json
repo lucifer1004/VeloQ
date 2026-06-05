@@ -1,0 +1,221 @@
+{
+  "auxiliary": {
+    "counter_glob": "smsp__pcsamp_warps_issue_stalled_long_scoreboard",
+    "kernel_demangled": "synthetic_long_stall_kernel(const int *, int *, int)",
+    "matched_counters": [
+      "smsp__pcsamp_warps_issue_stalled_long_scoreboard"
+    ],
+    "out_of_cubin_counter_totals": {},
+    "out_of_cubin_instance_count": 0,
+    "row_id": "launch:1",
+    "skipped_counters": [],
+    "unattributed_sass_count": 0,
+    "unattributed_sass_counter_totals": {},
+    "warnings": []
+  },
+  "axis": "line",
+  "count": 6,
+  "rows": [
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 73
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 12139.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:74",
+      "launch_row_id": "launch:1",
+      "line": 74,
+      "sass_address_range": {
+        "end": 2848,
+        "start": 272
+      },
+      "sass_addresses": [
+        272,
+        368,
+        384,
+        400,
+        416,
+        432,
+        448,
+        464,
+        480,
+        496,
+        512,
+        544,
+        560,
+        576,
+        592,
+        624,
+        640,
+        656,
+        672,
+        704,
+        720,
+        736,
+        752,
+        768,
+        784,
+        800,
+        816,
+        832,
+        864,
+        880,
+        896,
+        912,
+        944,
+        960,
+        976,
+        992,
+        1024,
+        1040,
+        1072,
+        1104,
+        1120,
+        1136,
+        1152,
+        1168,
+        1184,
+        1200,
+        1216,
+        1232,
+        1264,
+        1280,
+        1296,
+        1312,
+        1328,
+        1344,
+        1360,
+        1376,
+        1392,
+        1408,
+        1424,
+        1440,
+        1456,
+        1472,
+        1488,
+        1504,
+        1520,
+        1536,
+        1552,
+        1616,
+        1632,
+        1648,
+        1680,
+        1728,
+        2848
+      ],
+      "sass_count": 73
+    },
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 6
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 833.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:73",
+      "launch_row_id": "launch:1",
+      "line": 73,
+      "sass_address_range": {
+        "end": 2816,
+        "start": 1584
+      },
+      "sass_addresses": [
+        1584,
+        1600,
+        1696,
+        2416,
+        2432,
+        2816
+      ],
+      "sass_count": 6
+    },
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 3
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 55.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:78",
+      "launch_row_id": "launch:1",
+      "line": 78,
+      "sass_address_range": {
+        "end": 3056,
+        "start": 3024
+      },
+      "sass_addresses": [
+        3024,
+        3040,
+        3056
+      ],
+      "sass_count": 3
+    },
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 1
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 0.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:63",
+      "launch_row_id": "launch:1",
+      "line": 63,
+      "sass_address_range": {
+        "end": 0,
+        "start": 0
+      },
+      "sass_addresses": [
+        0
+      ],
+      "sass_count": 1
+    },
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 2
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 0.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:77",
+      "launch_row_id": "launch:1",
+      "line": 77,
+      "sass_address_range": {
+        "end": 3008,
+        "start": 2992
+      },
+      "sass_addresses": [
+        2992,
+        3008
+      ],
+      "sass_count": 2
+    },
+    {
+      "counter_coverage": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 1
+      },
+      "counters": {
+        "smsp__pcsamp_warps_issue_stalled_long_scoreboard": 0.0
+      },
+      "file": "/tmp/synthetic.cu",
+      "key": "launch:1|line:/tmp/synthetic.cu:80",
+      "launch_row_id": "launch:1",
+      "line": 80,
+      "sass_address_range": {
+        "end": 3088,
+        "start": 3088
+      },
+      "sass_addresses": [
+        3088
+      ],
+      "sass_count": 1
+    }
+  ],
+  "total_matched": 6
+}

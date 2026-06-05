@@ -1,0 +1,39 @@
+{
+  "auxiliary": {
+    "meta_cache_path": "graph_basic.ncu-native.json.gz"
+  },
+  "count": 3,
+  "rows": [
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "graph:0",
+      "metric_count": 571,
+      "name": "graph",
+      "row_id": "graph:0",
+      "rule_count": 2,
+      "stream_id": 16
+    },
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "graph:1",
+      "metric_count": 571,
+      "name": "graph",
+      "row_id": "graph:1",
+      "rule_count": 2,
+      "stream_id": 16
+    },
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "graph:2",
+      "metric_count": 571,
+      "name": "graph",
+      "row_id": "graph:2",
+      "rule_count": 2,
+      "stream_id": 16
+    }
+  ],
+  "total_matched": 3
+}

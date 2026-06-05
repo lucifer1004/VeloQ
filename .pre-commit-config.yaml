@@ -1,0 +1,82 @@
+# Generated veloq artifact roots (`<trace>.veloq/`) are committed only as
+# NCU test fixtures — pre-generated disasm/correlated JSON, gzipped native
+# sidecars, the cubin. They're build outputs, not hand-authored source, so
+# the whitespace/format/spell hooks must not rewrite or flag them.
+# (.gitignore already keeps freshly-generated ones untracked; these specific
+# fixtures are tracked on purpose so tests don't need nvdisasm/cuobjdump.)
+exclude: '\.veloq/'
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        # NCU fixture (.ncu-rep) is ~600 KB; raise to 1024 so the
+        # check doesn't false-fire on legitimate test data.
+        args: ["--maxkb=1024"]
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        # Use --check in the hook (not auto-fix) so a fmt diff is
+        # surfaced rather than silently rewritten under the
+        # commit-in-progress.
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      - id: cargo-clippy
+        name: cargo clippy
+        # The workspace denies unwrap_used / expect_used / panic /
+        # indexing_slicing — clippy must run with -D warnings AND
+        # --all-targets so tests are linted too. Don't use --fix
+        # here: surface the warnings; let the contributor decide
+        # whether to auto-fix or hand-edit.
+        entry: cargo clippy --workspace --all-targets --profile ci -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      - id: cargo-test
+        name: cargo test
+        # --profile ci = release opt-level (the dev profile is unusably slow
+        # for this workspace) but no LTO, so the gate compiles fast. The
+        # shipped binary's LTO/strip is exercised by the release build only.
+        entry: cargo test --workspace --profile ci
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      - id: actions-lint
+        name: github-actions lint
+        # Validate workflows with actionlint when installed; no-op
+        # otherwise (GitHub validates at push time either way).
+        entry: bash -c 'if command -v actionlint >/dev/null 2>&1; then actionlint; else echo "actionlint not installed, skipping local lint"; fi'
+        language: system
+        pass_filenames: false
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.7.4
+    hooks:
+      - id: prettier
+        args: [--log-level=silent]
+        # Only run prettier on markdown / json / yaml — keeps it out
+        # of Rust files and out of generated artifacts.
+        types_or: [markdown, json, yaml]
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.47.2
+    hooks:
+      # Spell-check the agent-facing vocabulary that IS the product:
+      # JSON field/enum names, --help bodies, error messages, SKILL.md docs,
+      # README/AGENTS. Allowlist lives in typos.toml (kept tiny on purpose).
+      - id: typos

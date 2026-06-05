@@ -1,0 +1,23 @@
+{
+  "auxiliary": {
+    "meta_cache_path": "source_metric_basic.ncu-rep.veloq/ncu-native.json.gz"
+  },
+  "count": 2,
+  "rows": [
+    {
+      "cuda_sm_name": "sm_120",
+      "embedded_source_file_count": 0,
+      "has_disasm": true,
+      "key": "source:0",
+      "row_id": "source:0"
+    },
+    {
+      "cuda_sm_name": "sm_120",
+      "embedded_source_file_count": 0,
+      "has_disasm": true,
+      "key": "source:1",
+      "row_id": "source:1"
+    }
+  ],
+  "total_matched": 2
+}

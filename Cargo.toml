@@ -1,0 +1,180 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/veloq-core",
+    "crates/veloq",
+    "crates/nsys/*",
+    "crates/ncu/*",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.89"
+repository = "https://github.com/lucifer1004/veloq"
+homepage = "https://github.com/lucifer1004/veloq"
+
+[workspace.dependencies]
+# In-workspace crates. Centralised here so individual crate
+# manifests can use `xxx.workspace = true` regardless of where the
+# crate sits in the directory tree — restructures touch only this
+# file.
+#
+# Each carries an explicit `version` alongside `path`: `cargo publish`
+# requires a version requirement on every dependency, and the path is
+# stripped from the published manifest (consumers resolve the dep from
+# crates.io at this version). `scripts/bump-version.sh` keeps these in
+# lock-step with `[workspace.package].version` on every bump.
+veloq-core = { path = "crates/veloq-core", version = "0.1.0" }
+veloq-nsys = { path = "crates/nsys/veloq-nsys", version = "0.1.0" }
+veloq-nsys-data = { path = "crates/nsys/veloq-nsys-data", version = "0.1.0" }
+veloq-nsys-query = { path = "crates/nsys/veloq-nsys-query", version = "0.1.0" }
+veloq-ncu = { path = "crates/ncu/veloq-ncu", version = "0.1.0" }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Data
+#
+# `parquet` static-links the DuckDB parquet extension into the bundled
+# build. Every nsight table is read through
+# `read_parquet('<pqtdir>/<TABLE>.parquet')`, so this feature is the
+# single load-bearing input format. Without it DuckDB autoloads
+# `parquet.duckdb_extension` at runtime — fine on glibc and macOS
+# where `dlopen` works, but the musl-static binary's `dlopen` is a
+# stub, so the first parquet view query would bail with
+# "Dynamic loading not supported".
+duckdb = { version = "1", features = ["bundled", "parquet"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `schemars` powers the wire_format projector: every serde-Serialize
+# response struct also `#[derive(JsonSchema)]` so we can derive
+# `--help` body text, reference-doc snippets, and a future
+# `veloq schema <cmd>` JSON Schema endpoint from one source of truth
+# (the struct itself).
+schemars = "1"
+# bincode 3.0.0 on crates.io is an intentional non-compiling placeholder
+# (`compile_error!("https://xkcd.com/2347/")`). 2.x is the actual stable;
+# v3 work lives under `bincode-next` if we ever need to track it.
+bincode = { version = "2", features = ["serde"] }
+
+# Used by veloq-ncu to hash extracted cubin bytes when caching
+# disassembly under `<report>.veloq/disasm/<sha>.cubin`.
+sha2 = "0.10"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Output formatting
+comfy-table = { version = "7", default-features = false }
+csv = "1"
+terminal_size = "0.4"
+
+# Parallelism (NVTX nesting computation processes per-(tid, domain)
+# groups in parallel; events within a group remain sequential).
+rayon = "1"
+
+# Arrow + Parquet — direct deps so `runtime_nvtx_parent` can stream
+# the GPU-activity parquet files via Arrow's batched reader for the
+# correlation-index build (parallel-across-tables Rayon path). Major
+# aligns with what duckdb-rs pulls transitively, so cargo resolves to
+# a single arrow version (no diamond).
+arrow = "58"
+parquet = "58"
+
+tempfile = "3"
+
+# Self-update — `veloq self-update` replaces the running binary from a
+# GitHub Release archive. The `ureq` backend (blocking, no async runtime)
+# with `rustls`/ring keeps the dependency tree small and cross-compiles
+# cleanly via zigbuild to every release target — `reqwest`'s rustls drags
+# in aws-lc-rs, whose C/asm build is hostile to musl/aarch64/windows-gnu
+# cross-compilation. tar/zip + flate2 cover the per-target release archives
+# produced by .github/workflows/release.yml.
+self_update = { version = "0.44", default-features = false, features = [
+    "ureq",
+    "rustls",
+    "archive-tar",
+    "archive-zip",
+    "compression-flate2",
+    "compression-zip-deflate",
+] }
+# Semantic-version comparison for `self-update --check`.
+semver = "1"
+
+# Global allocator for the `veloq` binary (wired via #[global_allocator] in
+# veloq only; libraries stay allocator-agnostic). mimalloc trims
+# wall-clock and RSS on veloq's allocation-heavy hot paths (DuckDB
+# materialization, Arrow streaming, serde_json, rayon NVTX grouping) and
+# cross-compiles through the same zigbuild path that builds bundled DuckDB.
+mimalloc = "0.1"
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Shipped binary: smaller + faster. strip drops the large symbol tables from
+# the statically-bundled DuckDB/Arrow/Parquet; thin LTO + one codegen unit
+# tighten the Rust hot paths. thin (not fat) because every target
+# cross-compiles through one generic zigbuild container (no target-cpu=native).
+# panic stays unwinding: the workspace already denies panic/unwrap/expect via
+# clippy, and `cargo test --release` needs unwinding for per-test isolation.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Correctness gate (cargo test/clippy --profile ci, and `just ci-checks` /
+# pre-commit). Inherits release's opt-level=3 (the dev profile is unusably
+# slow for this workspace) but drops LTO and restores parallel codegen so the
+# gate compiles fast, and keeps symbols for readable test backtraces. Only the
+# shipped artifacts (release.yml, the cross-build check, `just release*`) pay
+# the LTO/strip cost via `--release`.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = false
+
+# Self-profiling build: release optimization but keep full debuginfo + symbols
+# so a sampler (samply/perf/Instruments) resolves frames to real names — veloq
+# profiling its own DuckDB/Arrow/rayon paths once release is stripped.
+# Build: `cargo build --profile prof` (or `just prof`).
+[profile.prof]
+inherits = "release"
+debug = "full"
+strip = false
+
+# Panic-free workspace. veloq is an agent-facing CLI: every error path
+# must travel through the JSON envelope, and a panic short-circuits
+# that contract with an unstructured stack trace. The lints below are
+# denied across every crate and test target — use `?` with
+# `anyhow::Context::context` (or `anyhow::bail!`) instead, and
+# hand-construct values whose construction is "obviously" infallible
+# rather than parsing them and unwrapping.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+# Every `#[allow(lint)]` or `#[expect(lint)]` must carry a
+# `reason = "..."`. Forces contributors to justify suppressions in
+# place rather than reaching for `#[allow]` as a silent escape hatch.
+#
+# Note: `clippy::allow_attributes` (deny `#[allow]` entirely in favor
+# of `#[expect]`) was considered and rejected — it interacts badly
+# with shared test fixtures and `cfg(test)`-conditional items where
+# dead-code analysis differs across compilation modes. `_without_reason`
+# is the stronger guarantee that still composes with existing patterns.
+allow_attributes_without_reason = "deny"

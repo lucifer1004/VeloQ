@@ -1,0 +1,15 @@
+# typos (crate-ci/typos) configuration.
+#
+# typos respects .gitignore, so target/ and committed goldens are already
+# skipped. Its default dictionary accepts all NSys/NCU/CUDA jargon
+# (nvtx, cubin, sass, ptx, parquetdir, ncu, nsys, memcpy, memset, ...), so the
+# allowlist below is intentionally tiny: only the short-token, compound-word,
+# and deliberate-spelling false positives actually flagged on this repo.
+# Add an entry ONLY when typos genuinely flags a benign term — keep it small.
+[default.extend-words]
+mis = "mis"                 # compound prefix: "mis-split", "mis-attributed"
+ot = "ot"                   # tuple-field binding `(s, e, ot, corr)` in tests
+ba = "ba"                   # `{b},{a}` byte-order test variable
+selec = "selec"             # plural "SELECTs" in a SQL comment (acronym + s)
+unparseable = "unparseable" # accepted spelling alongside "unparsable"
+contextful = "contextful"   # deliberate antonym of "contextless"

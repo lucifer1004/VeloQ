@@ -1,0 +1,8 @@
+{
+  "name": "veloq-profile-analysis",
+  "description": "Agent-friendly Nsight Systems + Nsight Compute profile analysis via the veloq CLI. Installs two skills: nsys-profile-analysis (timeline traces) and ncu-profile-analysis (kernel reports).",
+  "version": "0.1.0",
+  "author": {
+    "name": "Zihua Wu"
+  }
+}
