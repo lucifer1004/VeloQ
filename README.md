@@ -11,10 +11,11 @@ CSV/table projections where they are useful. One shot per call.
 Designed so a coding agent (or a shell script) can reason about GPU
 profiles without ever opening a GUI.
 
-VeloQ covers two profile sources today — **Nsight Systems** (timeline
-traces) and **Nsight Compute** (kernel reports) — through a single
-binary with a shared envelope and a pluggable `ProfileSource` trait.
-Perfetto-style sources can be added along the same shape.
+VeloQ covers three profile sources today — **Nsight Systems** (timeline
+traces), **Nsight Compute** (kernel reports), and experimental
+**PyTorch/Kineto** Chrome traces — through a single binary with a shared
+envelope and a pluggable `ProfileSource` trait. The PyTorch/Kineto source
+covers the Perfetto-style Chrome trace shape used by PyTorch profiler.
 
 ## Status
 
@@ -22,6 +23,8 @@ Perfetto-style sources can be added along the same shape.
 11 NCU verbs (`summary`, `launches`, `inspect`, `metrics`, `disasm`,
 `ranges`, `graphs`, `sources`, `source-metrics`, `warp-stalls`,
 plus `schema`) +
+10 experimental PyTorch verbs (`summary`, `search`, `inspect`, `stats`,
+`correlate`, `timeline`, `slices`, `collectives`, `prep`, `schema`) +
 five root meta verbs (`info`, `sources`, `clean`, `recipes`, `self-update`). JSON output returns the same
 v1 envelope on stdout — every list response uses canonical
 `data.rows[]` with a stable per-row `key`; NSys trace responses also
@@ -66,8 +69,9 @@ both the `veloq` binary and the bundled profile-analysis skills.
 curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash
 ```
 
-Installs the `veloq` binary under `~/.local/bin` and two Claude Code
-skills (`nsys-profile-analysis`, `ncu-profile-analysis`) under
+Installs the `veloq` binary under `~/.local/bin` and the Claude Code
+profile-analysis skills (`nsys-profile-analysis`, `ncu-profile-analysis`,
+`pytorch-profile-analysis`) under
 `~/.claude/skills/`. Pass `--no-skills` to install just the
 binary, or `--no-binary` to refresh the skills against the latest
 release. `--bin-dir <path>` overrides the binary install location.
@@ -110,7 +114,7 @@ VeloQ ships a one-plugin marketplace listing under
 /plugin install veloq-profile-analysis@veloq
 ```
 
-The plugin install handles the two skills; install the `veloq`
+The plugin install handles the profile-analysis skills; install the `veloq`
 binary separately via `cargo binstall veloq` or
 `scripts/install.sh --no-skills`.
 
@@ -125,7 +129,7 @@ veloq self-update --skills-dir .agents          # install skills to .agents/skil
 ```
 
 `self-update` pulls the latest GitHub release: it replaces the running
-binary and re-installs the two Claude Code skills, matching what
+binary and re-installs the Claude Code profile-analysis skills, matching what
 `install.sh` does — so a self-updated binary never leaves stale skills
 behind. Skills go to `~/.claude/skills/` by default; `--skills-dir <path>`
 (or `VELOQ_SKILLS_DIR`) points them under a different root — a
@@ -210,6 +214,16 @@ veloq ncu warp-stalls path/to/report.ncu-rep --row-id launch:0
 veloq ncu sources path/to/report.ncu-rep
 veloq ncu ranges path/to/report.ncu-rep
 veloq ncu schema launches
+
+# ── PyTorch/Kineto (Chrome traces) — namespaced under `pytorch`
+veloq pytorch summary path/to/worker0.pt.trace.json
+veloq pytorch search path/to/worker0.pt.trace.json --type kernel --is-comm
+veloq pytorch correlate path/to/worker0.pt.trace.json kernel:91
+veloq pytorch slices path/to/worker0.pt.trace.json --aggregate --group-by step
+# Multi-rank trace directories require explicit rank scope for list/aggregate verbs
+veloq pytorch stats path/to/traces/ --all-ranks --type comm --group-by comm-kind,rank
+veloq pytorch collectives path/to/traces/
+veloq pytorch schema search
 
 # ── Meta verbs
 veloq sources
@@ -375,6 +389,32 @@ schema` is JSON-only.
 | `ncu sources`         | json / csv / table | Per-cubin source metadata (`cuda_sm_name`, `embedded_source_file_count`, `has_disasm`), one row per launch's cubin                                                                                                                         |
 | `ncu schema <target>` | json               | Strict JSON Schema for one NCU response. Targets: `summary \| launches \| inspect \| metrics \| disasm \| ranges \| graphs \| sources \| source-metrics \| warp-stalls`                                                                    |
 
+### PyTorch verbs (namespaced under `pytorch`)
+
+PyTorch is an experimental `source.version = "v0"` source for Kineto
+Chrome traces (`.pt.trace.json` / `.pt.trace.json.gz`) and directories
+containing per-rank traces. It uses the same general VeloQ verbs instead
+of adding parallel `steps`, `memory`, or `comm` commands; communication
+questions use `--type comm`, `--is-comm`, grouping axes, `slices`, and the
+source-specific `collectives` verb.
+
+Multi-rank directory inputs require `--rank <n>` or `--all-ranks` for
+list/aggregate verbs where silent cross-rank aggregation could mislead.
+`collectives` is explicitly cross-rank and defaults to all ranks.
+
+| Command                   | Formats            | Purpose                                                                                                       |
+| ------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `pytorch summary`         | json / csv / table | Trace-set inventory, capabilities, active devices, rank/worker inference, versions, capture flags             |
+| `pytorch search`          | json / csv / table | Typed event refs; filters include `--type`, name glob/regex, duration, time, rank, device, stream, step       |
+| `pytorch inspect`         | json / csv / table | Raw args, typed args, parent/children, step context, and correlation/flow links for one or more row ids       |
+| `pytorch stats`           | json / csv / table | Duration/count aggregation by `name,type,step,rank,device,stream,shape,comm-kind`                             |
+| `pytorch correlate`       | json / csv / table | CPU op / annotation / runtime / driver / GPU activity causal chain for one or more row ids                    |
+| `pytorch timeline`        | json / csv / table | Time buckets with CPU, GPU, communication, and per-type time                                                  |
+| `pytorch slices`          | json / csv / table | ProfilerStep and user annotation range instances or aggregates                                                |
+| `pytorch collectives`     | json / csv / table | Multi-rank collective groups with per-rank timing, skew, slow rank, NCCL/comm row ids, and ordinal confidence |
+| `pytorch prep`            | json / csv / table | Build or inspect PyTorch sidecars under `<input>.veloq/pytorch/`                                              |
+| `pytorch schema <target>` | json               | Strict JSON Schema for one PyTorch response                                                                   |
+
 ### Meta verbs (root, owned by the binary)
 
 | Command          | Purpose                                                                                                                                                                                                                                                                                                                           |
@@ -415,12 +455,15 @@ NVTX tree can be built.
 
 ## Inputs
 
-| Source | Extensions                  | Notes                                                                                                         |
-| ------ | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| NSys   | `.nsys-rep`                 | Primary path; exported via `nsys export -t parquetdir` on first use                                           |
-| NSys   | `<stem>_pqtdir/`            | Pre-exported parquetdir; opened directly                                                                      |
-| NSys   | `<trace>.veloq/parquetdir/` | Generated alias for the owning `.nsys-rep`; not a separate source                                             |
-| NCU    | `.ncu-rep`                  | Nsight Compute kernel report (ingested via NVIDIA's `ncu_report` API at prep time; no vendored proto schemas) |
+| Source  | Extensions                  | Notes                                                                                                         |
+| ------- | --------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| NSys    | `.nsys-rep`                 | Primary path; exported via `nsys export -t parquetdir` on first use                                           |
+| NSys    | `<stem>_pqtdir/`            | Pre-exported parquetdir; opened directly                                                                      |
+| NSys    | `<trace>.veloq/parquetdir/` | Generated alias for the owning `.nsys-rep`; not a separate source                                             |
+| NCU     | `.ncu-rep`                  | Nsight Compute kernel report (ingested via NVIDIA's `ncu_report` API at prep time; no vendored proto schemas) |
+| PyTorch | `.pt.trace.json`            | PyTorch/Kineto Chrome trace JSON                                                                              |
+| PyTorch | `.pt.trace.json.gz`         | Gzipped PyTorch/Kineto Chrome trace JSON                                                                      |
+| PyTorch | trace directory             | Directory containing per-rank `.pt.trace.json` / `.pt.trace.json.gz` files, sorted by path                    |
 
 `veloq info <trace>` reports which source claims the file based on
 the same `detect()` heuristic the dispatcher uses, so an agent can

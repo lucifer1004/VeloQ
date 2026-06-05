@@ -5,6 +5,7 @@ members = [
     "crates/veloq",
     "crates/nsys/*",
     "crates/ncu/*",
+    "crates/pytorch/*",
 ]
 
 [workspace.package]
@@ -31,6 +32,9 @@ veloq-nsys = { path = "crates/nsys/veloq-nsys", version = "0.1.0" }
 veloq-nsys-data = { path = "crates/nsys/veloq-nsys-data", version = "0.1.0" }
 veloq-nsys-query = { path = "crates/nsys/veloq-nsys-query", version = "0.1.0" }
 veloq-ncu = { path = "crates/ncu/veloq-ncu", version = "0.1.0" }
+veloq-pytorch = { path = "crates/pytorch/veloq-pytorch", version = "0.1.0" }
+veloq-pytorch-data = { path = "crates/pytorch/veloq-pytorch-data", version = "0.1.0" }
+veloq-pytorch-query = { path = "crates/pytorch/veloq-pytorch-query", version = "0.1.0" }
 
 # Error handling
 anyhow = "1"
@@ -54,6 +58,8 @@ clap = { version = "4", features = ["derive"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+flate2 = "1"
+regex = "1"
 # `schemars` powers the wire_format projector: every serde-Serialize
 # response struct also `#[derive(JsonSchema)]` so we can derive
 # `--help` body text, reference-doc snippets, and a future

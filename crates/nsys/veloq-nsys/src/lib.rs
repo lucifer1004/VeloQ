@@ -8,7 +8,8 @@
 //! top-level `veloq` binary parses against `cli::Cmd` and hands the
 //! parsed value to `commands::run`.
 //!
-//! The split exists so each profile source lives in its own crate with
+//! The split exists so each profile source (NSys, NCU, PyTorch/Kineto)
+//! lives in its own crate with
 //! its own internal modules, while the binary stays a thin
 //! registry/dispatch shell.
 

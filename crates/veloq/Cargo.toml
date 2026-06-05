@@ -20,6 +20,7 @@ path = "src/main.rs"
 veloq-core.workspace = true
 veloq-ncu.workspace = true
 veloq-nsys.workspace = true
+veloq-pytorch.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 env_logger.workspace = true

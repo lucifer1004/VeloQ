@@ -5,7 +5,8 @@
 //! - the top-level clap parser (the global `--format` flag);
 //! - the registry of `ProfileSource` impls (today: NSys, hoisted to
 //!   the top level because it's the configured default and also
-//!   available under `veloq nsys …`; NCU under `veloq ncu …`);
+//!   available under `veloq nsys …`; NCU under `veloq ncu …`;
+//!   PyTorch/Kineto under `veloq pytorch …`);
 //! - dispatch from the parsed `ArgMatches` to the matching source's
 //!   `run()`.
 //!
@@ -20,6 +21,7 @@ use clap::{Arg, ArgMatches, Command};
 use veloq_core::{EnvelopeError, OutputFormat, ProfileSource};
 use veloq_ncu::NcuSource;
 use veloq_nsys::NsysSource;
+use veloq_pytorch::PytorchSource;
 
 // mimalloc for the binary only — veloq's hot paths (DuckDB/Arrow
 // materialization, JSON serialization, rayon NVTX grouping) are
@@ -39,7 +41,11 @@ fn main() {
     // subtree; we graft them under the top-level parser below. NSys
     // is the configured default (hoisted to top level) and still has
     // an explicit `veloq nsys …` namespace; NCU gets `veloq ncu …`.
-    let sources: Vec<Box<dyn ProfileSource>> = vec![Box::new(NsysSource), Box::new(NcuSource)];
+    let sources: Vec<Box<dyn ProfileSource>> = vec![
+        Box::new(NsysSource),
+        Box::new(NcuSource),
+        Box::new(PytorchSource),
+    ];
 
     let parser = build_parser(&sources);
     let matches = match parser.try_get_matches() {
@@ -85,7 +91,7 @@ fn main() {
         "error"
     } else {
         "warn,veloq_core=info,veloq_nsys_data=info,veloq_nsys_query=info,veloq_nsys=info,\
-         veloq=info"
+         veloq_pytorch_data=info,veloq_pytorch_query=info,veloq_pytorch=info,veloq=info"
     };
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
         .init();

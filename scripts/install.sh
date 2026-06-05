@@ -3,8 +3,8 @@
 #
 # Installs:
 #   1. The veloq binary into ~/.local/bin (or --bin-dir).
-#   2. Two Claude Code skills (nsys-profile-analysis +
-#      ncu-profile-analysis) into ~/.claude/skills/.
+#   2. Claude Code profile-analysis skills (nsys-profile-analysis,
+#      ncu-profile-analysis, pytorch-profile-analysis) into ~/.claude/skills/.
 #
 # Re-run safe: existing files are overwritten. Use --no-binary or
 # --no-skills to update one half without touching the other.
@@ -225,7 +225,7 @@ install_skills() {
     tar -xz -f "$tmp" -C "$SKILLS_DIR" --strip-components=2
     rm -f "$tmp"
     trap - EXIT
-    info "installed skills under $SKILLS_DIR/{nsys,ncu}-profile-analysis"
+    info "installed skills under $SKILLS_DIR/{nsys,ncu,pytorch}-profile-analysis"
 }
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ main() {
         info "try: veloq --help"
     fi
     if $INSTALL_SKILLS; then
-        info "Claude Code: skills land at $SKILLS_DIR/{nsys,ncu}-profile-analysis"
+        info "Claude Code: skills land at $SKILLS_DIR/{nsys,ncu,pytorch}-profile-analysis"
     fi
 }
 

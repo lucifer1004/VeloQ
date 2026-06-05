@@ -11,9 +11,10 @@ should read the skills under `.claude/skills/`:
 VeloQ (velo-query) is a profile-query CLI family. Pure CLI in /
 JSON contract out by default, CSV/table projections for row-shaped
 views, no GUI, no MCP server in v1. Today it covers Nsight Systems
-(timeline traces) and Nsight Compute (kernel reports) through a
-single binary with a shared envelope and pluggable `ProfileSource`
-trait. Perfetto-style sources can be added along the same shape.
+(timeline traces), Nsight Compute (kernel reports), and experimental
+PyTorch/Kineto Chrome traces through a single binary with a shared
+envelope and pluggable `ProfileSource` trait. The PyTorch/Kineto source
+covers the Perfetto-style Chrome trace shape used by PyTorch profiler.
 
 ## Wire-format invariants (do not break casually)
 
@@ -77,6 +78,16 @@ version).
    | `ncu source-metrics` sass   | `launch:<idx>\|sass:0x<addr>`                                                                                                                                                                                 |
    | `ncu source-metrics` file   | `launch:<idx>\|file:<file>`                                                                                                                                                                                   |
    | `ncu ranges/graphs/sources` | `<entity>:<idx>` (e.g. `range:0`)                                                                                                                                                                             |
+   | `pytorch summary`           | `trace\|<trace_file_path>`                                                                                                                                                                                    |
+   | `pytorch search`            | `<row_id>` (e.g. `kernel:91`, `cpu_op:42`)                                                                                                                                                                    |
+   | `pytorch inspect`           | `<row_id>` (matches the requested row_id; `found=false` same)                                                                                                                                                 |
+   | `pytorch stats`             | `stats\|<axis>:<value>\|...`                                                                                                                                                                                  |
+   | `pytorch correlate`         | `<seed_row_id>` per result; embedded events use `<row_id>`                                                                                                                                                    |
+   | `pytorch timeline`          | `bucket\|<start_ns>..<end_ns>`                                                                                                                                                                                |
+   | `pytorch slices` instance   | `slice\|<name>\|@<start_ns>`                                                                                                                                                                                  |
+   | `pytorch slices` aggregate  | `scope\|<name-or-step>`                                                                                                                                                                                       |
+   | `pytorch collectives`       | `collective\|<kind>\|step:<n-or-none>\|ordinal:<n>`                                                                                                                                                           |
+   | `pytorch prep`              | `sidecar\|<sidecar_name>`                                                                                                                                                                                     |
 
    Two traces of the same workload produce matching keys at
    matching axes — modulo `trace_span.origin_ns` if the recipe
@@ -147,16 +158,22 @@ veloq/
     │   │                          nvtx_attribution, nvtx_reverse, kind_sql)
     │   └── veloq-nsys/         # Nsys clap surface + dispatch + CSV/table
     │                             views; impls `NsysSource: ProfileSource`
-    └── ncu/
-        └── veloq-ncu/          # `.ncu-rep` via NVIDIA's `ncu_report`
-                                  API → native sidecar + SASS/PTX
-                                  correlation; impls `NcuSource: ProfileSource`
+    ├── ncu/
+    │   └── veloq-ncu/          # `.ncu-rep` via NVIDIA's `ncu_report`
+    │                             API → native sidecar + SASS/PTX
+    │                             correlation; impls `NcuSource: ProfileSource`
+    └── pytorch/
+        ├── veloq-pytorch-data/ # Kineto Chrome trace JSON/GZ ingest,
+        │                         sidecars, nesting/correlation/collectives
+        ├── veloq-pytorch-query/# PyTorch verbs and response payloads
+        └── veloq-pytorch/      # Pytorch clap surface + dispatch + CSV/table
+                                  views; impls `PytorchSource: ProfileSource`
 ```
 
 Each profile source lives under its own subdirectory
 (`crates/<source>/`) so the workspace glob picks them up
-(`crates/nsys/*`, `crates/ncu/*`). Future sources slot in alongside
-without restructuring.
+(`crates/nsys/*`, `crates/ncu/*`, `crates/pytorch/*`). Future
+non-Chrome trace sources slot in alongside without restructuring.
 
 VeloQ is fully self-contained — no compile-time deps beyond
 crates.io. `veloq` is the only non-library member.
@@ -183,6 +200,13 @@ namespaced under `ncu`):
 - [x] `ranges` / `graphs` / `sources`
 - [x] `source-metrics` / `warp-stalls`
 - [x] `schema <target>`
+
+PyTorch verbs (registered in `crates/pytorch/veloq-pytorch/src/cli.rs`,
+namespaced under `pytorch`; experimental source version `v0`):
+
+- [x] `summary` / `search` / `inspect` / `stats` / `correlate`
+- [x] `timeline` / `slices` / `collectives`
+- [x] `prep` / `schema <target>`
 
 Meta verbs (root, owned by the binary):
 
@@ -252,6 +276,17 @@ Not shipped yet:
       sha256 content-hash of the `.ncu-rep` (checkout-stable).
     - `<report>.veloq/disasm/<sha>.correlated.json` — per-cubin
       SASS/PTX/source-line index from nvdisasm + cuobjdump.
+  - PyTorch:
+    - `<input>.veloq/pytorch/meta.bin` — bincode cache for the typed
+      trace-set model; freshness is keyed on sorted trace-file path,
+      mtime, and size.
+    - `<input>.veloq/pytorch/events.parquet` — typed event rows.
+    - `<input>.veloq/pytorch/args.parquet` — event arg key/value rows.
+    - `<input>.veloq/pytorch/flows.parquet` — resolved flow edges.
+    - `<input>.veloq/pytorch/links.parquet` — nesting, step, external,
+      correlation, and flow links.
+    - `<input>.veloq/pytorch/collectives.parquet` — grouped collective
+      rows.
 
 - **NSys version support**: only `v3_standard` (NSys schema 3.x)
   ships today. Pre-3.x traces fail at `Trace::open` with a clear
