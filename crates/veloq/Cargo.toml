@@ -34,5 +34,26 @@ duckdb.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.tar.gz"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install"]
+
+[package.metadata.binstall.overrides.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-x86_64-unknown-linux-musl.tar.gz"
+bin-dir = "{ name }-v{ version }-x86_64-unknown-linux-musl/{ bin }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.'cfg(all(target_os = "linux", target_arch = "aarch64"))']
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-aarch64-unknown-linux-musl.tar.gz"
+bin-dir = "{ name }-v{ version }-aarch64-unknown-linux-musl/{ bin }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.'cfg(all(target_os = "windows", target_arch = "x86_64"))']
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-x86_64-pc-windows-gnu.zip"
+bin-dir = "{ name }-v{ version }-x86_64-pc-windows-gnu/{ bin }{ binary-ext }"
+pkg-fmt = "zip"
+
 [lints]
 workspace = true

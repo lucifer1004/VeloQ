@@ -56,7 +56,10 @@ replace `nsys`/`ncu`.
 or a one-off eyeball check — the Nsight GUI is genuinely better there.
 VeloQ is for programmatic, repeatable, agent- or script-driven querying.
 
-## Quick install
+## Install
+
+For Linux and macOS, the install script is the shortest path: it installs
+both the `veloq` binary and the bundled profile-analysis skills.
 
 ```bash
 # Linux x86_64 / aarch64 and macOS x86_64 / arm64
@@ -67,11 +70,35 @@ Installs the `veloq` binary under `~/.local/bin` and two Claude Code
 skills (`nsys-profile-analysis`, `ncu-profile-analysis`) under
 `~/.claude/skills/`. Pass `--no-skills` to install just the
 binary, or `--no-binary` to refresh the skills against the latest
-release. `--bin-dir <path>` overrides the install location.
+release. `--bin-dir <path>` overrides the binary install location.
 
-For Windows, grab `veloq-x86_64-windows.exe` from the
-[Releases](https://github.com/lucifer1004/veloq/releases)
-page directly.
+For Windows, use `cargo binstall veloq` below or grab
+`veloq-x86_64-windows.exe` from the
+[Releases](https://github.com/lucifer1004/veloq/releases) page directly.
+
+### Cargo binstall (binary only)
+
+If you use [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall),
+install the prebuilt `veloq` binary from the GitHub release:
+
+```bash
+cargo binstall veloq
+```
+
+`cargo binstall` installs only the executable. To fetch the bundled
+skills from the latest release without replacing the binstall-managed
+binary, run:
+
+```bash
+veloq self-update --no-binary
+```
+
+Use `--skills-dir <path>` on that second command to install skills under a
+non-default root such as `.agents/skills/`.
+
+```bash
+veloq self-update --no-binary --skills-dir .agents
+```
 
 ### Claude Code plugin (alternative)
 
@@ -84,7 +111,8 @@ VeloQ ships a one-plugin marketplace listing under
 ```
 
 The plugin install handles the two skills; install the `veloq`
-binary separately via `scripts/install.sh --no-skills`.
+binary separately via `cargo binstall veloq` or
+`scripts/install.sh --no-skills`.
 
 ### Updating
 
@@ -109,10 +137,15 @@ themselves are portable `SKILL.md` files. `--check` only reports
 envelope on stdout. Re-running `install.sh` (same `--skills-dir`) also
 works.
 
+If the binary was installed with `cargo-binstall` and you want
+`cargo-binstall` to remain the binary manager, use
+`veloq self-update --no-binary` to refresh skills only, and use
+`cargo binstall` again for binary updates.
+
 ## Quick start
 
-These examples assume `veloq` is on `PATH` (via the quick-install
-script above). For contributors building from source, see
+These examples assume `veloq` is on `PATH` (via one of the install
+methods above). For contributors building from source, see
 [Build from source](#build-from-source) — the binary lands at
 `target/release/veloq`.
 
@@ -187,7 +220,7 @@ veloq schema metrics
 ### Build from source
 
 ```bash
-# Rust 1.89+ / Edition 2024
+# The repo pins Rust 1.89.0 via rust-toolchain.toml.
 cargo build --release -p veloq
 # Binary lands at target/release/veloq — either invoke it via the
 # full path or run `cp target/release/veloq ~/.local/bin/` to put

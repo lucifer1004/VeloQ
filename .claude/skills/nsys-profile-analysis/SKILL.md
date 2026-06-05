@@ -15,6 +15,23 @@ Use this skill only for Nsight Systems timeline traces. For Nsight
 Compute `.ncu-rep` kernel reports, use the separate
 `ncu-profile-analysis` skill.
 
+## Tool Boundary
+
+Use VeloQ verbs as the analysis interface. Do not query generated
+`.veloq/` sidecars, generated `parquetdir/` children, `_pqtdir` tables,
+or other profiler-cache files directly with DuckDB, PyArrow, pandas, or
+ad hoc SQL unless the user explicitly asks for raw-table exploration or
+you are developing VeloQ itself.
+
+`veloq prep T` only warms caches. After prep, continue with VeloQ verbs:
+`summary`, `stats`, `search`, `inspect`, `correlate`, `timeline`,
+`slices`, `gaps`, `metrics`, `hardware`, or a `veloq recipes <id>`
+workflow.
+
+If no VeloQ verb can answer the question, first report the VeloQ
+coverage gap and the closest command or recipe you tried. Use raw-table
+exploration only as a last resort with explicit user approval.
+
 Every JSON subcommand emits the same source-qualified envelope shape
 (success or error); CSV/table are explicit row-shaped projections.
 stderr is irrelevant to the JSON contract. Per-command flag and

@@ -26,17 +26,18 @@ or context VeloQ intentionally does not provide:
 | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Re-capture with different traces, metric cadence, duration, graph mode, or CPU sampling | native `nsys profile`                                                                | VeloQ cannot add missing events or fix buffer drops after capture                                                                   |
 | Official NSys reports / canned statistics not modeled by VeloQ yet                      | native `nsys stats`                                                                  | Faster than recreating every built-in report through ad hoc queries                                                                 |
-| Convert `.nsys-rep` manually, pick export options, or inspect raw tables                | `nsys export -t parquetdir`, DuckDB over Parquet                                     | VeloQ exposes stable commands, not every raw export table                                                                           |
+| Convert `.nsys-rep` manually or pick export options                                     | native `nsys export -t parquetdir`                                                   | Capture/export maintenance, not the normal VeloQ analysis path                                                                      |
 | Visual overlap, lane ordering, zooming, or screenshots                                  | NSys GUI                                                                             | Timeline visual context is often faster than row output                                                                             |
 | Selected kernel needs NCU after timeline triage                                         | `veloq nsys ncu-command T kernel:N --print`, NSys GUI → NCU, or native `ncu` capture | VeloQ can generate a best-effort native `ncu` rerun command from NSys metadata; it does not run NCU or guarantee replay equivalence |
-| One-off unsupported join over raw tables                                                | DuckDB against the parquetdir export                                                 | Useful for exploratory questions before adding a VeloQ command                                                                      |
+| One-off unsupported raw-table investigation explicitly requested by the user             | DuckDB/PyArrow against a pre-exported `_pqtdir` or manually exported parquetdir      | Last resort before adding a VeloQ command; do not start from generated `.veloq/` sidecars                                            |
 | Kernel-internal cause: occupancy, stalls, memory transactions, source lines             | NCU / `ncu-profile-analysis`                                                         | NSys shows timing and causality, not detailed kernel microarchitecture                                                              |
 | Source-level fix after evidence is clear                                                | compiler/source tools                                                                | Profilers point to symptoms; code/compiler changes need separate validation                                                         |
 
 Practical rule: if VeloQ can identify the event, row id, NVTX scope,
-time window, or missing capability, it has done its job. If the next
-step is "collect different data", "look visually at the timeline", or
-"change code and validate", switch tools.
+time window, or missing capability, continue with VeloQ verbs/recipes
+for the analysis step. If the next step is "collect different data",
+"look visually at the timeline", or "change code and validate", switch
+tools.
 
 ## Capture-time prerequisites VeloQ can't recover from
 
@@ -182,6 +183,9 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
 ## Generated files
 
 Generated products live under one `<trace>.veloq/` artifact root:
+they document cache behavior and cleanup only. They are not the
+agent-facing analysis API. Do not open generated `.veloq/` files with
+DuckDB, PyArrow, pandas, or ad hoc SQL during normal profile analysis.
 
 | File                                       | Built by                                                      | Cost                         |
 | ------------------------------------------ | ------------------------------------------------------------- | ---------------------------- |
@@ -205,7 +209,8 @@ calls on a fresh trace queue rather than corrupt the cache.
 
 - `.nsys-rep` export requires `nsys >= 2024.6` on `PATH` for the first
   call against a fresh report. Converted output is
-  `<trace>.veloq/parquetdir/`, not a private SQLite sidecar.
+  `<trace>.veloq/parquetdir/`, not a private SQLite sidecar. VeloQ
+  consumes this cache; agents should still call VeloQ verbs.
 - Direct `_pqtdir/` inputs must be real directories ending in
   `_pqtdir` and containing NSys table parquet files.
 

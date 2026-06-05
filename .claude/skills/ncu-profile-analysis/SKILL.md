@@ -12,6 +12,13 @@ evidence extractor for report data, then decide whether the evidence
 points to occupancy, memory, scheduler, instruction, launch, or
 source-line work.
 
+## Tool Boundary
+
+Use `veloq ncu` verbs as the analysis interface. Do not parse
+`<file>.veloq/ncu-native.json.gz`, disasm cache files, or other
+`.veloq/` artifacts directly unless the user explicitly asks for raw
+artifact inspection or you are developing VeloQ itself.
+
 ## Detection
 
 ```bash
@@ -163,8 +170,9 @@ per-launch SASS / PTX / source-line correlation, use the dedicated
 point, with a per-cubin cache.
 
 All generated products live under the per-report artifact root,
-`<file>.veloq/`. Remove them with `veloq clean <file>` when you need a
-fresh rebuild:
+`<file>.veloq/`. These files document cache behavior and cleanup only;
+they are not the normal analysis API. Remove them with
+`veloq clean <file>` when you need a fresh rebuild:
 
 - `<file>.veloq/ncu-native.json.gz` — the `ncu_report`-native sidecar
   (v1 wire) and the single ingest path: `summary` / `launches` /

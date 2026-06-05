@@ -53,19 +53,22 @@ jobs:
           #      the dir layout must match BIN_PATH_IN_ARCHIVE in meta/self_update.rs.
           ARCHIVE="veloq-${GITHUB_REF_NAME}-${{ matrix.target }}"
           mkdir -p "$ARCHIVE"
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            cp "target/${{ matrix.target }}/release/veloq.exe" "${{ matrix.asset }}"
-            cp "target/${{ matrix.target }}/release/veloq.exe" "$ARCHIVE/veloq.exe"
-            zip -qr "${ARCHIVE}.zip" "$ARCHIVE"
-            sha256sum "${ARCHIVE}.zip" > "${ARCHIVE}.zip.sha256"
-          else
-            cp "target/${{ matrix.target }}/release/veloq" "${{ matrix.asset }}"
-            chmod +x "${{ matrix.asset }}"
-            cp "target/${{ matrix.target }}/release/veloq" "$ARCHIVE/veloq"
-            chmod +x "$ARCHIVE/veloq"
-            tar -czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
-            sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
-          fi
+          case "${{ matrix.target }}" in
+            *windows*)
+              cp "target/${{ matrix.target }}/release/veloq.exe" "${{ matrix.asset }}"
+              cp "target/${{ matrix.target }}/release/veloq.exe" "$ARCHIVE/veloq.exe"
+              zip -qr "${ARCHIVE}.zip" "$ARCHIVE"
+              sha256sum "${ARCHIVE}.zip" > "${ARCHIVE}.zip.sha256"
+              ;;
+            *)
+              cp "target/${{ matrix.target }}/release/veloq" "${{ matrix.asset }}"
+              chmod +x "${{ matrix.asset }}"
+              cp "target/${{ matrix.target }}/release/veloq" "$ARCHIVE/veloq"
+              chmod +x "$ARCHIVE/veloq"
+              tar -czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
+              sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+              ;;
+          esac
           sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
       - uses: actions/upload-artifact@v7
         with:

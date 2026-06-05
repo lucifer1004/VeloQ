@@ -350,5 +350,8 @@ veloq gaps T --min-duration 5ms --limit 100 \
   | jq -r '.data.rows[] | [.start_ns, .duration_ns, .prev.name] | @tsv'
 ```
 
-For repeated heavy queries, run `veloq prep T` once to build caches.
+For repeated heavy queries, run `veloq prep T` once to build caches,
+then continue with the same VeloQ verbs/recipes. Do not open generated
+`.veloq/` parquet files directly unless the user explicitly requested
+raw-table exploration.
 Use `veloq clean T` if you need to force a rebuild.
