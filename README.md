@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/icon.svg" alt="VeloQ logo" width="104" height="104" />
+  <img src="docs/assets/logo.svg" alt="VeloQ logo" width="104" height="104" />
 </p>
 
 <h1 align="center">VeloQ</h1>
