@@ -1,0 +1,47 @@
+{
+  "auxiliary": {
+    "meta_cache_path": "source_metric_basic.ncu-rep.veloq/ncu-native.json.gz"
+  },
+  "count": 2,
+  "rows": [
+    {
+      "block_size": [
+        256,
+        1,
+        1
+      ],
+      "context_id": 1,
+      "device_id": 0,
+      "grid_size": [
+        1,
+        1,
+        1
+      ],
+      "kernel_demangled": "synthetic_bank_conflict_kernel(int *)",
+      "kernel_mangled": "_Z30synthetic_bank_conflict_kernelPi",
+      "key": "launch:0",
+      "row_id": "launch:0",
+      "stream_id": 7
+    },
+    {
+      "block_size": [
+        256,
+        1,
+        1
+      ],
+      "context_id": 1,
+      "device_id": 0,
+      "grid_size": [
+        256,
+        1,
+        1
+      ],
+      "kernel_demangled": "synthetic_long_stall_kernel(const int *, int *, int)",
+      "kernel_mangled": "_Z27synthetic_long_stall_kernelPKiPii",
+      "key": "launch:1",
+      "row_id": "launch:1",
+      "stream_id": 7
+    }
+  ],
+  "total_matched": 2
+}

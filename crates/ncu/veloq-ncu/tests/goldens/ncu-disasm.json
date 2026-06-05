@@ -1,0 +1,2787 @@
+{
+  "auxiliary": {
+    "cubin_sha": "07f9586a81da22d4f11cb1fa04c3fa8c87e896e33687d27e3fa6ad33cb62b0b2",
+    "instruction_stride": 16,
+    "ptx_lines": [],
+    "row_id": "launch:1",
+    "sm": "sm_120",
+    "source_index": [
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 34,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          0
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 35,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          16
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 38,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          32,
+          48,
+          64,
+          80,
+          112
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 39,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          128
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 44,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          160
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 50,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          96,
+          144
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 51,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          176,
+          192,
+          208,
+          224,
+          240
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 53,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          256,
+          272,
+          288,
+          304,
+          320,
+          336,
+          352,
+          368,
+          384,
+          400,
+          416,
+          432,
+          448,
+          464,
+          480,
+          496
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 63,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          0
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 66,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          16,
+          48,
+          64,
+          80,
+          112
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 67,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          128,
+          144
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 73,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          32,
+          96,
+          160,
+          176,
+          192,
+          208,
+          224,
+          288,
+          304,
+          320,
+          352,
+          1584,
+          1600,
+          1696,
+          1712,
+          2384,
+          2400,
+          2416,
+          2432,
+          2704,
+          2720,
+          2784,
+          2800,
+          2816,
+          2944,
+          2960,
+          2976
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 74,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          240,
+          256,
+          272,
+          336,
+          368,
+          384,
+          400,
+          416,
+          432,
+          448,
+          464,
+          480,
+          496,
+          512,
+          528,
+          544,
+          560,
+          576,
+          592,
+          608,
+          624,
+          640,
+          656,
+          672,
+          688,
+          704,
+          720,
+          736,
+          752,
+          768,
+          784,
+          800,
+          816,
+          832,
+          848,
+          864,
+          880,
+          896,
+          912,
+          928,
+          944,
+          960,
+          976,
+          992,
+          1008,
+          1024,
+          1040,
+          1056,
+          1072,
+          1088,
+          1104,
+          1120,
+          1136,
+          1152,
+          1168,
+          1184,
+          1200,
+          1216,
+          1232,
+          1248,
+          1264,
+          1280,
+          1296,
+          1312,
+          1328,
+          1344,
+          1360,
+          1376,
+          1392,
+          1408,
+          1424,
+          1440,
+          1456,
+          1472,
+          1488,
+          1504,
+          1520,
+          1536,
+          1552,
+          1568,
+          1616,
+          1632,
+          1648,
+          1664,
+          1680,
+          1728,
+          1744,
+          1760,
+          1776,
+          1792,
+          1808,
+          1824,
+          1840,
+          1856,
+          1872,
+          1888,
+          1904,
+          1920,
+          1936,
+          1952,
+          1968,
+          1984,
+          2000,
+          2016,
+          2032,
+          2048,
+          2064,
+          2080,
+          2096,
+          2112,
+          2128,
+          2144,
+          2160,
+          2176,
+          2192,
+          2208,
+          2224,
+          2240,
+          2256,
+          2272,
+          2288,
+          2304,
+          2320,
+          2336,
+          2352,
+          2368,
+          2448,
+          2464,
+          2480,
+          2496,
+          2512,
+          2528,
+          2544,
+          2560,
+          2576,
+          2592,
+          2608,
+          2624,
+          2640,
+          2656,
+          2672,
+          2688,
+          2736,
+          2752,
+          2768,
+          2832,
+          2848,
+          2864,
+          2880,
+          2896,
+          2912,
+          2928
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 77,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          2992,
+          3008
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 78,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          3024,
+          3040,
+          3056
+        ]
+      },
+      {
+        "file": "/tmp/synthetic.cu",
+        "line": 80,
+        "ptx_line_numbers": [],
+        "sass_addresses": [
+          3072,
+          3088,
+          3104,
+          3120,
+          3136,
+          3152,
+          3168,
+          3184,
+          3200,
+          3216,
+          3232,
+          3248,
+          3264,
+          3280,
+          3296,
+          3312
+        ]
+      }
+    ],
+    "source_lineinfo_present": true,
+    "warnings": []
+  },
+  "count": 2,
+  "rows": [
+    {
+      "function_name": "_Z27synthetic_long_stall_kernelPKiPii",
+      "instructions": [
+        {
+          "address": 0,
+          "control_flow": false,
+          "opcode": "LDC",
+          "operands": "R1,c[0x0][0x37c]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 63
+          }
+        },
+        {
+          "address": 16,
+          "control_flow": false,
+          "opcode": "S2R",
+          "operands": "R0,SR_CTAID.X",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 66
+          }
+        },
+        {
+          "address": 32,
+          "control_flow": false,
+          "opcode": "LDCU",
+          "operands": "UR4,c[0x0][0x390]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 48,
+          "control_flow": false,
+          "opcode": "S2R",
+          "operands": "R3,SR_TID.X",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 66
+          }
+        },
+        {
+          "address": 64,
+          "control_flow": false,
+          "opcode": "LDCU",
+          "operands": "UR5,c[0x0][0x360]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 66
+          }
+        },
+        {
+          "address": 80,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR8,c[0x0][0x358]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 66
+          }
+        },
+        {
+          "address": 96,
+          "control_flow": false,
+          "opcode": "UISETP.GE.AND",
+          "operands": "UP0,UPT,UR4,0x1,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 112,
+          "control_flow": false,
+          "opcode": "IMAD",
+          "operands": "R0,R0,UR5,R3",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 66
+          }
+        },
+        {
+          "address": 128,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R9,R0,0x3ffff,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 67
+          }
+        },
+        {
+          "address": 144,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP0,0xbb0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 67
+          }
+        },
+        {
+          "address": 160,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR5,UPT,UPT,UR4,-0x1,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 176,
+          "control_flow": false,
+          "opcode": "ULOP3.LUT",
+          "operands": "UR6,UR4,0x3,URZ,0xc0,!UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 192,
+          "control_flow": false,
+          "opcode": "UISETP.GE.U32.AND",
+          "operands": "UP0,UPT,UR5,0x3,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 208,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP0,0xb00",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 224,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR4,UPT,UPT,-UR6,UR4,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 240,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR12,c[0x0][0x380]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 256,
+          "control_flow": false,
+          "opcode": "UISETP.GT.AND",
+          "operands": "UP0,UPT,UR4,URZ,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 272,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP0,0x990",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 288,
+          "control_flow": false,
+          "opcode": "UISETP.GT.AND",
+          "operands": "UP1,UPT,UR4,0xc,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 304,
+          "control_flow": false,
+          "opcode": "UPLOP3.LUT",
+          "operands": "UP0,UPT,UPT,UPT,UPT,0x80,0x8",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 320,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP1,0x6a0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 336,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR10,c[0x0][0x380]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 352,
+          "control_flow": false,
+          "opcode": "UPLOP3.LUT",
+          "operands": "UP0,UPT,UPT,UPT,UPT,0x40,0x4",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 368,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R9,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 384,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 400,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 416,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 432,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 448,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 464,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 480,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 496,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 512,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 528,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R7,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 544,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 560,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 576,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 592,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 608,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R3,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 624,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 640,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 656,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 672,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 688,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R5,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 704,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 720,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 736,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 752,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 768,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R7,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 784,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 800,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 816,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 832,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 848,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 864,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 880,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 896,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 912,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 928,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 944,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 960,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 976,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 992,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1008,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R7,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1024,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1040,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1056,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1072,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1088,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R3,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1104,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1120,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1136,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1152,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1168,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R5,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1184,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1200,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1216,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1232,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1248,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R7,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1264,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1280,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1296,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1312,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1328,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1344,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1360,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1376,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1392,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1408,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1424,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1440,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1456,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1472,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1488,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R7,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1504,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1520,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1536,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1552,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1568,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R3,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1584,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR4,UPT,UPT,UR4,-0x10,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 1600,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 1616,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1632,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1648,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R9,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1664,
+          "control_flow": false,
+          "opcode": "UISETP.GT.AND",
+          "operands": "UP1,UPT,UR4,0xc,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1680,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "UP1,0x170",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1696,
+          "control_flow": false,
+          "opcode": "UISETP.GT.AND",
+          "operands": "UP1,UPT,UR4,0x4,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 1712,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP1,0x970",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 1728,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR10,c[0x0][0x380]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1744,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R9,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1760,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1776,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1792,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1808,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1824,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1840,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1856,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1872,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1888,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1904,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R7,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1920,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1936,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1952,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1968,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 1984,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R3,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2000,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2016,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2032,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2048,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2064,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R5,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2080,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2096,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2112,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2128,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2144,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R7,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2160,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2176,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2192,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2208,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2224,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2240,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2256,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2272,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2288,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2304,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2320,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2336,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2352,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2368,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R9,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2384,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR4,UPT,UPT,UR4,-0x8,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2400,
+          "control_flow": false,
+          "opcode": "UPLOP3.LUT",
+          "operands": "UP0,UPT,UPT,UPT,UPT,0x40,0x4",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2416,
+          "control_flow": false,
+          "opcode": "UISETP.NE.OR",
+          "operands": "UP0,UPT,UR4,URZ,UP0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2432,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP0,0xb00",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2448,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R9,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2464,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2480,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2496,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR12",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2512,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R2,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2528,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R5,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2544,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R4,R2,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2560,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R4,R4,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2576,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R4,R4,UR12",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2592,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R4,desc[UR8][R4.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2608,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R7,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2624,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R6,R4,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2640,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R6,R6,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2656,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R6,R6,UR12",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2672,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R6,desc[UR8][R6.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2688,
+          "control_flow": false,
+          "opcode": "MOV",
+          "operands": "R3,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2704,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR4,UPT,UPT,UR4,-0x4,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2720,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R6,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2736,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2752,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR12",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2768,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R9,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2784,
+          "control_flow": false,
+          "opcode": "UISETP.NE.AND",
+          "operands": "UP0,UPT,UR4,URZ,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2800,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "UP0,0x990",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2816,
+          "control_flow": false,
+          "opcode": "UISETP.NE.AND",
+          "operands": "UP0,UPT,UR6,URZ,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2832,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR4,c[0x0][0x380]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2848,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "!UP0,0xbb0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2864,
+          "control_flow": false,
+          "opcode": "IMAD.SHL.U32",
+          "operands": "R2,R9,0x4,RZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2880,
+          "control_flow": false,
+          "opcode": "HFMA2",
+          "operands": "R3,-RZ,RZ,0,0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2896,
+          "control_flow": false,
+          "opcode": "LOP3.LUT",
+          "operands": "R2,R2,0xffffc,RZ,0xc0,!PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2912,
+          "control_flow": false,
+          "opcode": "IADD.64",
+          "operands": "R2,R2,UR4",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2928,
+          "control_flow": false,
+          "opcode": "LDG.E.CONSTANT",
+          "operands": "R9,desc[UR8][R2.64]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 74
+          }
+        },
+        {
+          "address": 2944,
+          "control_flow": false,
+          "opcode": "UIADD3",
+          "operands": "UR6,UPT,UPT,UR6,-0x1,URZ",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2960,
+          "control_flow": false,
+          "opcode": "UISETP.NE.AND",
+          "operands": "UP0,UPT,UR6,URZ,UPT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2976,
+          "control_flow": true,
+          "opcode": "BRA.U",
+          "operands": "UP0,0xb30",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 73
+          }
+        },
+        {
+          "address": 2992,
+          "control_flow": false,
+          "opcode": "ISETP.GT.AND",
+          "operands": "P0,PT,R0,0xffff,PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 77
+          }
+        },
+        {
+          "address": 3008,
+          "control_flow": true,
+          "opcode": "EXIT",
+          "operands": "",
+          "predicate": "@P0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 77
+          }
+        },
+        {
+          "address": 3024,
+          "control_flow": false,
+          "opcode": "LDC.64",
+          "operands": "R2,c[0x0][0x388]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 78
+          }
+        },
+        {
+          "address": 3040,
+          "control_flow": false,
+          "opcode": "IMAD.WIDE",
+          "operands": "R2,R0,0x4,R2",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 78
+          }
+        },
+        {
+          "address": 3056,
+          "control_flow": false,
+          "opcode": "STG.E",
+          "operands": "desc[UR8][R2.64],R9",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 78
+          }
+        },
+        {
+          "address": 3072,
+          "control_flow": true,
+          "opcode": "EXIT",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3088,
+          "control_flow": true,
+          "opcode": "BRA",
+          "operands": "0xc10",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3104,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3120,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3136,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3152,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3168,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3184,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3200,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3216,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3232,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3248,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3264,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3280,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3296,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        },
+        {
+          "address": 3312,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 80
+          }
+        }
+      ],
+      "key": "kernel|_Z27synthetic_long_stall_kernelPKiPii",
+      "length": 3328,
+      "start": 0
+    },
+    {
+      "function_name": "_Z30synthetic_bank_conflict_kernelPi",
+      "instructions": [
+        {
+          "address": 0,
+          "control_flow": false,
+          "opcode": "LDC",
+          "operands": "R1,c[0x0][0x37c]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 34
+          }
+        },
+        {
+          "address": 16,
+          "control_flow": false,
+          "opcode": "S2R",
+          "operands": "R3,SR_TID.X",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 35
+          }
+        },
+        {
+          "address": 32,
+          "control_flow": false,
+          "opcode": "S2UR",
+          "operands": "UR5,SR_CgaCtaId",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 38
+          }
+        },
+        {
+          "address": 48,
+          "control_flow": false,
+          "opcode": "UMOV",
+          "operands": "UR4,0x400",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 38
+          }
+        },
+        {
+          "address": 64,
+          "control_flow": false,
+          "opcode": "ULEA",
+          "operands": "UR4,UR5,UR4,0x18",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 38
+          }
+        },
+        {
+          "address": 80,
+          "control_flow": false,
+          "opcode": "LEA",
+          "operands": "R0,R3.reuse,UR4,0x2",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 38
+          }
+        },
+        {
+          "address": 96,
+          "control_flow": false,
+          "opcode": "ISETP.NE.AND",
+          "operands": "P0,PT,R3,RZ,PT",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 50
+          }
+        },
+        {
+          "address": 112,
+          "control_flow": false,
+          "opcode": "STS",
+          "operands": "[R0],R3",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 38
+          }
+        },
+        {
+          "address": 128,
+          "control_flow": false,
+          "opcode": "BAR.SYNC.DEFER_BLOCKING",
+          "operands": "0x0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 39
+          }
+        },
+        {
+          "address": 144,
+          "control_flow": true,
+          "opcode": "EXIT",
+          "operands": "",
+          "predicate": "@P0",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 50
+          }
+        },
+        {
+          "address": 160,
+          "control_flow": false,
+          "opcode": "LDS",
+          "operands": "R5[UR4]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 44
+          }
+        },
+        {
+          "address": 176,
+          "control_flow": false,
+          "opcode": "LDC.64",
+          "operands": "R2,c[0x0][0x380]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 51
+          }
+        },
+        {
+          "address": 192,
+          "control_flow": false,
+          "opcode": "LDCU.64",
+          "operands": "UR6,c[0x0][0x358]",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 51
+          }
+        },
+        {
+          "address": 208,
+          "control_flow": false,
+          "opcode": "S2R",
+          "operands": "R7,SR_CTAID.X",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 51
+          }
+        },
+        {
+          "address": 224,
+          "control_flow": false,
+          "opcode": "IMAD.WIDE.U32",
+          "operands": "R2,R7,0x4,R2",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 51
+          }
+        },
+        {
+          "address": 240,
+          "control_flow": false,
+          "opcode": "STG.E",
+          "operands": "desc[UR6][R2.64],R5",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 51
+          }
+        },
+        {
+          "address": 256,
+          "control_flow": true,
+          "opcode": "EXIT",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 272,
+          "control_flow": true,
+          "opcode": "BRA",
+          "operands": "0x110",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 288,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 304,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 320,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 336,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 352,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 368,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 384,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 400,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 416,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 432,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 448,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 464,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 480,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        },
+        {
+          "address": 496,
+          "control_flow": false,
+          "opcode": "NOP",
+          "operands": "",
+          "source": {
+            "file": "/tmp/synthetic.cu",
+            "line": 53
+          }
+        }
+      ],
+      "key": "kernel|_Z30synthetic_bank_conflict_kernelPi",
+      "length": 512,
+      "start": 0
+    }
+  ],
+  "total_matched": 2
+}

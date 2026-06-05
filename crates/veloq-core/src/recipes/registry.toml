@@ -1,0 +1,244 @@
+# Recipe registry — canonical workflows surfaced via `veloq recipes`,
+# the `--help` "Recipes for this verb" block, and `info`'s
+# `applicable_recipes` field.
+#
+# Schema (parsed at build time by `build.rs`):
+#
+#   [[recipe]]
+#   id           = "kebab-case-slug"      # required; unique
+#   title        = "..."                  # required; one-line
+#   body         = """multi-line"""       # required; the canonical command(s)
+#   keywords     = ["a", "b"]             # required; lowercase tokens, no spaces
+#   related_verbs = ["stats", "search"]   # required; nsys/ncu verb names
+#   trace_shape  = ["has_nvtx"]           # optional; gating predicates
+#
+# Trace-shape predicates (recognised by the build.rs validator):
+#   has_kernels      — CUPTI_ACTIVITY_KIND_KERNEL present
+#   has_memcpy       — CUPTI_ACTIVITY_KIND_MEMCPY present
+#   has_nvtx         — NVTX_EVENTS present
+#   has_target_info  — TARGET_INFO_GPU present
+#   multi_device     — device count > 1
+#   multi_process    — PROCESSES row count > 1
+#   has_graph_trace  — CUDA graph capture mode `graph`
+#                      (wall-only graph replay rows)
+#   has_graph_nodes  — CUDA graph capture mode `node`
+#                      (per-node decomposition available)
+#
+# A single `trace_shape` entry may carry a pipe-separated OR-group,
+# e.g. `"has_graph_trace|has_graph_nodes"` matches either capture mode.
+#
+# Recipe commands use `<trace>` as a placeholder for the user-supplied
+# trace path. Keep examples generic — never reference real product /
+# customer / model names.
+
+[[recipe]]
+id = "nvtx-breakdown"
+title = "Per-kernel GPU attribution under one NVTX range"
+body = """
+# Aggregate kernels grouped by their enclosing NVTX path.
+veloq stats <trace> --type kernel --group-by nvtx-path --limit 20
+
+# Then drill into the heaviest path's instances.
+veloq slices <trace> --name '<top-path-leaf>' --aggregate
+"""
+keywords = ["nvtx", "kernel", "attribution", "breakdown"]
+related_verbs = ["stats", "slices"]
+trace_shape = ["has_nvtx", "has_kernels"]
+
+[[recipe]]
+id = "nvtx-iteration-compare"
+title = "Per-iteration GPU contribution under a repeated NVTX range"
+body = """
+# Instance view of every NVTX range matching <pattern>, sorted by
+# attributed GPU time. Iter-to-iter regressions show up as outliers
+# in `attributed_kernel_ns`.
+veloq slices <trace> --name '<iter-pattern>' \\
+  --sort attributed_kernel:desc --limit 20
+"""
+keywords = ["nvtx", "iteration", "regression", "slices"]
+related_verbs = ["slices"]
+trace_shape = ["has_nvtx"]
+
+[[recipe]]
+id = "single-device-view"
+title = "Restrict every list verb to one device on a multi-device trace"
+body = """
+# On a multi-device trace the resolver refuses queries without scope.
+# Add `--device <N>` to pick one. The same flag implicitly scopes
+# host-thread events via the context-info bridge — no separate
+# rank/process flag is needed.
+veloq stats <trace> --device 0
+veloq slices <trace> --device 0 --aggregate --group-by path
+"""
+keywords = ["device", "multi-device", "scope", "dedup"]
+related_verbs = ["stats", "slices", "search", "gaps", "timeline"]
+trace_shape = ["multi_device"]
+
+[[recipe]]
+id = "gpu-idle-audit"
+title = "Find GPU idle bubbles per device, stream, or trace-wide"
+body = """
+# Three scopes via --scope:
+veloq gaps <trace> --scope device --min-duration 1ms --limit 20
+veloq gaps <trace> --scope stream --device 0 --stream 7
+veloq gaps <trace> --scope trace --min-duration 5ms
+
+# Drill into the bracketing events for the largest gap.
+veloq inspect <trace> <kind>:<prev-row-id> <kind>:<next-row-id>
+"""
+keywords = ["idle", "gap", "bubble", "starvation"]
+related_verbs = ["gaps", "inspect"]
+trace_shape = ["has_kernels"]
+
+[[recipe]]
+id = "cold-kernel-hotspot"
+title = "Find the hottest kernel, then queue an NCU rerun"
+body = """
+# Aggregate kernels by demangled name, sort by total wall-time.
+veloq stats <trace> --type kernel --group-by demangled --sort total:desc --limit 10
+
+# Pick a row_id from `search`; ncu-command emits the rerun script.
+veloq search <trace> --type kernel --name '<top-kernel>' --limit 1
+veloq nsys ncu-command <trace> kernel:<row-id> --print
+"""
+keywords = ["kernel", "hotspot", "ncu", "rerun"]
+related_verbs = ["stats", "search", "ncu-command"]
+trace_shape = ["has_kernels"]
+
+[[recipe]]
+id = "cpu-side-bottleneck"
+title = "CPU-side CUDA / OSRT call hotspots"
+body = """
+# CUDA driver / runtime calls (cudaMalloc, cudaMemcpy, ...):
+veloq stats <trace> --type runtime --collapse-versioned --limit 20
+
+# POSIX / OS runtime calls (pthread_*, poll, ...):
+veloq stats <trace> --type osrt --limit 20
+"""
+keywords = ["cpu", "runtime", "osrt", "host"]
+related_verbs = ["stats"]
+
+[[recipe]]
+id = "multi-gpu-overlap"
+title = "Kernel/transfer overlap per device (+ time-series and hotspots)"
+body = """
+# Direct overlap answer: per-device union vs sum busy time, peak
+# concurrency, per-stream (incl. same-stream PDL) + compute/copy overlap.
+# Extraction-only — compute any ratio (e.g. sum/union) in jq.
+veloq concurrency <trace>
+veloq concurrency <trace> --device 0
+
+# Time-series + per-device hotspots for the same window.
+veloq timeline <trace> --interval 100ms --device 0
+veloq stats <trace> --device 0 --limit 5
+"""
+keywords = ["concurrency", "overlap", "multi-device", "timeline"]
+related_verbs = ["concurrency", "timeline", "stats"]
+trace_shape = ["multi_device"]
+
+[[recipe]]
+id = "memcpy-asymmetry"
+title = "Spot host-to-device vs device-to-host bandwidth imbalance"
+body = """
+veloq stats <trace> --type memcpy --sort gbps:desc --limit 20
+"""
+keywords = ["memcpy", "bandwidth", "host-device"]
+related_verbs = ["stats"]
+trace_shape = ["has_memcpy"]
+
+[[recipe]]
+id = "nvtx-context-attribution"
+title = "Which NVTX range was active when an event ran?"
+body = """
+# --with-nvtx attaches the innermost active NVTX range to each search hit.
+veloq search <trace> --type kernel --name '<pattern>' --with-nvtx --limit 20
+
+# Already have a row_id? `inspect` always projects nvtx_context.
+veloq inspect <trace> <kind>:<row-id>
+"""
+keywords = ["nvtx", "context", "attribution", "with-nvtx"]
+related_verbs = ["search", "inspect"]
+trace_shape = ["has_nvtx"]
+
+[[recipe]]
+id = "prep-then-query"
+title = "Pre-export a .nsys-rep so subsequent verbs hit the warm path"
+body = """
+# Warms the parquetdir sidecar + meta cache. Subsequent verbs hit the
+# warm path and stay sub-100ms on `info`/`summary`.
+veloq prep <trace>
+
+# Then `info` projects the full trace map.
+veloq info <trace>
+"""
+keywords = ["prep", "cache", "warmup"]
+related_verbs = ["prep", "info"]
+
+[[recipe]]
+id = "source-line-hotspots"
+title = "Find the source lines burning the most cycles / bank conflicts"
+body = """
+# `--counter` glob covers the canonical NCU source counters. `--by line`
+# is the default; sort defaults to the first matched counter desc.
+veloq ncu source-metrics <trace> --row-id launch:0 \\
+  --counter 'derived__memory_l1_conflicts_shared_nway,smsp__sass_thread_inst_executed.sum'
+
+# Restrict to one source file when the kernel inlines from many.
+veloq ncu source-metrics <trace> --row-id launch:0 \\
+  --counter 'derived__memory_l1_conflicts_shared_nway' \\
+  --file 'src/kernel*.cu'
+"""
+keywords = ["ncu", "source", "line", "hotspot", "bank", "conflict"]
+related_verbs = ["source-metrics"]
+
+[[recipe]]
+id = "graph-replay-survey"
+title = "Survey CUDA graph replays — wall time per launch"
+body = """
+# Top graph launches by GPU time on one device. Works in both
+# capture modes (graph_trace and graph_nodes); on graph_nodes
+# traces the response also carries kernel-level decomposition in
+# each row's `top_nodes`.
+veloq graph-replays <trace> --device 0 --sort sum:desc --limit 20
+
+# Inspect the cudaGraphLaunch runtime call that triggered a replay.
+veloq inspect <trace> runtime:<launcher-row-id>
+"""
+keywords = ["graph", "replay", "cuda-graph", "survey"]
+related_verbs = ["graph-replays", "inspect"]
+trace_shape = ["has_graph_trace|has_graph_nodes"]
+
+[[recipe]]
+id = "graph-replay-hotspots"
+title = "Per-kernel hotspots inside graph replays (node capture only)"
+body = """
+# `--top-nodes <N>` returns the heaviest kernels / memcpys inside
+# each replay, with `sum_share_of_replay_wall` indicating their
+# share of the replay's wall time. Requires `--cuda-graph-trace=node`
+# at capture time; on `=graph` traces the top_nodes array is empty.
+veloq graph-replays <trace> --device 0 --sort sum:desc --top-nodes 5 --limit 10
+
+# Drill into one kernel name across all replays.
+veloq search <trace> --device 0 --type kernel --name '<top-node-name>' --limit 20
+"""
+keywords = ["graph", "replay", "kernel", "decomposition", "hotspot"]
+related_verbs = ["graph-replays", "search"]
+trace_shape = ["has_graph_nodes"]
+
+[[recipe]]
+id = "source-instruction-walk"
+title = "Drill into per-SASS counter values for one source line"
+body = """
+# `--by sass` returns one row per cubin-relative SASS address with
+# the counter values verbatim. `--by sass` passes non-additive
+# counters (ratios, pct, per_second) through verbatim; line/file
+# axes reject them.
+veloq ncu source-metrics <trace> --row-id launch:0 \\
+  --counter 'derived__memory_l1_conflicts_shared_nway' \\
+  --by sass --file 'src/kernel*.cu' --line 142
+
+# Combine with `ncu disasm` to see the SASS text at each address.
+veloq ncu disasm <trace> --row-id launch:0
+"""
+keywords = ["ncu", "source", "sass", "instruction", "drill"]
+related_verbs = ["source-metrics", "disasm"]

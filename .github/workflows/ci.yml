@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  RUST_VERSION: "1.89.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # fmt + clippy + the full workspace test suite. Glibc image: rust's
+  # musl host triple blocks proc-macro compilation; release binaries
+  # stay musl-static via the release workflow's cross build.
+  test:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.89.0-slim-bookworm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install build deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential pkg-config ca-certificates cmake
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+        # --profile ci = release opt-level without LTO (fast compile). The
+        # shipped binary's LTO/strip config is validated by the cross job
+        # (below) and release.yml.
+      - run: cargo clippy --workspace --all-targets --profile ci -- -D warnings
+      - run: cargo test --workspace --profile ci
+
+  # Smoke that a freshly built binary actually runs and emits the
+  # envelope contract. Debug build is enough for the CLI surface.
+  e2e:
+    name: e2e smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install build deps + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake jq
+      - name: Build veloq
+        run: cargo build -p veloq
+      - name: Smoke
+        run: |
+          BIN=target/debug/veloq
+          "$BIN" --version
+          "$BIN" sources | jq -e '.data.count > 0'
+          "$BIN" sources | jq -e '.data.rows[].key' >/dev/null
+          "$BIN" schema stats | jq -e '.data.target == "stats"'
+          "$BIN" ncu schema launches | jq -e '.data.target == "launches"'
+
+  # Verify every release target still cross-compiles, on PRs only, so a
+  # change that breaks macOS/Windows/aarch64 is caught before merge rather
+  # than at release time. Build-only — the release workflow builds, packages,
+  # and uploads these same targets on a `v*` tag. Same zigbuild path as
+  # release.yml so a green run here means a green release build.
+  cross:
+    name: cross-build ${{ matrix.target }}
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rust-cross/cargo-zigbuild@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain + target
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends cmake
+          rustup set profile minimal
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup target add --toolchain "${RUST_VERSION}" "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Cross-build
+        run: cargo +${RUST_VERSION} zigbuild --release -p veloq --target ${{ matrix.target }}

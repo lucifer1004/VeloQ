@@ -1,0 +1,243 @@
+//! `veloq` — agent-friendly profile-query CLI.
+//!
+//! Thin dispatch shell. The binary owns:
+//!
+//! - the top-level clap parser (the global `--format` flag);
+//! - the registry of `ProfileSource` impls (today: NSys, hoisted to
+//!   the top level because it's the configured default and also
+//!   available under `veloq nsys …`; NCU under `veloq ncu …`;
+//!   tomorrow: Perfetto, Perfsim);
+//! - dispatch from the parsed `ArgMatches` to the matching source's
+//!   `run()`.
+//!
+//! Everything else — per-verb arg parsing, query execution, envelope
+//! emit, CSV/table rendering, error envelope writing — lives in the
+//! source's own crate.
+
+mod meta;
+
+use anyhow::Result;
+use clap::{Arg, ArgMatches, Command};
+use veloq_core::{EnvelopeError, OutputFormat, ProfileSource};
+use veloq_ncu::NcuSource;
+use veloq_nsys::NsysSource;
+
+// mimalloc for the binary only — veloq's hot paths (DuckDB/Arrow
+// materialization, JSON serialization, rayon NVTX grouping) are
+// allocation-heavy. Scoped here so the libraries stay allocator-agnostic.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// The configured default source. Its subcommands are hoisted to the
+/// top level so users can keep typing `veloq stats <trace>` without
+/// the `nsys` namespace prefix. Every non-default source contributes
+/// a `veloq <kind> <verb>` namespace.
+const DEFAULT_SOURCE: &str = "nsys";
+
+fn main() {
+    // The registry is the single source of truth for what verbs the
+    // CLI offers. Each source contributes its own `clap::Command`
+    // subtree; we graft them under the top-level parser below. NSys
+    // is the configured default (hoisted to top level) and still has
+    // an explicit `veloq nsys …` namespace; NCU gets `veloq ncu …`.
+    let sources: Vec<Box<dyn ProfileSource>> = vec![Box::new(NsysSource), Box::new(NcuSource)];
+
+    let parser = build_parser(&sources);
+    let matches = match parser.try_get_matches() {
+        Ok(m) => m,
+        Err(e) => {
+            if raw_stdout_parse_error_mode() {
+                let _ = e.print();
+                std::process::exit(e.exit_code());
+            }
+            // Parse errors fire before `--format` is resolved, so
+            // assume the documented default (JSON) and let the stdout
+            // envelope carry the diagnostic. Logger isn't initialized
+            // yet — irrelevant; clap doesn't log.
+            veloq_nsys::output::emit_parse_error(&e, OutputFormat::Json);
+            std::process::exit(e.exit_code());
+        }
+    };
+
+    let default_format = String::from("json");
+    let fmt_str: &String = matches
+        .get_one::<String>("format")
+        .unwrap_or(&default_format);
+    let fmt = match OutputFormat::parse(fmt_str) {
+        Ok(f) => f,
+        Err(err) => {
+            // Same as parse errors: `--format` itself is bad, fall
+            // back to the documented default for stderr policy.
+            emit_cli_error(&err, OutputFormat::Json);
+            std::process::exit(1);
+        }
+    };
+
+    // Now we know `fmt` — initialize the logger. In JSON mode (the
+    // agent contract, also the default), drop the default filter to
+    // `error` so library `log::warn!` calls don't duplicate the
+    // failure chain that already lives in the stdout envelope
+    // (dual-channel policy: see `write_error_envelope`). A legitimate
+    // hard error still surfaces; everything chattier requires explicit
+    // `RUST_LOG=…` opt-in. CSV / table users keep the chatty filter
+    // (warn + per-crate info) so first-time-on-a-trace runs show
+    // Parquet build progress for humans.
+    let default_filter = if matches!(fmt, OutputFormat::Json) {
+        "error"
+    } else {
+        "warn,veloq_core=info,veloq_nsys_data=info,veloq_nsys_query=info,veloq_nsys=info,\
+         veloq=info"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter))
+        .init();
+
+    let code = match dispatch(&sources, &matches, fmt) {
+        Ok(c) => c,
+        Err(err) => {
+            // Top-level dispatch failure — no source-level envelope
+            // was written. Emit a CLI-level error envelope (without
+            // source/verb/trace context) so agents still have one
+            // JSON document to parse.
+            emit_cli_error(&err, fmt);
+            1
+        }
+    };
+    std::process::exit(code);
+}
+
+/// Emit a CLI-level error envelope (no source / verb / trace
+/// context) and mirror the human-readable line to stderr. Used for
+/// errors that fire before dispatch can find a source — invalid
+/// `--format`, no source registered for the requested verb, etc.
+///
+/// Dual-channel policy: see `write_error_envelope`.
+fn emit_cli_error(err: &anyhow::Error, fmt: OutputFormat) {
+    let env = EnvelopeError::from_anyhow(None, None, None, None, err);
+    if !matches!(fmt, OutputFormat::Json) {
+        eprintln!("veloq: {err:#}");
+    }
+    if let Ok(s) = env.to_json_pretty() {
+        println!("{s}");
+    }
+}
+
+/// `veloq nsys ncu-command --print` is explicitly pipe-oriented:
+/// stdout must contain only the generated shell script. Clap errors
+/// happen before source dispatch, so detect that raw mode from argv
+/// here and let clap print only its native stderr usage.
+fn raw_stdout_parse_error_mode() -> bool {
+    let mut saw_print = false;
+    let mut command_path = Vec::new();
+    let mut skip_next = false;
+    for arg in std::env::args_os().skip(1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--print" {
+            saw_print = true;
+            continue;
+        }
+        if arg == "--format" {
+            skip_next = true;
+            continue;
+        }
+        let arg = arg.to_string_lossy();
+        if arg.starts_with("--format=") || arg.starts_with('-') {
+            continue;
+        }
+        command_path.push(arg.into_owned());
+    }
+    if !saw_print {
+        return false;
+    }
+    matches!(
+        command_path.as_slice(),
+        [cmd, ..] if cmd == "ncu-command"
+    ) || matches!(
+        command_path.as_slice(),
+        [source, cmd, ..] if source == "nsys" && cmd == "ncu-command"
+    )
+}
+
+/// Build the top-level `clap::Command` by composing the global
+/// `--format` flag with each source's contributed subcommand tree.
+/// The configured default source's verbs are hoisted to the top
+/// level so they don't require a namespace prefix; every source also
+/// ends up under `veloq <kind> <verb>`.
+fn build_parser(sources: &[Box<dyn ProfileSource>]) -> Command {
+    let mut root = Command::new("veloq")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Agent-friendly profile-query CLI (JSON on stdout)")
+        .arg(
+            Arg::new("format")
+                .long("format")
+                .global(true)
+                .default_value("json")
+                .help(
+                    "Output format. JSON is the default agent contract; \
+                     csv / table flatten the response's primary list with envelope \
+                     metadata in header comments.",
+                ),
+        )
+        .subcommand_required(true)
+        .arg_required_else_help(true);
+
+    for source in sources {
+        let sub = source.cli();
+        if source.kind() == DEFAULT_SOURCE {
+            // Hoist the default source's verbs into the root so
+            // `veloq stats <trace>` keeps working without `nsys`.
+            for inner in sub.get_subcommands() {
+                root = root.subcommand(inner.clone());
+            }
+        }
+        root = root.subcommand(sub);
+    }
+
+    // Meta verbs (`veloq info`, `veloq sources`) sit at the top
+    // level alongside the hoisted default-source verbs. Adding a
+    // meta verb means one entry in `meta::cli()`.
+    for meta_cmd in meta::cli() {
+        root = root.subcommand(meta_cmd);
+    }
+
+    root
+}
+
+/// Route the parsed `ArgMatches` to the matching source's `run()`.
+/// For source namespaces we expect `veloq <kind> <verb>` (two levels
+/// deep). For the default source's hoisted aliases we look up the
+/// verb name as the subcommand at the root.
+fn dispatch(
+    sources: &[Box<dyn ProfileSource>],
+    matches: &ArgMatches,
+    fmt: OutputFormat,
+) -> Result<i32> {
+    let (sub_name, sub_matches) = matches.subcommand().ok_or_else(|| {
+        anyhow::anyhow!("no subcommand selected (clap should have rejected this)")
+    })?;
+
+    // Meta verbs come first — they're owned by the binary, not by
+    // any profile source. `--format` is accepted but ignored
+    // (meta responses are JSON-only).
+    if meta::is_meta(sub_name) {
+        let _ = fmt;
+        return meta::run(sub_name, sub_matches, sources);
+    }
+
+    // Source namespace: `veloq <kind> <verb>` (two levels deep).
+    for source in sources {
+        if source.kind() == sub_name {
+            return source.run(sub_matches, fmt);
+        }
+    }
+
+    // Otherwise the subcommand is a default-source verb (hoisted to
+    // the top level). Find the default source and let it run.
+    let default = sources
+        .iter()
+        .find(|s| s.kind() == DEFAULT_SOURCE)
+        .ok_or_else(|| anyhow::anyhow!("default source `{DEFAULT_SOURCE}` not registered"))?;
+    default.run(matches, fmt)
+}

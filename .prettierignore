@@ -1,0 +1,11 @@
+# Golden test artifacts are byte-compared against `serde_json::to_string_pretty`
+# output by the Rust golden tests (e.g. crates/ncu/veloq-ncu/tests/verb_goldens.rs,
+# via UPDATE_GOLDENS=1). prettier's JSON layout (compact short arrays) differs from
+# serde's, so reformatting these here silently breaks the byte-exact comparison and
+# turns the test:unit CI job red. Leave generated goldens untouched.
+**/tests/goldens/
+
+# CHANGELOG.md contains literal `*` in its prose (e.g. `cmdlists*`,
+# `**/tests/goldens/`) that prettier escapes to `\*`, mangling the text.
+# Leave this file's format untouched.
+/CHANGELOG.md

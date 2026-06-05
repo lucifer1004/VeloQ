@@ -1,0 +1,27 @@
+[package]
+name = "veloq-nsys-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Nsight Systems query verbs (stats, search, gaps, timeline, …) for veloq."
+# Publish whitelist — library sources only; tests stay out of the package.
+include = ["src/**/*.rs"]
+
+[dependencies]
+veloq-core.workspace = true
+veloq-nsys-data.workspace = true
+anyhow.workspace = true
+duckdb.workspace = true
+serde.workspace = true
+schemars.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

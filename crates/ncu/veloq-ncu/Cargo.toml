@@ -1,0 +1,27 @@
+[package]
+name = "veloq-ncu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Nsight Compute (.ncu-rep) profile source for veloq."
+# Publish whitelist — library sources plus the ncu_export.py helper the
+# native cache embeds via include_str!. Tests/fixtures stay out of the package.
+include = ["src/**/*.rs", "scripts/ncu_export.py"]
+
+[dependencies]
+veloq-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+log.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+flate2 = "1.1.9"
+object = "0.39.1"
+
+[lints]
+workspace = true

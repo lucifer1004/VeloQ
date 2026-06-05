@@ -1,0 +1,35 @@
+/target
+*.sqlite
+*.nsys-rep
+*.ncu-rep
+!crates/ncu/veloq-ncu/tests/fixtures/*.ncu-rep
+*_pqtdir/
+*_arwdir/
+*.veloq/
+*.veloq-cache/
+*.veloq-parquet/
+*.veloq-correlation
+*.veloq-meta
+*.veloq-nvtx-parent.parquet
+*.veloq-nvtx-tree.parquet
+*.veloq-ncu-meta
+*.veloq-ncu-disasm/
+.DS_Store
+
+# Local-only Claude handoff snapshots
+.claude/handoffs/
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# Local/private scratch artifacts
+.omc/
+
+# CI / pre-commit local state (cache + downloads); keep tracked configs
+/.cargo/*
+!/.cargo/config.toml
+/.rustup/
+veloq-*-linux
+veloq-*-macos
+veloq-*-windows.exe
+veloq-*.sha256
+install.sh.sha256
