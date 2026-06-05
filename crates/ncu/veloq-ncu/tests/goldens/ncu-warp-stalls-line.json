@@ -1,0 +1,70 @@
+{
+  "auxiliary": {
+    "meta_cache_path": "warp_stalls_basic.ncu-native.json.gz",
+    "not_issued_samples": 189112,
+    "out_of_cubin_samples": 0,
+    "per_reason_totals": {
+      "branch_resolving": 558,
+      "drain": 16,
+      "long_scoreboard": 185460,
+      "no_instructions": 411,
+      "not_selected": 2,
+      "selected": 958,
+      "wait": 4267
+    },
+    "total_samples": 191672,
+    "unattributed_samples": 0
+  },
+  "axis": "line",
+  "count": 4,
+  "rows": [
+    {
+      "file": "/tmp/wsprobe/stall.cu",
+      "key": "launch:0|line:/tmp/wsprobe/stall.cu:9",
+      "line": 9,
+      "stalls": {
+        "branch_resolving": 551,
+        "long_scoreboard": 185124,
+        "no_instructions": 411,
+        "selected": 212,
+        "wait": 1381
+      },
+      "total_samples": 187679
+    },
+    {
+      "file": "/tmp/wsprobe/stall.cu",
+      "key": "launch:0|line:/tmp/wsprobe/stall.cu:8",
+      "line": 8,
+      "stalls": {
+        "not_selected": 2,
+        "selected": 569,
+        "wait": 2144
+      },
+      "total_samples": 2715
+    },
+    {
+      "file": "/tmp/wsprobe/stall.cu",
+      "key": "launch:0|line:/tmp/wsprobe/stall.cu:11",
+      "line": 11,
+      "stalls": {
+        "long_scoreboard": 336,
+        "selected": 175,
+        "wait": 737
+      },
+      "total_samples": 1248
+    },
+    {
+      "file": "/tmp/wsprobe/stall.cu",
+      "key": "launch:0|line:/tmp/wsprobe/stall.cu:12",
+      "line": 12,
+      "stalls": {
+        "branch_resolving": 7,
+        "drain": 16,
+        "selected": 2,
+        "wait": 5
+      },
+      "total_samples": 30
+    }
+  ],
+  "total_matched": 4
+}

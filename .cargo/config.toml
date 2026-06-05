@@ -1,0 +1,6 @@
+# duckdb's bundled C++ on Windows calls Restart Manager APIs
+# (RmStartSession etc.) but duckdb-rs's build.rs doesn't declare the
+# rstrtmgr link. Provide it here so the windows-gnu cross-link
+# resolves the symbols.
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-lrstrtmgr"]

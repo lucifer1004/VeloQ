@@ -1,0 +1,903 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VeloQ — agent-friendly profile-query CLI</title>
+    <meta
+      name="description"
+      content="VeloQ is an agent-friendly profile-query CLI for Nsight Systems timelines and Nsight Compute kernel reports. Pure CLI in, versioned JSON contract out. No GUI required."
+    />
+    <meta name="theme-color" content="#0b0e14" />
+
+    <!-- Open Graph / social preview. The 1200x630 card is assets/social-card.png,
+         generated from assets/social-card.svg (edit the SVG, then re-rasterize,
+         e.g. `cairosvg social-card.svg -o social-card.png -W 1200 -H 630`). -->
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:title"
+      content="VeloQ — agent-friendly profile-query CLI"
+    />
+    <meta
+      property="og:description"
+      content="Pure CLI in / JSON contract out. Nsight Systems + Nsight Compute, one binary, one versioned envelope, one shot per call."
+    />
+    <meta property="og:url" content="https://lucifer1004.github.io/veloq/" />
+    <meta
+      property="og:image"
+      content="https://raw.githubusercontent.com/lucifer1004/veloq/main/docs/assets/social-card.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:image"
+      content="https://raw.githubusercontent.com/lucifer1004/veloq/main/docs/assets/social-card.png"
+    />
+
+    <!-- Inline SVG favicon: compact v+Q app icon (assets/icon.svg). -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2311161f'/%3E%3Ccircle cx='27' cy='26' r='15' fill='none' stroke='%231f9e8f' stroke-width='5.5'/%3E%3Cline x1='37.6' y1='36.6' x2='52' y2='51' stroke='%231f9e8f' stroke-width='6.5' stroke-linecap='round'/%3E%3Cpath d='M19 22 L27 32 L35 22' fill='none' stroke='%232dd4bf' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
+
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --bg-soft: #0e131c;
+        --surface: #11161f;
+        --surface-2: #141b26;
+        --border: #1f2733;
+        --text: #e6edf3;
+        --muted: #8b98a9;
+        --accent: #2dd4bf;
+        --accent-2: #38bdf8;
+        --mono:
+          ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo,
+          Consolas, monospace;
+        --sans:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+          Arial, sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: var(--sans);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+
+      .wrap {
+        max-width: 1060px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      code,
+      pre,
+      .mono {
+        font-family: var(--mono);
+      }
+
+      /* ---- nav ---- */
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        backdrop-filter: blur(10px);
+        background: color-mix(in oklab, var(--bg) 82%, transparent);
+        border-bottom: 1px solid var(--border);
+      }
+      .nav {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        font-size: 18px;
+      }
+      .brand svg {
+        width: 26px;
+        height: 26px;
+        display: block;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        font-size: 14px;
+      }
+      .nav-links a {
+        color: var(--muted);
+      }
+      .nav-links a:hover {
+        color: var(--text);
+        text-decoration: none;
+      }
+      .nav-cta {
+        border: 1px solid var(--border);
+        padding: 7px 14px;
+        border-radius: 8px;
+        color: var(--text) !important;
+      }
+      .nav-cta:hover {
+        border-color: var(--accent);
+      }
+
+      /* ---- hero ---- */
+      .hero {
+        position: relative;
+        padding: 96px 0 72px;
+        text-align: center;
+        overflow: hidden;
+      }
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: -40% 0 auto 0;
+        height: 520px;
+        background: radial-gradient(
+          60% 60% at 50% 0%,
+          rgba(45, 212, 191, 0.14),
+          transparent 70%
+        );
+        pointer-events: none;
+      }
+      .hero-mark {
+        position: relative;
+        margin-bottom: 22px;
+      }
+      .hero-mark svg {
+        width: 80px;
+        height: 80px;
+        filter: drop-shadow(0 0 26px rgba(45, 212, 191, 0.28));
+      }
+      .eyebrow {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 12.5px;
+        letter-spacing: 0.04em;
+        color: var(--accent);
+        border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        padding: 5px 12px;
+        border-radius: 999px;
+        margin-bottom: 26px;
+      }
+      .hero h1 {
+        font-size: clamp(44px, 8vw, 78px);
+        line-height: 1;
+        margin: 0 0 18px;
+        letter-spacing: -0.04em;
+        background: linear-gradient(180deg, #fff, #b9c6d3);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .tagline {
+        font-family: var(--mono);
+        font-size: clamp(15px, 2.4vw, 19px);
+        color: var(--accent);
+        margin: 0 0 18px;
+      }
+      .lede {
+        max-width: 640px;
+        margin: 0 auto 34px;
+        color: var(--muted);
+        font-size: 17px;
+      }
+      .lede strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+
+      .cta-row {
+        display: flex;
+        gap: 12px;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 30px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 11px 20px;
+        border-radius: 10px;
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #04201c;
+      }
+      .btn-primary:hover {
+        background: #4fe3d1;
+        text-decoration: none;
+      }
+      .btn-ghost {
+        border: 1px solid var(--border);
+        color: var(--text);
+      }
+      .btn-ghost:hover {
+        border-color: var(--accent);
+        text-decoration: none;
+      }
+
+      /* ---- copy-able install line ---- */
+      .install {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        max-width: 640px;
+        margin: 0 auto;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 12px 12px 12px 18px;
+        text-align: left;
+      }
+      .install code {
+        flex: 1;
+        font-size: 13.5px;
+        color: var(--text);
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+      .install .prompt {
+        color: var(--accent);
+        user-select: none;
+      }
+      .copy-btn {
+        flex: none;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--muted);
+        border-radius: 8px;
+        padding: 7px 12px;
+        font: 600 12.5px var(--sans);
+        cursor: pointer;
+      }
+      .copy-btn:hover {
+        color: var(--text);
+        border-color: var(--accent);
+      }
+
+      /* ---- sections ---- */
+      section {
+        padding: 64px 0;
+        border-top: 1px solid var(--border);
+      }
+      .section-head {
+        max-width: 620px;
+        margin: 0 0 40px;
+      }
+      .section-head h2 {
+        font-size: 30px;
+        letter-spacing: -0.03em;
+        margin: 0 0 10px;
+      }
+      .section-head p {
+        color: var(--muted);
+        margin: 0;
+      }
+      .kicker {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--accent);
+        letter-spacing: 0.05em;
+      }
+
+      /* ---- feature cards ---- */
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 18px;
+      }
+      .card {
+        background: linear-gradient(180deg, var(--surface), var(--bg-soft));
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 24px;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 17px;
+        letter-spacing: -0.01em;
+      }
+      .card p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14.5px;
+      }
+      .card .tag {
+        font-family: var(--mono);
+        color: var(--accent);
+        font-size: 12px;
+      }
+
+      /* ---- code blocks ---- */
+      pre {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 18px 20px;
+        overflow-x: auto;
+        font-size: 13.5px;
+        line-height: 1.7;
+        margin: 0;
+      }
+      pre .c {
+        color: var(--muted);
+      }
+      pre .p {
+        color: var(--accent);
+      }
+      pre .k {
+        color: var(--accent-2);
+      }
+      pre .s {
+        color: #a5d6a7;
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        align-items: start;
+      }
+      .two-col .label {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0 0 8px 2px;
+      }
+
+      /* ---- comparison table ---- */
+      .table-scroll {
+        overflow-x: auto;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 14px;
+        min-width: 640px;
+      }
+      th,
+      td {
+        padding: 13px 16px;
+        text-align: left;
+        border-bottom: 1px solid var(--border);
+      }
+      thead th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 13px;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      td.col-veloq,
+      th.col-veloq {
+        background: color-mix(in oklab, var(--accent) 7%, transparent);
+      }
+      th.col-veloq {
+        color: var(--accent);
+      }
+      .yes {
+        color: var(--accent);
+      }
+      .no {
+        color: #586172;
+      }
+      .meh {
+        color: var(--muted);
+      }
+
+      /* ---- verbs ---- */
+      .verbset {
+        margin-bottom: 22px;
+      }
+      .verbset .vlabel {
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--accent);
+        margin: 0 0 12px;
+      }
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .chip {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        padding: 5px 10px;
+      }
+
+      /* ---- footer ---- */
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0 60px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .foot a {
+        color: var(--muted);
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      @media (max-width: 720px) {
+        .grid,
+        .two-col {
+          grid-template-columns: 1fr;
+        }
+        .nav-links a:not(.nav-cta) {
+          display: none;
+        }
+        section {
+          padding: 48px 0;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <header>
+      <nav class="wrap nav">
+        <span class="brand">
+          <svg viewBox="0 0 64 64" aria-hidden="true">
+            <line
+              x1="2"
+              y1="19"
+              x2="11"
+              y2="19"
+              stroke="#16786c"
+              stroke-width="4"
+              stroke-linecap="round"
+            />
+            <line
+              x1="0.5"
+              y1="29"
+              x2="9"
+              y2="29"
+              stroke="#16786c"
+              stroke-width="4"
+              stroke-linecap="round"
+            />
+            <circle
+              cx="30"
+              cy="26"
+              r="15"
+              fill="none"
+              stroke="#1f9e8f"
+              stroke-width="5.5"
+            />
+            <line
+              x1="40.6"
+              y1="36.6"
+              x2="54"
+              y2="51"
+              stroke="#1f9e8f"
+              stroke-width="6.5"
+              stroke-linecap="round"
+            />
+            <path
+              d="M22 22 L30 32 L38 22"
+              fill="none"
+              stroke="#2dd4bf"
+              stroke-width="5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          VeloQ
+        </span>
+        <span class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#compare">Compare</a>
+          <a href="#verbs">Verbs</a>
+          <a href="#install">Install</a>
+          <a class="nav-cta" href="https://github.com/lucifer1004/veloq"
+            >GitHub →</a
+          >
+        </span>
+      </nav>
+    </header>
+
+    <main>
+      <!-- HERO -->
+      <section class="hero" style="border-top: none">
+        <div class="wrap">
+          <div class="hero-mark">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <line
+                x1="2"
+                y1="19"
+                x2="11"
+                y2="19"
+                stroke="#16786c"
+                stroke-width="4"
+                stroke-linecap="round"
+              />
+              <line
+                x1="0.5"
+                y1="29"
+                x2="9"
+                y2="29"
+                stroke="#16786c"
+                stroke-width="4"
+                stroke-linecap="round"
+              />
+              <circle
+                cx="30"
+                cy="26"
+                r="15"
+                fill="none"
+                stroke="#1f9e8f"
+                stroke-width="5.5"
+              />
+              <line
+                x1="40.6"
+                y1="36.6"
+                x2="54"
+                y2="51"
+                stroke="#1f9e8f"
+                stroke-width="6.5"
+                stroke-linecap="round"
+              />
+              <path
+                d="M22 22 L30 32 L38 22"
+                fill="none"
+                stroke="#2dd4bf"
+                stroke-width="5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </div>
+          <span class="eyebrow">velo-query · GPU profile-query CLI</span>
+          <h1>VeloQ</h1>
+          <p class="tagline">
+            Pure CLI in / JSON contract out. No GUI required.
+          </p>
+          <p class="lede">
+            An <strong>agent-friendly</strong> profile-query CLI for
+            <strong>Nsight Systems</strong> timelines and
+            <strong>Nsight Compute</strong> kernel reports — one binary, one
+            versioned JSON envelope, one shot per call. Built so a coding agent
+            (or a shell script) can reason about GPU profiles without ever
+            opening a GUI.
+          </p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#install">Get started</a>
+            <a class="btn btn-ghost" href="https://github.com/lucifer1004/veloq"
+              >View on GitHub</a
+            >
+          </div>
+          <div class="install">
+            <span class="prompt mono">$</span>
+            <code id="install-cmd"
+              >curl -fsSL
+              https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh
+              | bash</code
+            >
+            <button
+              class="copy-btn"
+              data-copy="curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash"
+            >
+              Copy
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- FEATURES -->
+      <section id="features">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">why VeloQ</p>
+            <h2>Built for the way agents read profiles</h2>
+            <p>
+              Not raw speed — veloq reads <code>nsys export</code> output, it
+              doesn't replace <code>nsys</code>/<code>ncu</code>. It wins on the
+              axes that matter to a program consuming the result.
+            </p>
+          </div>
+          <div class="grid">
+            <div class="card">
+              <p class="tag">// stable contract</p>
+              <h3>Versioned JSON envelope</h3>
+              <p>
+                Every success is a <code>v1</code> envelope; every list response
+                is canonical <code>data.rows[]</code> with a stable per-row
+                <code>key</code>. Parse <code>.data</code> or
+                <code>.error</code>, never stderr.
+              </p>
+            </div>
+            <div class="card">
+              <p class="tag">// token economy</p>
+              <h3>Shaped rows, not dumps</h3>
+              <p>
+                Headline columns plus truncation signals (<code>count</code> vs
+                <code>total_matched</code>) so an agent spends tokens on
+                answers, not on scrolling raw text.
+              </p>
+            </div>
+            <div class="card">
+              <p class="tag">// scriptable</p>
+              <h3>One shot, pipe to jq</h3>
+              <p>
+                Stateless calls, CSV/table projections where useful, and stable
+                keys that make two captures diffable across a run.
+              </p>
+            </div>
+            <div class="card">
+              <p class="tag">// extensible</p>
+              <h3>Two sources, one shape</h3>
+              <p>
+                Nsight Systems and Nsight Compute behind a pluggable
+                <code>ProfileSource</code> trait. Perfetto and Perfsim are
+                planned along the same envelope.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- EXAMPLE -->
+      <section id="example">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">query → jq → answer</p>
+            <h2>A query is one line</h2>
+            <p>
+              Ask a question, get rows, reshape with jq. No session, no GUI, no
+              scraping.
+            </p>
+          </div>
+          <div class="two-col">
+            <div>
+              <p class="label">$ ask</p>
+              <pre><span class="c"># top 3 kernels by total GPU time</span>
+veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
+  <span class="p">--sort</span> total:desc <span class="p">--limit</span> 3 \
+  | jq <span class="s">'.data.rows[]
+      | {name, ms: (.total_ns/1e6)}'</span></pre>
+            </div>
+            <div>
+              <p class="label">→ get</p>
+              <pre>{ <span class="k">"name"</span>: <span class="s">"ampere_sgemm_128x64_nn"</span>, <span class="k">"ms"</span>: 812.4 }
+{ <span class="k">"name"</span>: <span class="s">"elementwise_kernel"</span>,      <span class="k">"ms"</span>: 506.1 }
+{ <span class="k">"name"</span>: <span class="s">"ncclDevKernel_AllReduce"</span>,  <span class="k">"ms"</span>: 333.9 }</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- COMPARE -->
+      <section id="compare">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">how it compares</p>
+            <h2>Versus the usual three options</h2>
+            <p>
+              For a GPU-profile question an agent otherwise reaches for the
+              Nsight GUI, raw tool text pasted into context, or hand-rolled
+              SQLite + jq.
+            </p>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Nsight GUI</th>
+                  <th>Raw nsys/ncu text</th>
+                  <th>SQLite + jq</th>
+                  <th class="col-veloq">VeloQ</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Scriptable / one-shot</td>
+                  <td class="no">✗</td>
+                  <td class="meh">~ ad hoc</td>
+                  <td class="yes">✓</td>
+                  <td class="col-veloq yes">✓</td>
+                </tr>
+                <tr>
+                  <td>Token-efficient for an agent</td>
+                  <td class="meh">n/a</td>
+                  <td class="no">✗ dumps everything</td>
+                  <td class="meh">~</td>
+                  <td class="col-veloq yes">✓ shaped rows</td>
+                </tr>
+                <tr>
+                  <td>Stable typed contract</td>
+                  <td class="no">✗</td>
+                  <td class="no">✗ free text</td>
+                  <td class="no">✗ schema you own</td>
+                  <td class="col-veloq yes">✓ versioned envelope</td>
+                </tr>
+                <tr>
+                  <td>Cross-capture diffable</td>
+                  <td class="no">✗</td>
+                  <td class="no">✗</td>
+                  <td class="meh">~</td>
+                  <td class="col-veloq yes">✓ stable per-row key</td>
+                </tr>
+                <tr>
+                  <td>Zero setup per query</td>
+                  <td class="yes">✓</td>
+                  <td class="yes">✓</td>
+                  <td class="no">✗</td>
+                  <td class="col-veloq yes">✓</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="color: var(--muted); font-size: 14px; margin-top: 18px">
+            <strong style="color: var(--text)">When not to use VeloQ:</strong>
+            interactive, human exploration of a timeline — the Nsight GUI is
+            genuinely better there. VeloQ is for programmatic, repeatable,
+            agent- or script-driven querying.
+          </p>
+        </div>
+      </section>
+
+      <!-- VERBS -->
+      <section id="verbs">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">the surface</p>
+            <h2>One tool, one envelope, many verbs</h2>
+            <p>
+              NSys verbs are hoisted to the top level (also under
+              <code>veloq nsys …</code>); NCU verbs live under
+              <code>veloq ncu …</code>.
+            </p>
+          </div>
+
+          <div class="verbset">
+            <p class="vlabel">// Nsight Systems</p>
+            <div class="chips">
+              <span class="chip">summary</span><span class="chip">stats</span
+              ><span class="chip">search</span> <span class="chip">inspect</span
+              ><span class="chip">correlate</span><span class="chip">gaps</span>
+              <span class="chip">timeline</span
+              ><span class="chip">concurrency</span
+              ><span class="chip">graph-replays</span>
+              <span class="chip">slices</span><span class="chip">hardware</span
+              ><span class="chip">metrics</span>
+              <span class="chip">ncu-command</span><span class="chip">prep</span
+              ><span class="chip">correlation-stats</span>
+              <span class="chip">schema</span>
+            </div>
+          </div>
+
+          <div class="verbset">
+            <p class="vlabel">// Nsight Compute</p>
+            <div class="chips">
+              <span class="chip">summary</span><span class="chip">launches</span
+              ><span class="chip">inspect</span>
+              <span class="chip">metrics</span><span class="chip">disasm</span
+              ><span class="chip">ranges</span> <span class="chip">graphs</span
+              ><span class="chip">sources</span
+              ><span class="chip">source-metrics</span>
+              <span class="chip">warp-stalls</span
+              ><span class="chip">schema</span>
+            </div>
+          </div>
+
+          <div class="verbset">
+            <p class="vlabel">// meta</p>
+            <div class="chips">
+              <span class="chip">info</span><span class="chip">sources</span
+              ><span class="chip">clean</span> <span class="chip">recipes</span
+              ><span class="chip">self-update</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- INSTALL -->
+      <section id="install">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">install</p>
+            <h2>One script, two skills</h2>
+            <p>
+              Installs the <code>veloq</code> binary plus two Claude Code skills
+              (<code>nsys-profile-analysis</code>,
+              <code>ncu-profile-analysis</code>). Linux x86_64/aarch64 and macOS
+              x86_64/arm64.
+            </p>
+          </div>
+          <pre><span class="c"># quick install (binary + skills)</span>
+curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash
+
+<span class="c"># keep it current (binary AND bundled skills)</span>
+veloq self-update
+
+<span class="c"># build from source</span>
+cargo build --release -p veloq   <span class="c"># → target/release/veloq</span></pre>
+          <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
+            Prefer the Claude Code plugin manager?
+            <code
+              >/plugin marketplace add
+              https://github.com/lucifer1004/veloq.git</code
+            >
+            then <code>/plugin install veloq-profile-analysis@veloq</code>. Full
+            docs in the
+            <a href="https://github.com/lucifer1004/veloq#readme">README</a>.
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <span>MIT licensed · © Zihua Wu</span>
+        <span>
+          <a href="https://github.com/lucifer1004/veloq">GitHub</a> ·
+          <a href="https://github.com/lucifer1004/veloq#readme">Docs</a> ·
+          <a href="https://github.com/lucifer1004/veloq/releases">Releases</a>
+        </span>
+      </div>
+    </footer>
+
+    <script>
+      document.querySelectorAll(".copy-btn").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          navigator.clipboard.writeText(btn.dataset.copy).then(function () {
+            var prev = btn.textContent;
+            btn.textContent = "Copied";
+            setTimeout(function () {
+              btn.textContent = prev;
+            }, 1400);
+          });
+        });
+      });
+    </script>
+  </body>
+</html>

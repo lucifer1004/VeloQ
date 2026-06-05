@@ -1,0 +1,30 @@
+[package]
+name = "veloq-nsys-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Nsight Systems trace ingestion, Parquet cache, and correlation index for veloq."
+# Publish whitelist — library sources only; tests stay out of the package.
+include = ["src/**/*.rs"]
+
+[dependencies]
+veloq-core.workspace = true
+anyhow.workspace = true
+duckdb.workspace = true
+log.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+schemars.workspace = true
+bincode.workspace = true
+rayon.workspace = true
+arrow.workspace = true
+parquet.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,38 @@
+[package]
+name = "veloq"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Agent-friendly profile-query CLI for Nsight Systems & Nsight Compute — pure CLI in, JSON contract out, no GUI required."
+repository.workspace = true
+homepage.workspace = true
+keywords = ["nsight", "cuda", "gpu", "profiling", "cli"]
+categories = ["command-line-utilities", "development-tools::profiling"]
+# Publish whitelist — ship only the binary sources. Cargo always adds
+# Cargo.toml plus a minimized Cargo.lock; tests stay out of the package.
+include = ["src/**/*.rs"]
+
+[[bin]]
+name = "veloq"
+path = "src/main.rs"
+
+[dependencies]
+veloq-core.workspace = true
+veloq-ncu.workspace = true
+veloq-nsys.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+log.workspace = true
+serde.workspace = true
+self_update.workspace = true
+semver.workspace = true
+mimalloc.workspace = true
+
+[dev-dependencies]
+duckdb.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

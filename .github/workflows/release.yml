@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  RUST_VERSION: "1.89.0"
+
+jobs:
+  # All cross-compilations go through cargo-zigbuild. zig's libc shims +
+  # clang-as-frontend reliably build veloq + duckdb's bundled C++ on every
+  # triple. Windows rstrtmgr link tweak lives in .cargo/config.toml.
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rust-cross/cargo-zigbuild@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            asset: veloq-x86_64-linux
+          - target: aarch64-unknown-linux-musl
+            asset: veloq-aarch64-linux
+          - target: x86_64-apple-darwin
+            asset: veloq-x86_64-macos
+          - target: aarch64-apple-darwin
+            asset: veloq-aarch64-macos
+          - target: x86_64-pc-windows-gnu
+            asset: veloq-x86_64-windows.exe
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain + target
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends cmake zip
+          rustup set profile minimal
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup target add --toolchain "${RUST_VERSION}" "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+      - name: Build
+        run: cargo +${RUST_VERSION} zigbuild --release -p veloq --target ${{ matrix.target }}
+      - name: Package + checksum
+        run: |
+          # Two asset shapes per target:
+          #   1. bare binary `${{ matrix.asset }}` — what scripts/install.sh fetches.
+          #   2. archive `veloq-<tag>-<target>.{tar.gz,zip}` with the binary inside a
+          #      versioned dir — what `veloq self-update` (self_update crate) consumes;
+          #      the dir layout must match BIN_PATH_IN_ARCHIVE in meta/self_update.rs.
+          ARCHIVE="veloq-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "$ARCHIVE"
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            cp "target/${{ matrix.target }}/release/veloq.exe" "${{ matrix.asset }}"
+            cp "target/${{ matrix.target }}/release/veloq.exe" "$ARCHIVE/veloq.exe"
+            zip -qr "${ARCHIVE}.zip" "$ARCHIVE"
+            sha256sum "${ARCHIVE}.zip" > "${ARCHIVE}.zip.sha256"
+          else
+            cp "target/${{ matrix.target }}/release/veloq" "${{ matrix.asset }}"
+            chmod +x "${{ matrix.asset }}"
+            cp "target/${{ matrix.target }}/release/veloq" "$ARCHIVE/veloq"
+            chmod +x "$ARCHIVE/veloq"
+            tar -czf "${ARCHIVE}.tar.gz" "$ARCHIVE"
+            sha256sum "${ARCHIVE}.tar.gz" > "${ARCHIVE}.tar.gz.sha256"
+          fi
+          sha256sum "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
+            veloq-${{ github.ref_name }}-${{ matrix.target }}.*
+
+  # Patch install.sh's VERSION default with the actual tag so curl-piped
+  # installs land on a pinned version.
+  installer:
+    name: installer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Patch + checksum
+        run: |
+          cp scripts/install.sh install.sh
+          sed -i "s/VELOQ_VERSION:-latest/VELOQ_VERSION:-${GITHUB_REF_NAME}/" install.sh
+          chmod +x install.sh
+          sha256sum install.sh > install.sh.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: installer
+          path: |
+            install.sh
+            install.sh.sha256
+
+  # Skills pinned to the release tag so `install.sh vX` lands the matching
+  # skill version, not whatever currently sits on main.
+  skills:
+    name: skills tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Pack + checksum
+        run: |
+          # Reproducible: fixed owner/mtime so sha256s match for identical input.
+          tar -czf veloq-skills.tar.gz \
+            --owner=root --group=root \
+            --mtime='2026-01-01 00:00:00 UTC' \
+            .claude/skills/
+          sha256sum veloq-skills.tar.gz > veloq-skills.tar.gz.sha256
+          tar -tzf veloq-skills.tar.gz > /tmp/skill-listing.txt
+          grep -q "^.claude/skills/nsys-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
+          grep -q "^.claude/skills/ncu-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: skills
+          path: |
+            veloq-skills.tar.gz
+            veloq-skills.tar.gz.sha256
+
+  release:
+    name: publish release
+    runs-on: ubuntu-latest
+    needs: [build, installer, skills]
+    permissions:
+      contents: write
+    steps:
+      - name: Collect artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          files: dist/*
+          body: |
+            ## Quick install
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash
+            ```
+            Installs the `veloq` binary under `~/.local/bin` and the two
+            Claude Code skills (`nsys-profile-analysis`,
+            `ncu-profile-analysis`) under `~/.claude/skills/`. Pass
+            `--no-skills` or `--no-binary` to install just one half.
+
+            Already installed? `veloq self-update` pulls this release in
+            place — binary and bundled skills together.
+
+            ## Direct downloads
+            Bare binaries and their `.sha256` checksums are attached below
+            (Linux x86_64/aarch64 musl-static, macOS x86_64/aarch64, Windows
+            x86_64), along with per-target archives
+            (`veloq-<tag>-<target>.tar.gz` / `.zip`, used by
+            `veloq self-update`), `veloq-skills.tar.gz`, and the pinned
+            `install.sh`.
+
+            macOS binaries are unsigned. On first run, right-click the
+            downloaded file and select Open to bypass Gatekeeper, or run
+            `xattr -d com.apple.quarantine veloq-*-macos`.

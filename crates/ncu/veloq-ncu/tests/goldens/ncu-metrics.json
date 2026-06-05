@@ -1,0 +1,25 @@
+{
+  "auxiliary": {
+    "counter_glob": "launch__grid_size",
+    "meta_cache_path": "source_metric_basic.ncu-rep.veloq/ncu-native.json.gz"
+  },
+  "count": 2,
+  "format": "long",
+  "rows": [
+    {
+      "counter_name": "launch__grid_size",
+      "key": "launch:0|counter:launch__grid_size",
+      "launch_row_id": "launch:0",
+      "value": 1,
+      "value_type": "uint64"
+    },
+    {
+      "counter_name": "launch__grid_size",
+      "key": "launch:1|counter:launch__grid_size",
+      "launch_row_id": "launch:1",
+      "value": 256,
+      "value_type": "uint64"
+    }
+  ],
+  "total_matched": 2
+}

@@ -1,0 +1,39 @@
+{
+  "auxiliary": {
+    "meta_cache_path": "range_basic.ncu-native.json.gz"
+  },
+  "count": 3,
+  "rows": [
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "range:0",
+      "metric_count": 575,
+      "name": "range",
+      "row_id": "range:0",
+      "rule_count": 3,
+      "stream_id": 7
+    },
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "range:1",
+      "metric_count": 575,
+      "name": "range",
+      "row_id": "range:1",
+      "rule_count": 3,
+      "stream_id": 7
+    },
+    {
+      "context_id": 1,
+      "device_id": 0,
+      "key": "range:2",
+      "metric_count": 575,
+      "name": "range",
+      "row_id": "range:2",
+      "rule_count": 3,
+      "stream_id": 7
+    }
+  ],
+  "total_matched": 3
+}
