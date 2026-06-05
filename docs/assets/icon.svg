@@ -1,7 +1,1 @@
-<!-- veloq app icon — compact v+Q (no speed streaks) on a rounded square, for favicon / small sizes. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="veloq">
-  <rect width="64" height="64" rx="14" fill="#11161f" />
-  <circle cx="27" cy="26" r="15" fill="none" stroke="#1f9e8f" stroke-width="5.5" />
-  <line x1="37.6" y1="36.6" x2="52" y2="51" stroke="#1f9e8f" stroke-width="6.5" stroke-linecap="round" />
-  <path d="M19 22 L27 32 L35 22" fill="none" stroke="#2dd4bf" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" aria-label="veloq" role="img" viewBox="0 0 64 64"><rect width="64" height="64" fill="#11161f" rx="14"/><circle cx="27" cy="26" r="15" fill="none" stroke="#1f9e8f" stroke-width="5.5"/><line x1="37.6" x2="52" y1="36.6" y2="51" stroke="#1f9e8f" stroke-linecap="round" stroke-width="6.5"/><path fill="none" stroke="#2dd4bf" stroke-linecap="round" stroke-linejoin="round" stroke-width="5" d="M19 22 L27 32 L35 22"/></svg>
