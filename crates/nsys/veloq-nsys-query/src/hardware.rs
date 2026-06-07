@@ -10,10 +10,11 @@
 //! profiled host), and we can add response-level fields
 //! (`total_hosts`, `elapsed_ms`, …) later without breaking consumers.
 
-use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 use veloq_nsys_data::{HostInfo, Trace};
+
+use crate::{NsysQueryError, NsysQueryResult};
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct HardwareResponse {
@@ -30,10 +31,11 @@ pub struct HardwareResponse {
     pub rows: Vec<HostInfo>,
 }
 
-pub fn run<P: AsRef<Path>>(path: P) -> Result<HardwareResponse> {
+pub fn run<P: AsRef<Path>>(path: P) -> NsysQueryResult<HardwareResponse> {
     // Hardware extraction queries small TARGET_INFO_* tables only.
-    let trace = Trace::open(path)?;
-    let hosts = veloq_nsys_data::hardware::extract(&trace)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    let hosts =
+        veloq_nsys_data::hardware::extract(&trace).map_err(NsysQueryError::hardware_extract)?;
     let count = hosts.len();
     Ok(HardwareResponse {
         count,

@@ -20,7 +20,6 @@
 //! identical across verbs.
 
 use crate::{EventKind, KindFilter, nvtx_attribution};
-use anyhow::Result;
 use duckdb::types::Value;
 use veloq_nsys_data::Trace;
 
@@ -80,7 +79,7 @@ pub fn validate_location_filter(
     kinds: &KindFilter,
     location: LocationFilter,
     verb: &str,
-) -> Result<()> {
+) -> crate::NsysQueryResult<()> {
     if !location.any() {
         return Ok(());
     }
@@ -105,13 +104,9 @@ pub fn validate_location_filter(
         (false, false) => unreachable_axes(),
     };
     let kinds_csv = offenders.join(", ");
-    anyhow::bail!(
-        "{verb}: {axes} cannot be combined with `--type {kinds_csv}` — \
-         these kinds are CPU-side host-thread events with no \
-         device/stream columns. Drop `--type` to narrow to \
-         location-bearing kinds (kernel/memcpy/memset/sync/graph/\
-         cuda_event), or remove the location filter."
-    )
+    Err(crate::NsysQueryError::kind_location_filter_conflict(
+        verb, axes, kinds_csv,
+    ))
 }
 
 // `unreachable!()` is denied workspace-wide; this returns the
@@ -150,7 +145,7 @@ pub fn resolve_nvtx_kinds(
     allowed: &[EventKind],
     trace: &Trace,
     verb: &str,
-) -> Result<Vec<EventKind>> {
+) -> crate::NsysQueryResult<Vec<EventKind>> {
     validate_nvtx_filter(kinds, nvtx, verb)?;
     let nvtx_requested = nvtx.is_some();
     let requested = kinds.resolve(allowed);
@@ -169,7 +164,11 @@ pub fn resolve_nvtx_kinds(
 ///
 /// Prefer [`resolve_nvtx_kinds`] when you also need the resolved
 /// kind list — it threads validation + resolution through one call.
-pub fn validate_nvtx_filter(kinds: &KindFilter, nvtx: Option<&str>, verb: &str) -> Result<()> {
+pub fn validate_nvtx_filter(
+    kinds: &KindFilter,
+    nvtx: Option<&str>,
+    verb: &str,
+) -> crate::NsysQueryResult<()> {
     if nvtx.is_none() {
         return Ok(());
     }
@@ -186,15 +185,9 @@ pub fn validate_nvtx_filter(kinds: &KindFilter, nvtx: Option<&str>, verb: &str) 
         return Ok(());
     }
     let kinds_csv = offenders.join(", ");
-    anyhow::bail!(
-        "{verb}: --nvtx cannot scope `--type {kinds_csv}` — NVTX \
-         attribution for these kinds is experimental and not yet \
-         implemented (the attributable set today is kernel/memcpy/\
-         memset/sync/runtime). Drop the kind from `--type` or \
-         remove `--nvtx` to widen the scope; future opt-in via the \
-         workspace's experimental gate may extend the attributable \
-         set."
-    )
+    Err(crate::NsysQueryError::kind_nvtx_attribution_unsupported(
+        verb, kinds_csv,
+    ))
 }
 
 #[cfg(test)]

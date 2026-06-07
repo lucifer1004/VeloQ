@@ -8,12 +8,12 @@
 
 use crate::cli::Cmd;
 use crate::commands;
+use crate::error::NsysSourceError;
 use crate::help::inject_long_about;
-use anyhow::Result;
 use clap::{Command, FromArgMatches, Subcommand};
 use std::path::Path;
-use veloq_core::TraceSpan;
 use veloq_core::source::{OutputFormat, ProfileSource};
+use veloq_core::{SourceRunResult, TraceSpan};
 
 pub struct NsysSource;
 
@@ -96,7 +96,7 @@ impl ProfileSource for NsysSource {
         inject_long_about(parent)
     }
 
-    fn run(&self, matches: &clap::ArgMatches, fmt: OutputFormat) -> Result<i32> {
+    fn run(&self, matches: &clap::ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {
         // Parse the matches back into the typed `Cmd`. The clap
         // dance happens twice (binary builds the same tree, parses
         // once for global `--format`; we parse this subtree again to
@@ -121,16 +121,26 @@ impl ProfileSource for NsysSource {
             Ok(code) => Ok(code),
             Err(err) => {
                 if raw_stdout {
-                    eprintln!("veloq: {err:#}");
+                    eprintln!("veloq: {err}");
                     return Ok(1);
                 }
                 // Emit the verb-context error envelope before
                 // returning so agents pipe a single structured
                 // failure document on stdout. The non-zero exit
                 // code propagates via the `Ok(1)` return.
-                crate::output::emit_error(verb, trace_path.as_deref(), trace_span, &err, fmt);
+                emit_err(verb, trace_path.as_deref(), trace_span, &err, fmt);
                 Ok(1)
             }
         }
     }
+}
+
+fn emit_err(
+    verb: &str,
+    trace: Option<&Path>,
+    trace_span: Option<TraceSpan>,
+    err: &NsysSourceError,
+    fmt: OutputFormat,
+) {
+    crate::output::emit_error(verb, trace, trace_span, err, fmt);
 }

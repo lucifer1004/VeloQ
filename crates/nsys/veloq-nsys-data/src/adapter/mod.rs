@@ -21,7 +21,7 @@ pub use traits::{
 };
 pub use v3_standard::StandardAdapter;
 
-use anyhow::{Result, bail};
+use crate::NsysDataResult;
 use duckdb::Connection;
 use std::path::Path;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ pub struct AdapterChoice {
 ///      the canonical 3.x columns still open.
 ///   4. If even that fails, `bail!` — caller's `Trace::open` returns
 ///      the error through the JSON envelope.
-pub fn pick_adapter(conn: &Connection, pqtdir: &Path) -> Result<AdapterChoice> {
+pub fn pick_adapter(conn: &Connection, pqtdir: &Path) -> NsysDataResult<AdapterChoice> {
     let schema_version = get_schema_version(conn)?;
 
     if let Some(ref version) = schema_version
@@ -96,12 +96,7 @@ pub fn pick_adapter(conn: &Connection, pqtdir: &Path) -> Result<AdapterChoice> {
         });
     }
 
-    bail!(
-        "no schema adapter matched the trace — StandardAdapter \
-         did not recognise the canonical 3.x columns. The file is \
-         likely not an NSys parquetdir export, is corrupt, or uses a \
-         pre-3.x schema veloq no longer supports."
-    )
+    Err(crate::NsysDataError::SchemaAdapterUnmatched)
 }
 
 /// Adapter lookup by stable id. The meta cache uses this to
@@ -125,7 +120,7 @@ fn select_by_version(version: &SchemaVersion) -> Option<Arc<dyn SchemaAdapter>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context;
+    use anyhow::{Context, Result};
 
     #[test]
     fn adapter_by_id_round_trip() -> Result<()> {

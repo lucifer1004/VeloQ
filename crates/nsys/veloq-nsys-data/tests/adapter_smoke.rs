@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use duckdb::{Connection, params};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+use veloq_core::VeloqDiagnostic;
 use veloq_nsys_data::{DetectionMethod, Trace};
 
 /// Owns the tempdir so the parquetdir outlives the test's
@@ -236,12 +237,11 @@ fn pick_adapter_bails_on_pre_v3_schema() -> Result<()> {
         Ok(_) => anyhow::bail!("pre-3.x parquetdir must not open"),
         Err(e) => e,
     };
-    let msg = format!("{err:#}");
+    assert_eq!(err.code().as_str(), "nsys.data.schema-adapter-unmatched");
     assert!(
-        msg.contains("StandardAdapter")
-            || msg.contains("pre-3.x")
-            || msg.contains("did not recognise"),
-        "error should explain the schema mismatch; got: {msg}"
+        err.to_string().contains("StandardAdapter")
+            && err.to_string().contains("canonical 3.x columns"),
+        "error should explain the schema mismatch; got: {err}"
     );
     Ok(())
 }

@@ -1,0 +1,20 @@
+[package]
+name = "veloq-query"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "DuckDB-backed query helpers shared by VeloQ profile backends."
+include = ["src/**/*.rs"]
+
+[dependencies]
+duckdb.workspace = true
+veloq-core.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+
+[lints]
+workspace = true

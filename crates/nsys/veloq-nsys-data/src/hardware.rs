@@ -14,8 +14,7 @@
 //! implicit `if let Ok && let Ok` chains) satisfies the workspace's
 //! no-panic lints.
 
-use crate::Trace;
-use anyhow::{Context, Result};
+use crate::{NsysDataResult, Trace};
 use serde::{Deserialize, Serialize};
 
 /// One profiled host (single-node traces have exactly one).
@@ -157,7 +156,7 @@ pub struct NicInfo {
 /// error) when `TARGET_INFO_SYSTEM_ENV` is absent — that's a partial
 /// export, not a failure mode, and the empty Vec is the correct
 /// response for a JSON consumer.
-pub fn extract(trace: &Trace) -> Result<Vec<HostInfo>> {
+pub fn extract(trace: &Trace) -> NsysDataResult<Vec<HostInfo>> {
     if !trace.table_exists("TARGET_INFO_SYSTEM_ENV") {
         log::debug!("TARGET_INFO_SYSTEM_ENV absent — hardware topology unavailable");
         return Ok(Vec::new());
@@ -170,29 +169,59 @@ pub fn extract(trace: &Trace) -> Result<Vec<HostInfo>> {
     // across NSys versions (extra `name`s show up as new columns we
     // just ignore).
     let mut hosts: Vec<HostInfo> = Vec::new();
-    let mut stmt = trace.conn().prepare(SYSTEM_ENV_PIVOT)?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let global_vid_text: String = row.get(0)?;
+    let mut stmt = trace.conn().prepare(SYSTEM_ENV_PIVOT).map_err(|source| {
+        crate::NsysDataError::hardware_rows_prepare("TARGET_INFO_SYSTEM_ENV", source)
+    })?;
+    let mut rows = stmt.query([]).map_err(|source| {
+        crate::NsysDataError::hardware_rows_query("TARGET_INFO_SYSTEM_ENV", source)
+    })?;
+    while let Some(row) = rows.next().map_err(|source| {
+        crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+    })? {
+        let global_vid_text: String = row.get(0).map_err(|source| {
+            crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+        })?;
         let global_vid = parse_u64_id(&global_vid_text, "TARGET_INFO_SYSTEM_ENV.globalVid")?;
         // NSys packs hw_host_id into bits 48-63.
         let hw_host_id = ((global_vid >> 48) & 0xFFFF) as u16;
 
         let system = SystemInfo {
-            hostname: row.get(1)?,
-            system_uid: row.get(2)?,
-            os_description: row.get(3)?,
-            kernel_version: row.get(4)?,
-            hardware_platform: row.get(5)?,
-            software_platform: row.get(6)?,
-            software_release_version: row.get(7)?,
+            hostname: row.get(1).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            system_uid: row.get(2).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            os_description: row.get(3).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            kernel_version: row.get(4).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            hardware_platform: row.get(5).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            software_platform: row.get(6).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            software_release_version: row.get(7).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
         };
         let system = if system.has_any() { Some(system) } else { None };
 
-        let cpu_cores: Option<i64> = row.get(8)?;
-        let cpu_speed_mhz: Option<i64> = row.get(9)?;
-        let cpu_arch: Option<String> = row.get(10)?;
-        let cpu_desc: Option<String> = row.get(11)?;
+        let cpu_cores: Option<i64> = row.get(8).map_err(|source| {
+            crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+        })?;
+        let cpu_speed_mhz: Option<i64> = row.get(9).map_err(|source| {
+            crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+        })?;
+        let cpu_arch: Option<String> = row.get(10).map_err(|source| {
+            crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+        })?;
+        let cpu_desc: Option<String> = row.get(11).map_err(|source| {
+            crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+        })?;
         // CPU only surfaces when NSys recorded the description; the
         // `model` field carries the verbatim string. `core_count`
         // and `clock_mhz` round-trip as `Option` so partial exports
@@ -206,9 +235,15 @@ pub fn extract(trace: &Trace) -> Result<Vec<HostInfo>> {
         });
 
         let drivers = DriverInfo {
-            cuda_driver_version: row.get(12)?,
-            nv_driver_version: row.get(13)?,
-            ofed_driver_version: row.get(14)?,
+            cuda_driver_version: row.get(12).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            nv_driver_version: row.get(13).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
+            ofed_driver_version: row.get(14).map_err(|source| {
+                crate::NsysDataError::hardware_rows_read("TARGET_INFO_SYSTEM_ENV", source)
+            })?,
         };
         let drivers = if drivers.has_any() {
             Some(drivers)
@@ -256,28 +291,57 @@ pub fn extract(trace: &Trace) -> Result<Vec<HostInfo>> {
     Ok(hosts)
 }
 
-fn attach_gpus(trace: &Trace, hosts: &mut [HostInfo]) -> Result<()> {
+fn attach_gpus(trace: &Trace, hosts: &mut [HostInfo]) -> NsysDataResult<()> {
+    const TABLE: &str = "TARGET_INFO_GPU";
     let vm_id_expr = crate::sql_expr::u64_decimal_string("vmId");
-    let mut stmt = trace.conn().prepare(&format!(
-        "SELECT {vm_id_expr}, id, name, uuid, chipName, totalMemory, smCount, \
+    let mut stmt = trace
+        .conn()
+        .prepare(&format!(
+            "SELECT {vm_id_expr}, id, name, uuid, chipName, totalMemory, smCount, \
                 computeMajor, computeMinor, busLocation \
          FROM nsight.TARGET_INFO_GPU \
          ORDER BY vmId, id"
-    ))?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let vm_id_text: String = row.get(0)?;
+        ))
+        .map_err(|source| crate::NsysDataError::hardware_rows_prepare(TABLE, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::hardware_rows_query(TABLE, source))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?
+    {
+        let vm_id_text: String = row
+            .get(0)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
         let vm_id = parse_u64_id(&vm_id_text, "TARGET_INFO_GPU.vmId")?;
         let hw_host_id = ((vm_id >> 48) & 0xFFFF) as u16;
-        let id: i64 = row.get(1)?;
-        let name: Option<String> = row.get(2)?;
-        let uuid: Option<String> = row.get(3)?;
-        let chip_name: Option<String> = row.get(4)?;
-        let total_memory: Option<i64> = row.get(5)?;
-        let sm_count: Option<i64> = row.get(6)?;
-        let compute_major: Option<i64> = row.get(7)?;
-        let compute_minor: Option<i64> = row.get(8)?;
-        let bus_location: Option<String> = row.get(9)?;
+        let id: i64 = row
+            .get(1)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let name: Option<String> = row
+            .get(2)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let uuid: Option<String> = row
+            .get(3)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let chip_name: Option<String> = row
+            .get(4)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let total_memory: Option<i64> = row
+            .get(5)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let sm_count: Option<i64> = row
+            .get(6)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let compute_major: Option<i64> = row
+            .get(7)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let compute_minor: Option<i64> = row
+            .get(8)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let bus_location: Option<String> = row
+            .get(9)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
 
         let Some(name) = name else {
             // No name → no point surfacing the GPU. Real traces
@@ -308,27 +372,46 @@ fn attach_gpus(trace: &Trace, hosts: &mut [HostInfo]) -> Result<()> {
     Ok(())
 }
 
-fn attach_nics(trace: &Trace, hosts: &mut [HostInfo]) -> Result<()> {
+fn attach_nics(trace: &Trace, hosts: &mut [HostInfo]) -> NsysDataResult<()> {
+    const TABLE: &str = "TARGET_INFO_NIC_INFO";
     let guid_expr = crate::sql_expr::u64_decimal_string("GUID");
-    let mut stmt = trace.conn().prepare(&format!(
-        "SELECT {guid_expr}, nicId, name, deviceId, vendorId \
+    let mut stmt = trace
+        .conn()
+        .prepare(&format!(
+            "SELECT {guid_expr}, nicId, name, deviceId, vendorId \
          FROM nsight.TARGET_INFO_NIC_INFO \
          ORDER BY nicId, GUID"
-    ))?;
-    let mut rows = stmt.query([])?;
+        ))
+        .map_err(|source| crate::NsysDataError::hardware_rows_prepare(TABLE, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::hardware_rows_query(TABLE, source))?;
     // NSys's schema doesn't expose a NIC → host mapping. Single-host
     // traces get every NIC attached to the only host; multi-host
     // traces skip NIC attribution to avoid mis-assigning interfaces
     // to the wrong node.
     let single_host = hosts.len() == 1;
-    while let Some(row) = rows.next()? {
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?
+    {
         // Read GUID even though we don't use it — proves the column
         // is present and forces a per-row probe of the table shape.
-        let _guid: String = row.get(0)?;
-        let id: i64 = row.get(1)?;
-        let name: Option<String> = row.get(2)?;
-        let device_id: Option<i64> = row.get(3)?;
-        let vendor_id: Option<i64> = row.get(4)?;
+        let _guid: String = row
+            .get(0)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let id: i64 = row
+            .get(1)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let name: Option<String> = row
+            .get(2)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let device_id: Option<i64> = row
+            .get(3)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
+        let vendor_id: Option<i64> = row
+            .get(4)
+            .map_err(|source| crate::NsysDataError::hardware_rows_read(TABLE, source))?;
 
         if !single_host {
             // One log line per multi-host trace, not per row.
@@ -353,10 +436,10 @@ fn attach_nics(trace: &Trace, hosts: &mut [HostInfo]) -> Result<()> {
     Ok(())
 }
 
-fn parse_u64_id(value: &str, label: &str) -> Result<u64> {
+fn parse_u64_id(value: &str, label: &str) -> NsysDataResult<u64> {
     value
         .parse::<u64>()
-        .with_context(|| format!("{label} is not an unsigned 64-bit integer: {value}"))
+        .map_err(|source| crate::NsysDataError::hardware_invalid_u64_id(label, value, source))
 }
 
 /// Pivot SQL for `TARGET_INFO_SYSTEM_ENV`. NSys stores host info as
@@ -387,6 +470,47 @@ const SYSTEM_ENV_PIVOT: &str = "\
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture_with_rows(tables: &[(&str, &str, Vec<&str>)]) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn assert_hardware_rows_error(
+        err: crate::NsysDataError,
+        expected_code: &str,
+        expected_table: &str,
+    ) -> Result<()> {
+        assert_eq!(err.code().as_str(), expected_code);
+        let Some((area, _, label)) = err.duckdb_parts() else {
+            anyhow::bail!("expected hardware rows DuckDB error, got {err:?}");
+        };
+        assert_eq!(area, "hardware rows");
+        assert_eq!(label, expected_table);
+        Ok(())
+    }
 
     #[test]
     fn cuda_version_parsed_decodes_int_encoding() {
@@ -421,5 +545,114 @@ mod tests {
         assert!(!s.has_any());
         s.hostname = Some("box".into());
         assert!(s.has_any());
+    }
+
+    #[test]
+    fn parse_u64_id_rejects_invalid_value_with_typed_error() -> Result<()> {
+        let err = match parse_u64_id("not-a-number", "TARGET_INFO_GPU.vmId") {
+            Ok(value) => anyhow::bail!("invalid u64 id should not parse as {value}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.hardware-invalid-u64-id");
+        match err {
+            crate::NsysDataError::HardwareInvalidU64Id { label, value, .. } => {
+                assert_eq!(label, "TARGET_INFO_GPU.vmId");
+                assert_eq!(value, "not-a-number");
+            }
+            other => anyhow::bail!("expected HardwareInvalidU64Id, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn system_env_bad_cpu_cores_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_SYSTEM_ENV",
+                "CREATE TABLE TARGET_INFO_SYSTEM_ENV (globalVid BIGINT, name TEXT, value TEXT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_SYSTEM_ENV (globalVid, name, value) VALUES (0, 'Hostname', 'box')",
+                    "INSERT INTO TARGET_INFO_SYSTEM_ENV (globalVid, name, value) VALUES (0, 'CpuCores', 'bad')",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match extract(&trace) {
+            Ok(rows) => anyhow::bail!("bad CpuCores cast should fail: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_hardware_rows_error(err, "nsys.data.duckdb-query", "TARGET_INFO_SYSTEM_ENV")
+    }
+
+    #[test]
+    fn gpu_missing_vmid_has_typed_prepare_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_SYSTEM_ENV",
+                "CREATE TABLE TARGET_INFO_SYSTEM_ENV (globalVid BIGINT, name TEXT, value TEXT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_SYSTEM_ENV (globalVid, name, value) VALUES (0, 'Hostname', 'box')",
+                ],
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (id BIGINT, name TEXT)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match extract(&trace) {
+            Ok(rows) => anyhow::bail!("missing GPU vmId should fail: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_hardware_rows_error(err, "nsys.data.duckdb-prepare", "TARGET_INFO_GPU")
+    }
+
+    #[test]
+    fn gpu_bad_id_has_typed_read_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_SYSTEM_ENV",
+                "CREATE TABLE TARGET_INFO_SYSTEM_ENV (globalVid BIGINT, name TEXT, value TEXT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_SYSTEM_ENV (globalVid, name, value) VALUES (0, 'Hostname', 'box')",
+                ],
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (vmId BIGINT, id TEXT, name TEXT, uuid TEXT, chipName TEXT, totalMemory BIGINT, smCount BIGINT, computeMajor BIGINT, computeMinor BIGINT, busLocation TEXT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_GPU (vmId, id, name, uuid, chipName, totalMemory, smCount, computeMajor, computeMinor, busLocation) VALUES (0, 'bad', 'GPU', NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match extract(&trace) {
+            Ok(rows) => anyhow::bail!("bad GPU id should fail: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_hardware_rows_error(err, "nsys.data.duckdb-read", "TARGET_INFO_GPU")
     }
 }

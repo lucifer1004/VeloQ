@@ -139,7 +139,8 @@ skills live in a `skills/` subdir, so `skills/` is appended automatically
 themselves are portable `SKILL.md` files. `--check` only reports
 `update_available` without touching anything. All emit the standard
 envelope on stdout. Re-running `install.sh` (same `--skills-dir`) also
-works.
+works: it refreshes bundled skills and removes stale files from prior
+skill installs.
 
 If the binary was installed with `cargo-binstall` and you want
 `cargo-binstall` to remain the binary manager, use
@@ -220,9 +221,8 @@ veloq pytorch summary path/to/worker0.pt.trace.json
 veloq pytorch search path/to/worker0.pt.trace.json --type kernel --is-comm
 veloq pytorch correlate path/to/worker0.pt.trace.json kernel:91
 veloq pytorch slices path/to/worker0.pt.trace.json --aggregate --group-by step
-# Multi-rank trace directories require explicit rank scope for list/aggregate verbs
-veloq pytorch stats path/to/traces/ --all-ranks --type comm --group-by comm-kind,rank
-veloq pytorch collectives path/to/traces/
+veloq pytorch stats path/to/worker0.pt.trace.json --type comm --group-by comm-kind,rank
+veloq pytorch collectives path/to/worker0.pt.trace.json
 veloq pytorch schema search
 
 # ── Meta verbs
@@ -392,26 +392,25 @@ schema` is JSON-only.
 ### PyTorch verbs (namespaced under `pytorch`)
 
 PyTorch is an experimental `source.version = "v0"` source for Kineto
-Chrome traces (`.pt.trace.json` / `.pt.trace.json.gz`) and directories
-containing per-rank traces. It uses the same general VeloQ verbs instead
+Chrome trace files (`.pt.trace.json` / `.pt.trace.json.gz`). Directory
+inputs and cross-rank collective skew are planned, not shipped in v0.
+When one trace file contains multiple rank values, rank-scoped list and
+aggregate commands require `--rank <n>` or `--all-ranks`.
+It uses the same general VeloQ verbs instead
 of adding parallel `steps`, `memory`, or `comm` commands; communication
 questions use `--type comm`, `--is-comm`, grouping axes, `slices`, and the
 source-specific `collectives` verb.
 
-Multi-rank directory inputs require `--rank <n>` or `--all-ranks` for
-list/aggregate verbs where silent cross-rank aggregation could mislead.
-`collectives` is explicitly cross-rank and defaults to all ranks.
-
 | Command                   | Formats            | Purpose                                                                                                       |
 | ------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `pytorch summary`         | json / csv / table | Trace-set inventory, capabilities, active devices, rank/worker inference, versions, capture flags             |
+| `pytorch summary`         | json / csv / table | Trace inventory, capabilities, active devices, rank/worker inference, versions, capture flags                 |
 | `pytorch search`          | json / csv / table | Typed event refs; filters include `--type`, name glob/regex, duration, time, rank, device, stream, step       |
-| `pytorch inspect`         | json / csv / table | Raw args, typed args, parent/children, step context, and correlation/flow links for one or more row ids       |
-| `pytorch stats`           | json / csv / table | Duration/count aggregation by `name,type,step,rank,device,stream,shape,comm-kind`                             |
+| `pytorch inspect`         | json / csv / table | Raw args, typed args, parent/children, step/Python context, and correlation/flow links for one or more row ids |
+| `pytorch stats`           | json / csv / table | Duration/count aggregation by `name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path`  |
 | `pytorch correlate`       | json / csv / table | CPU op / annotation / runtime / driver / GPU activity causal chain for one or more row ids                    |
 | `pytorch timeline`        | json / csv / table | Time buckets with CPU, GPU, communication, and per-type time                                                  |
 | `pytorch slices`          | json / csv / table | ProfilerStep and user annotation range instances or aggregates                                                |
-| `pytorch collectives`     | json / csv / table | Multi-rank collective groups with per-rank timing, skew, slow rank, NCCL/comm row ids, and ordinal confidence |
+| `pytorch collectives`     | json / csv / table | Single-trace communication groups with CPU/NCCL evidence row ids and link/ordinal confidence                  |
 | `pytorch prep`            | json / csv / table | Build or inspect PyTorch sidecars under `<input>.veloq/pytorch/`                                              |
 | `pytorch schema <target>` | json               | Strict JSON Schema for one PyTorch response                                                                   |
 
@@ -463,7 +462,6 @@ NVTX tree can be built.
 | NCU     | `.ncu-rep`                  | Nsight Compute kernel report (ingested via NVIDIA's `ncu_report` API at prep time; no vendored proto schemas) |
 | PyTorch | `.pt.trace.json`            | PyTorch/Kineto Chrome trace JSON                                                                              |
 | PyTorch | `.pt.trace.json.gz`         | Gzipped PyTorch/Kineto Chrome trace JSON                                                                      |
-| PyTorch | trace directory             | Directory containing per-rank `.pt.trace.json` / `.pt.trace.json.gz` files, sorted by path                    |
 
 `veloq info <trace>` reports which source claims the file based on
 the same `detect()` heuristic the dispatcher uses, so an agent can

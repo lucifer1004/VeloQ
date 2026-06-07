@@ -5,19 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Shared envelope, ProfileSource trait, and sort/time helpers for the veloq profile-query CLI."
+description = "Shared envelope, ProfileSource trait, and sort/time helpers for the VeloQ profile-query CLI."
 # Publish whitelist — ship only what the crate needs to build: library
 # sources, the recipe registry the build script codegens from, and the
 # build script itself. Tests and local scratch stay out of the package.
 include = ["src/**/*.rs", "src/recipes/registry.toml", "build.rs"]
 
 [dependencies]
-# `anyhow` is part of the public surface: `ProfileSource::dispatch`
-# returns `anyhow::Result<_>` and `EnvelopeError::from_anyhow` accepts
-# `&anyhow::Error`. The whole CLI family already returns anyhow from
-# `main`, so propagating it through the trait keeps the agent-facing
-# error envelope lossless without re-marshalling.
-anyhow.workspace = true
 # `clap` is on the public surface of `ProfileSource`: each source
 # returns its own `clap::Command` for the CLI to graft into the
 # top-level parser.
@@ -35,6 +29,7 @@ terminal_size.workspace = true
 # dep too for the payload type derives.
 bincode.workspace = true
 log.workspace = true
+regex.workspace = true
 
 [lints]
 workspace = true
@@ -49,3 +44,6 @@ workspace = true
 [build-dependencies]
 serde = { workspace = true, features = ["derive"] }
 toml = "1.1.2"
+
+[dev-dependencies]
+anyhow.workspace = true

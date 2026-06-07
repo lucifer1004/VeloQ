@@ -24,17 +24,24 @@
 //! changes (SUM(bytes), AVG(bytes), QUANTILE_CONT(bytes, …) instead
 //! of the duration counterparts).
 
-use crate::{EventKind, KindFilter};
-use anyhow::{Context, Result};
+use crate::query_sql::{
+    event_scan::{EventScanFilterOptions, NvtxFilterPolicy, event_scan_filter},
+    event_semantics::EventSemantics,
+    sort::order_by,
+};
+use crate::{EventKind, KindFilter, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::path::Path;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec, time::TimeWindow};
+use veloq_nsys_data::Trace;
+use veloq_query::sql::SqlFragment;
 
 /// Kinds that carry a `bytes` column and are therefore aggregatable
 /// under `--by size`. Mirrors the [`crate::stats::ALLOWED_KINDS`]
 /// allow-list convention.
 pub const ALLOWED_KINDS: [EventKind; 2] = [EventKind::Memcpy, EventKind::Memset];
+const BYTES_PRESENT_PREDICATES: &[&str] = &["t.bytes IS NOT NULL"];
 
 /// Sort keys this verb accepts. `bytes` / `bytes_total` are aliases
 /// for `total`. The duration-axis keys from
@@ -229,18 +236,16 @@ pub struct StatBySizeRow {
     pub percentage: f64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: StatsBySizeRequest) -> Result<StatsBySizeResponse> {
+pub fn run<P: AsRef<Path>>(
+    path: P,
+    req: StatsBySizeRequest,
+) -> NsysQueryResult<StatsBySizeResponse> {
     let (trace, abs_window) = crate::open_scoped(path.as_ref(), req.limit, req.time_window)?;
 
     if let KindFilter::Only(v) = &req.kinds {
         for k in v {
             if !ALLOWED_KINDS.contains(k) {
-                anyhow::bail!(
-                    "--by size only aggregates byte-carrying kinds \
-                     (memcpy/memset); got `--type {}`. Drop the kind or \
-                     unset --by size.",
-                    k.as_str()
-                );
+                return Err(NsysQueryError::StatsBySizeKindNotAllowed { kind: k.as_str() });
             }
         }
     }
@@ -255,12 +260,20 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsBySizeRequest) -> Result<StatsBySi
         || req.group_by.nvtx_parent
         || req.group_by.nvtx_path
     {
-        anyhow::bail!(
-            "stats_by_size does not yet support --group-by \
-             graph/graph_node/grid_block/nvtx-parent/nvtx-path. Supported axes \
-             today are the name axis (short/demangled/mangled/no-name) \
-             and device/context/stream."
-        );
+        let unsupported = [
+            ("graph", req.group_by.graph),
+            ("graph_node", req.group_by.graph_node),
+            ("grid_block", req.group_by.grid_block),
+            ("nvtx-parent", req.group_by.nvtx_parent),
+            ("nvtx-path", req.group_by.nvtx_path),
+        ]
+        .iter()
+        .filter_map(|(name, on)| if *on { Some(*name) } else { None })
+        .collect::<Vec<_>>()
+        .join(", ");
+        return Err(NsysQueryError::stats_by_size_group_by_unsupported(
+            unsupported,
+        ));
     }
 
     let requested = req.kinds.resolve(&ALLOWED_KINDS);
@@ -285,9 +298,9 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsBySizeRequest) -> Result<StatsBySi
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
-        let (sql, params) = per_kind_size_subquery(*kind, abs_window)?;
-        subqueries.push(sql);
-        per_kind_params.extend(params);
+        let fragment = per_kind_size_subquery(*kind, abs_window)?;
+        subqueries.push(fragment.sql);
+        per_kind_params.extend(fragment.params);
     }
     let union = subqueries.join(" UNION ALL ");
 
@@ -381,95 +394,148 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsBySizeRequest) -> Result<StatsBySi
     params.extend(location_params);
     params.push(Value::BigInt(req.limit as i64));
 
-    let conn = trace.conn();
-    let mut stmt = conn.prepare(&sql).context("prepare stats-by-size SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+    let (mut out, scope) = hydrate_stats_by_size_rows(&trace, &sql, &params)?;
 
-    let mut out: Vec<StatBySizeRow> = Vec::new();
-    let mut scope_total_bytes: i64 = 0;
-    let mut scope_total_count: i64 = 0;
-    let mut scope_total_groups: i64 = 0;
-    let mut scope_read = false;
-
-    while let Some(row) = rows.next()? {
-        let name: Option<String> = row.get("name")?;
-        let short_name_raw: Option<String> = row.get("short_name")?;
-        let kind: String = row.get("kind")?;
-        let device_id: Option<i32> = row.get("device_id")?;
-        let context_id: Option<i64> = row.get("context_id")?;
-        let stream_id: Option<i64> = row.get("stream_id")?;
-        let count: i64 = row.get("count")?;
-        let total_bytes: i64 = row.get("total_bytes")?;
-        let avg_bytes: i64 = row.get("avg_bytes")?;
-        let min_bytes: i64 = row.get("min_bytes")?;
-        let max_bytes: i64 = row.get("max_bytes")?;
-        let p50_bytes: i64 = row.get("p50_bytes")?;
-        let p95_bytes: i64 = row.get("p95_bytes")?;
-        let p99_bytes: i64 = row.get("p99_bytes")?;
-        if !scope_read {
-            scope_total_bytes = row.get("scope_total_bytes")?;
-            scope_total_count = row.get("scope_total_count")?;
-            scope_total_groups = row.get("scope_total_groups")?;
-            scope_read = true;
-        }
-        let kind_static: &'static str = EventKind::parse(&kind)
-            .map(EventKind::as_str)
-            .unwrap_or("unknown");
-        let short_name = if kind_static == "kernel" {
-            short_name_raw
-        } else {
-            None
-        };
-        let mut key_parts = vec![kind_static.to_string()];
-        if let Some(n) = name.as_deref() {
-            key_parts.push(n.to_string());
-        }
-        if let Some(d) = device_id {
-            key_parts.push(format!("dev:{d}"));
-        }
-        if let Some(s) = stream_id {
-            key_parts.push(format!("stream:{s}"));
-        }
-        if let Some(c) = context_id {
-            key_parts.push(format!("ctx:{c}"));
-        }
-        let key = key_parts.join("|");
-        out.push(StatBySizeRow {
-            key,
-            name,
-            kind: kind_static,
-            short_name,
-            device_id,
-            context_id,
-            stream_id,
-            count,
-            total_bytes,
-            avg_bytes,
-            min_bytes,
-            max_bytes,
-            p50_bytes,
-            p95_bytes,
-            p99_bytes,
-            percentage: 0.0,
-        });
-    }
-
-    if scope_total_bytes > 0 {
+    if scope.total_bytes > 0 {
         for r in &mut out {
-            r.percentage = (r.total_bytes as f64 / scope_total_bytes as f64) * 100.0;
+            r.percentage = (r.total_bytes as f64 / scope.total_bytes as f64) * 100.0;
         }
     }
 
     Ok(StatsBySizeResponse {
         count: out.len(),
-        total_matched: scope_total_groups,
-        total_bytes: scope_total_bytes,
-        total_events: scope_total_count,
+        total_matched: scope.total_groups,
+        total_bytes: scope.total_bytes,
+        total_events: scope.total_count,
         time_window_ns: abs_window,
         nvtx_scope: None,
         rows: out,
     })
+}
+
+struct StatsBySizeScope {
+    total_bytes: i64,
+    total_count: i64,
+    total_groups: i64,
+}
+
+fn hydrate_stats_by_size_rows(
+    trace: &Trace,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<(Vec<StatBySizeRow>, StatsBySizeScope)> {
+    let rows = crate::query_sql::exec::query_rows(
+        trace.conn(),
+        sql,
+        params,
+        crate::query_sql::exec::STATS_BY_SIZE_AGGREGATE,
+        stats_by_size_sql_row,
+    )?;
+
+    let scope = rows.first().map_or(
+        StatsBySizeScope {
+            total_bytes: 0,
+            total_count: 0,
+            total_groups: 0,
+        },
+        StatsBySizeSqlRow::scope,
+    );
+    let out = rows.into_iter().map(stat_by_size_row).collect();
+    Ok((out, scope))
+}
+
+struct StatsBySizeSqlRow {
+    name: Option<String>,
+    short_name: Option<String>,
+    kind: String,
+    device_id: Option<i32>,
+    context_id: Option<i64>,
+    stream_id: Option<i64>,
+    count: i64,
+    total_bytes: i64,
+    avg_bytes: i64,
+    min_bytes: i64,
+    max_bytes: i64,
+    p50_bytes: i64,
+    p95_bytes: i64,
+    p99_bytes: i64,
+    scope_total_bytes: i64,
+    scope_total_count: i64,
+    scope_total_groups: i64,
+}
+
+impl StatsBySizeSqlRow {
+    fn scope(&self) -> StatsBySizeScope {
+        StatsBySizeScope {
+            total_bytes: self.scope_total_bytes,
+            total_count: self.scope_total_count,
+            total_groups: self.scope_total_groups,
+        }
+    }
+}
+
+fn stats_by_size_sql_row(row: &duckdb::Row<'_>) -> Result<StatsBySizeSqlRow, duckdb::Error> {
+    Ok(StatsBySizeSqlRow {
+        name: row.get("name")?,
+        short_name: row.get("short_name")?,
+        kind: row.get("kind")?,
+        device_id: row.get("device_id")?,
+        context_id: row.get("context_id")?,
+        stream_id: row.get("stream_id")?,
+        count: row.get("count")?,
+        total_bytes: row.get("total_bytes")?,
+        avg_bytes: row.get("avg_bytes")?,
+        min_bytes: row.get("min_bytes")?,
+        max_bytes: row.get("max_bytes")?,
+        p50_bytes: row.get("p50_bytes")?,
+        p95_bytes: row.get("p95_bytes")?,
+        p99_bytes: row.get("p99_bytes")?,
+        scope_total_bytes: row.get("scope_total_bytes")?,
+        scope_total_count: row.get("scope_total_count")?,
+        scope_total_groups: row.get("scope_total_groups")?,
+    })
+}
+
+fn stat_by_size_row(row: StatsBySizeSqlRow) -> StatBySizeRow {
+    let kind_static: &'static str = EventKind::parse(&row.kind)
+        .map(EventKind::as_str)
+        .unwrap_or("unknown");
+    let short_name = if kind_static == "kernel" {
+        row.short_name
+    } else {
+        None
+    };
+    let mut key_parts = vec![kind_static.to_string()];
+    if let Some(n) = row.name.as_deref() {
+        key_parts.push(n.to_string());
+    }
+    if let Some(d) = row.device_id {
+        key_parts.push(format!("dev:{d}"));
+    }
+    if let Some(s) = row.stream_id {
+        key_parts.push(format!("stream:{s}"));
+    }
+    if let Some(c) = row.context_id {
+        key_parts.push(format!("ctx:{c}"));
+    }
+    StatBySizeRow {
+        key: key_parts.join("|"),
+        name: row.name,
+        kind: kind_static,
+        short_name,
+        device_id: row.device_id,
+        context_id: row.context_id,
+        stream_id: row.stream_id,
+        count: row.count,
+        total_bytes: row.total_bytes,
+        avg_bytes: row.avg_bytes,
+        min_bytes: row.min_bytes,
+        max_bytes: row.max_bytes,
+        p50_bytes: row.p50_bytes,
+        p95_bytes: row.p95_bytes,
+        p99_bytes: row.p99_bytes,
+        percentage: 0.0,
+    }
 }
 
 fn build_group_keys(g: &crate::stats::GroupBy) -> Vec<&'static str> {
@@ -492,48 +558,39 @@ fn build_group_keys(g: &crate::stats::GroupBy) -> Vec<&'static str> {
     keys
 }
 
-fn sort_sql(spec: &SortSpec) -> Result<String> {
-    let mut resolved: Vec<(&'static str, Direction)> = Vec::new();
-    for f in spec.fields() {
-        let (k, d) = SortKey::from_field(f)?;
-        resolved.push((k.column(), d));
-    }
-    Ok(veloq_core::sort::build_order_by(&resolved, "total_bytes"))
+fn sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
+    order_by::<SortKey>(
+        spec,
+        SortKey::column,
+        NsysQueryError::stats_by_size_sort_invalid,
+        "total_bytes",
+    )
 }
 
 fn per_kind_size_subquery(
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
-) -> Result<(String, Vec<Value>)> {
-    let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
-    let ctx = crate::kind_sql::GPU_CONTEXT_ID_EXPR;
-    let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
-    let display_expr = crate::kind_sql::display_name_expr(kind);
-    let short_expr = crate::kind_sql::short_name_expr(kind);
-    let join_clause = crate::kind_sql::name_joins(kind);
-    let label = kind.as_str();
-    let table = kind.table();
+) -> NsysQueryResult<SqlFragment> {
+    let sem = EventSemantics::new(kind);
+    let bytes_expr = sem
+        .size_bytes_expr()
+        .ok_or_else(|| NsysQueryError::internal_unsupported_kind("stats-by-size", kind.as_str()))?;
 
-    let mut params: Vec<Value> = Vec::new();
-    let (bytes_expr, mut where_parts): (String, Vec<String>) = match abs_window {
-        Some((start, end)) => {
-            // Window semantics: an event is included with its FULL
-            // bytes if its interval has any overlap with the window;
-            // there is no proportional clip on bytes. Memops are not
-            // uniform-rate DMAs in general, so a duration-weighted
-            // scale would be a different approximation, not a more
-            // precise one.
-            params.push(Value::BigInt(end));
-            params.push(Value::BigInt(start));
-            (
-                "CAST(t.bytes AS BIGINT)".to_string(),
-                vec![r#"t.start < ? AND t."end" > ?"#.to_string()],
-            )
-        }
-        None => ("CAST(t.bytes AS BIGINT)".to_string(), Vec::new()),
-    };
-    where_parts.push("t.bytes IS NOT NULL".to_string());
-    let where_clause = format!("WHERE {}", where_parts.join(" AND "));
+    // Window semantics: include the event with its FULL bytes if its
+    // interval overlaps the window; bytes are not proportionally clipped.
+    let filter = event_scan_filter(
+        sem,
+        EventScanFilterOptions {
+            abs_window,
+            device: None,
+            stream: None,
+            nvtx_scope: crate::nvtx_attribution::NvtxScope::None,
+            nvtx_policy: NvtxFilterPolicy::EmptyWhenUnsupported,
+        },
+        BYTES_PRESENT_PREDICATES,
+    )?;
+    let where_clause = filter.where_clause();
+    let params = filter.into_params();
 
     let sql = format!(
         "SELECT {display_expr} AS display_name, \
@@ -543,7 +600,150 @@ fn per_kind_size_subquery(
                 {dev}          AS device_id, \
                 {ctx}          AS context_id, \
                 {stm}          AS stream_id \
-         FROM nsight.{table} t {join_clause} {where_clause}"
+         FROM nsight.{table} t {join_clause} {where_clause}",
+        display_expr = sem.display_name_expr(),
+        short_expr = sem.short_name_expr(),
+        label = sem.label(),
+        dev = sem.device_expr(),
+        ctx = sem.context_expr(),
+        stm = sem.stream_expr(),
+        table = sem.table(),
+        join_clause = sem.name_joins(),
     );
-    Ok((sql, params))
+    Ok(SqlFragment::new(sql, params))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: Vec<(&str, &str, Vec<&str>)>) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in &tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in &tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn minimal_trace() -> Result<(TempDir, Trace)> {
+        let (dir, pqtdir) = parquet_fixture(vec![(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            Vec::new(),
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+        Ok((dir, trace))
+    }
+
+    fn stats_by_size_hydration_sql(count_expr: &str) -> String {
+        format!(
+            "SELECT \
+             CAST(NULL AS VARCHAR) AS name, \
+             CAST(NULL AS VARCHAR) AS short_name, \
+             'memcpy' AS kind, \
+             CAST(NULL AS INTEGER) AS device_id, \
+             CAST(NULL AS BIGINT) AS context_id, \
+             CAST(NULL AS BIGINT) AS stream_id, \
+             {count_expr} AS count, \
+             1::BIGINT AS total_bytes, \
+             1::BIGINT AS avg_bytes, \
+             1::BIGINT AS min_bytes, \
+             1::BIGINT AS max_bytes, \
+             1::BIGINT AS p50_bytes, \
+             1::BIGINT AS p95_bytes, \
+             1::BIGINT AS p99_bytes, \
+             1::BIGINT AS scope_total_bytes, \
+             1::BIGINT AS scope_total_count, \
+             1::BIGINT AS scope_total_groups"
+        )
+    }
+
+    #[test]
+    fn hydrate_stats_by_size_rows_prepare_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+
+        let err = match hydrate_stats_by_size_rows(&trace, "SELECT * FROM", &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed stats-by-size SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_stats_by_size_rows_query_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+
+        let err = match hydrate_stats_by_size_rows(&trace, "SELECT ? AS name", &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "unbound stats-by-size SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_stats_by_size_rows_read_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+        let sql = stats_by_size_hydration_sql("'not-a-count'");
+
+        let err = match hydrate_stats_by_size_rows(&trace, &sql, &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed stats-by-size row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
 }

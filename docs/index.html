@@ -845,12 +845,13 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
         <div class="wrap">
           <div class="section-head">
             <p class="kicker">install</p>
-            <h2>One script, two skills</h2>
+            <h2>One script, three skills</h2>
             <p>
-              Installs the <code>veloq</code> binary plus two Claude Code skills
+              Installs the <code>veloq</code> binary plus three Claude Code skills
               (<code>nsys-profile-analysis</code>,
-              <code>ncu-profile-analysis</code>). Linux x86_64/aarch64 and macOS
-              x86_64/arm64.
+              <code>ncu-profile-analysis</code>, and
+              <code>pytorch-profile-analysis</code>). Linux x86_64/aarch64 and
+              macOS x86_64/arm64.
             </p>
           </div>
           <pre><span class="c"># quick install (binary + skills)</span>
@@ -861,6 +862,10 @@ veloq self-update
 
 <span class="c"># build from source</span>
 cargo build --release -p veloq   <span class="c"># → target/release/veloq</span></pre>
+          <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
+            Re-running the installer or <code>veloq self-update</code> refreshes
+            bundled skills and removes stale files from older skill installs.
+          </p>
           <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
             Prefer the Claude Code plugin manager?
             <code

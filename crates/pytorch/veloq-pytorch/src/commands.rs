@@ -4,26 +4,28 @@
 //! translates typed CLI variants into query requests and renders responses.
 
 use crate::cli::{Cmd, CommonArgs, EventArgs, ScopeArgs};
+use crate::error::{PytorchCommandError, PytorchCommandResult, PytorchSourceError};
 use crate::schema::{SchemaPayload, schema_value_for};
 use crate::source::PytorchSource;
 use crate::views::emit_tabular;
-use anyhow::{Context, Result};
 use std::path::Path;
 use veloq_core::{Envelope, OutputFormat, TraceSpan};
 use veloq_pytorch_query::{EventFilterRequest, RankScope};
 
-pub(crate) fn run(cmd: Cmd, trace_path: Option<&Path>, fmt: OutputFormat) -> Result<i32> {
+pub(crate) fn run(
+    cmd: Cmd,
+    trace_path: Option<&Path>,
+    fmt: OutputFormat,
+) -> crate::PytorchSourceResult<i32> {
     let verb = cmd.name();
     let qualified = format!("{}.{verb}", PytorchSource::KIND);
 
     if let Cmd::Schema { target } = &cmd {
         if fmt != OutputFormat::Json {
-            anyhow::bail!(
-                "veloq-pytorch schema currently supports only --format json (got `{fmt}`)"
-            );
+            return Err(PytorchCommandError::unsupported_schema_format(fmt).into());
         }
         let schema = schema_value_for(target)?;
-        veloq_core::emit_envelope(
+        let env = Envelope::new(
             PytorchSource::source_ref(),
             qualified,
             None,
@@ -33,15 +35,18 @@ pub(crate) fn run(cmd: Cmd, trace_path: Option<&Path>, fmt: OutputFormat) -> Res
                 target: target.clone(),
                 schema,
             },
-        )?;
+        );
+        println!(
+            "{}",
+            env.to_json_pretty()
+                .map_err(PytorchSourceError::serialize_envelope)?
+        );
         return Ok(0);
     }
 
-    let trace_path =
-        trace_path.ok_or_else(|| anyhow::anyhow!("internal: pytorch verb missing trace path"))?;
+    let trace_path = trace_path.ok_or(PytorchCommandError::MissingTracePath)?;
 
     dispatch_trace_command(cmd, &qualified, trace_path, fmt)
-        .with_context(|| format!("running pytorch {verb}"))
 }
 
 fn dispatch_trace_command(
@@ -49,7 +54,7 @@ fn dispatch_trace_command(
     qualified: &str,
     trace_path: &Path,
     fmt: OutputFormat,
-) -> Result<i32> {
+) -> crate::PytorchSourceResult<i32> {
     match cmd {
         Cmd::Summary { .. } => {
             let trace = veloq_pytorch_data::build_or_load(trace_path)?;
@@ -63,8 +68,8 @@ fn dispatch_trace_command(
             )
         }
         Cmd::Search { filters, .. } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let request = event_request(&trace, &filters, 100)?;
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let request = event_request_query(&trace, &filters, 100)?;
             let response = veloq_pytorch_query::search(&trace, request)?;
             emit_response(
                 qualified,
@@ -75,8 +80,8 @@ fn dispatch_trace_command(
             )
         }
         Cmd::Inspect { row_ids, .. } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let response = veloq_pytorch_query::inspect(&trace, &row_ids);
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let response = veloq_pytorch_query::inspect(&trace, &row_ids)?;
             emit_response(
                 qualified,
                 trace_path,
@@ -88,8 +93,8 @@ fn dispatch_trace_command(
         Cmd::Stats {
             group_by, filters, ..
         } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let request = event_request(&trace, &filters, 50)?;
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let request = event_request_query(&trace, &filters, 50)?;
             let axes = veloq_pytorch_query::parse_group_by(&group_by);
             let response = veloq_pytorch_query::stats(&trace, request, &axes)?;
             emit_response(
@@ -101,8 +106,8 @@ fn dispatch_trace_command(
             )
         }
         Cmd::Correlate { row_ids, .. } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let response = veloq_pytorch_query::correlate(&trace, &row_ids);
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let response = veloq_pytorch_query::correlate(&trace, &row_ids)?;
             emit_response(
                 qualified,
                 trace_path,
@@ -114,10 +119,10 @@ fn dispatch_trace_command(
         Cmd::Timeline {
             interval, filters, ..
         } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let request = event_request(&trace, &filters, 1000)?;
             let interval_ns = veloq_core::time::parse_duration_ns(&interval)
-                .with_context(|| format!("invalid --interval `{interval}`"))?;
+                .map_err(|source| PytorchCommandError::invalid_interval(&interval, source))?;
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let request = event_request_query(&trace, &filters, 1000)?;
             let response = veloq_pytorch_query::timeline(&trace, request, interval_ns)?;
             emit_response(
                 qualified,
@@ -136,8 +141,8 @@ fn dispatch_trace_command(
             common,
             ..
         } => {
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
-            let request = slice_request(&trace, name, name_regex, scope, common)?;
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
+            let request = slice_request_query(&trace, name, name_regex, scope, common)?;
             let group_by = if aggregate { Some(group_by) } else { None };
             let response = veloq_pytorch_query::slices(&trace, request, aggregate, group_by)?;
             emit_response(
@@ -148,19 +153,21 @@ fn dispatch_trace_command(
                 response,
             )
         }
-        Cmd::Collectives { step, limit, .. } => {
-            veloq_pytorch_query::ensure_trace_dir(trace_path)?;
+        Cmd::Collectives {
+            step,
+            rank,
+            all_ranks,
+            limit,
+            ..
+        } => {
             let limit = checked_limit(Some(limit), 100)?;
-            let trace = veloq_pytorch_data::build_or_load(trace_path)?;
+            let trace = veloq_pytorch_data::build_or_load_query_trace(trace_path)?;
             let response = veloq_pytorch_query::collectives(
                 &trace,
-                RankScope {
-                    rank: None,
-                    all_ranks: true,
-                },
+                RankScope { rank, all_ranks },
                 step,
                 limit,
-            );
+            )?;
             emit_response(
                 qualified,
                 trace_path,
@@ -178,17 +185,15 @@ fn dispatch_trace_command(
             let span = veloq_pytorch_data::trace_span_for_path(trace_path);
             emit_response(qualified, trace_path, span, fmt, response)
         }
-        Cmd::Schema { .. } => {
-            anyhow::bail!("internal: schema should have returned before trace dispatch")
-        }
+        Cmd::Schema { .. } => Err(PytorchCommandError::SchemaDispatchedAsTraceCommand.into()),
     }
 }
 
-fn event_request(
-    trace: &veloq_pytorch_data::TraceSet,
+fn event_request_query(
+    trace: &veloq_pytorch_data::QueryTrace,
     args: &EventArgs,
     default_limit: usize,
-) -> Result<EventFilterRequest> {
+) -> crate::PytorchSourceResult<EventFilterRequest> {
     Ok(EventFilterRequest {
         types: veloq_pytorch_query::parse_type_selection(&args.types)?,
         name_glob: args.name.clone(),
@@ -196,9 +201,11 @@ fn event_request(
         duration: args
             .duration
             .as_deref()
-            .map(veloq_core::time::DurationFilter::parse)
-            .transpose()
-            .context("invalid --duration")?,
+            .map(|duration| {
+                veloq_core::time::DurationFilter::parse(duration)
+                    .map_err(|source| PytorchCommandError::invalid_duration(duration, source))
+            })
+            .transpose()?,
         time_window_ns: veloq_pytorch_query::resolve_time_window(
             trace,
             args.common.from.as_deref(),
@@ -213,13 +220,13 @@ fn event_request(
     })
 }
 
-fn slice_request(
-    trace: &veloq_pytorch_data::TraceSet,
+fn slice_request_query(
+    trace: &veloq_pytorch_data::QueryTrace,
     name: Option<String>,
     name_regex: Option<String>,
     scope: ScopeArgs,
     common: CommonArgs,
-) -> Result<EventFilterRequest> {
+) -> crate::PytorchSourceResult<EventFilterRequest> {
     Ok(EventFilterRequest {
         types: veloq_pytorch_query::parse_type_selection("step,annotation")?,
         name_glob: name,
@@ -246,12 +253,10 @@ fn rank_scope(scope: ScopeArgs) -> RankScope {
     }
 }
 
-fn checked_limit(limit: Option<usize>, default_limit: usize) -> Result<usize> {
+fn checked_limit(limit: Option<usize>, default_limit: usize) -> PytorchCommandResult<usize> {
     let limit = limit.unwrap_or(default_limit);
     if limit == 0 {
-        anyhow::bail!(
-            "--limit must be at least 1 (limit=0 would suppress total_matched too); use `--limit 1` for one row + totals"
-        );
+        return Err(PytorchCommandError::LimitTooSmall);
     }
     Ok(limit)
 }
@@ -262,7 +267,7 @@ fn emit_response<T: serde::Serialize>(
     trace_span: Option<TraceSpan>,
     fmt: OutputFormat,
     response: T,
-) -> Result<i32> {
+) -> crate::PytorchSourceResult<i32> {
     let trace_str = trace.display().to_string();
     match fmt {
         OutputFormat::Json => {
@@ -274,7 +279,11 @@ fn emit_response<T: serde::Serialize>(
                 None,
                 response,
             );
-            println!("{}", env.to_json_pretty()?);
+            println!(
+                "{}",
+                env.to_json_pretty()
+                    .map_err(PytorchSourceError::serialize_envelope)?
+            );
         }
         OutputFormat::Csv | OutputFormat::Table => {
             emit_tabular(&response, qualified, &trace_str, fmt)?;

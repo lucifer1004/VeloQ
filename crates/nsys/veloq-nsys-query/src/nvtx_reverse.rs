@@ -42,8 +42,7 @@
 //! small `SELECT … WHERE rowid IN (?, ?, …)` against the GPU
 //! activity table fetches those three columns for the batch.
 
-use crate::{EventKind, RowId};
-use anyhow::{Context, Result};
+use crate::{EventKind, NsysQueryResult, RowId};
 use duckdb::types::Value;
 use std::collections::HashMap;
 use veloq_nsys_data::{NvtxNesting, RuntimeNvtxParent, Trace, runtime_nvtx_parent};
@@ -147,7 +146,11 @@ impl Source {
 /// in the JSON. The optional return keeps `inspect` linear — every
 /// row_id gets exactly one lookup (or none, when the kind doesn't
 /// qualify).
-pub fn lookup_one(trace: &Trace, id: RowId, nesting: &NvtxNesting) -> Result<Option<NvtxContext>> {
+pub fn lookup_one(
+    trace: &Trace,
+    id: RowId,
+    nesting: &NvtxNesting,
+) -> NsysQueryResult<Option<NvtxContext>> {
     let Some(source) = Source::try_from_kind(id.kind) else {
         return Ok(None);
     };
@@ -187,7 +190,7 @@ pub fn lookup_batch(
     source: Source,
     rowids: &[i64],
     nesting: &NvtxNesting,
-) -> Result<HashMap<i64, NvtxContext>> {
+) -> NsysQueryResult<HashMap<i64, NvtxContext>> {
     if rowids.is_empty() || !trace_supports_reverse_for(trace, source) {
         return Ok(HashMap::new());
     }
@@ -202,12 +205,14 @@ pub fn lookup_batch(
     //   (one-time cost), then in-memory lookup amortises across the
     //   rest of the batch and every later NVTX-bearing verb.
     let index = if rowids.len() <= SIDECAR_BUILD_THRESHOLD {
-        runtime_nvtx_parent::load_if_present(trace)
-            .context("loading NVTX-parent sidecar (load-only) for reverse attribution")?
+        runtime_nvtx_parent::load_if_present(trace).map_err(|source| {
+            crate::NsysQueryError::nvtx_reverse_sidecar_load("load existing", source)
+        })?
     } else {
         Some(
-            runtime_nvtx_parent::build_or_load_index(trace)
-                .context("loading NVTX-parent sidecar for reverse attribution")?,
+            runtime_nvtx_parent::build_or_load_index(trace).map_err(|source| {
+                crate::NsysQueryError::nvtx_reverse_sidecar_load("build or load", source)
+            })?,
         )
     };
 
@@ -256,7 +261,7 @@ fn lookup_gpu_kind(
     rowids: &[i64],
     index: &RuntimeNvtxParent,
     nesting: &NvtxNesting,
-) -> Result<HashMap<i64, NvtxContext>> {
+) -> NsysQueryResult<HashMap<i64, NvtxContext>> {
     let table = source.table();
     // DuckDB's `IN` accepts a parenthesised list of placeholders.
     let placeholders = std::iter::repeat_n("?", rowids.len())
@@ -277,28 +282,53 @@ fn lookup_gpu_kind(
              AND t.correlationId IS NOT NULL"#
     );
 
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("prepare reverse-NVTX rowid→(device,context,correlationId) SQL")?;
+    lookup_gpu_kind_with_sql(trace.conn(), &sql, rowids, index, nesting)
+}
+
+fn lookup_gpu_kind_with_sql(
+    conn: &duckdb::Connection,
+    sql: &str,
+    rowids: &[i64],
+    index: &RuntimeNvtxParent,
+    nesting: &NvtxNesting,
+) -> NsysQueryResult<HashMap<i64, NvtxContext>> {
     let params: Vec<Value> = rowids.iter().map(|&id| Value::BigInt(id)).collect();
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+    let rows = crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        &params,
+        crate::query_sql::exec::NVTX_REVERSE_GPU_LOOKUP,
+        gpu_lookup_sql_row,
+    )?;
 
     let mut out: HashMap<i64, NvtxContext> = HashMap::with_capacity(rowids.len());
-    while let Some(r) = rows.next()? {
-        let event_rowid: i64 = r.get(0)?;
-        let device_id: i32 = r.get(1)?;
-        let context_id: i64 = r.get(2)?;
-        let correlation_id: i64 = r.get(3)?;
-        let Some(entry) = index.get_by_correlation(device_id, context_id, correlation_id) else {
+    for row in rows {
+        let Some(entry) =
+            index.get_by_correlation(row.device_id, row.context_id, row.correlation_id)
+        else {
             continue;
         };
         if let Some(ctx) = innermost_to_nvtx_context(entry, nesting) {
-            out.insert(event_rowid, ctx);
+            out.insert(row.event_rowid, ctx);
         }
     }
     Ok(out)
+}
+
+struct GpuLookupSqlRow {
+    event_rowid: i64,
+    device_id: i32,
+    context_id: i64,
+    correlation_id: i64,
+}
+
+fn gpu_lookup_sql_row(row: &duckdb::Row<'_>) -> Result<GpuLookupSqlRow, duckdb::Error> {
+    Ok(GpuLookupSqlRow {
+        event_rowid: row.get(0)?,
+        device_id: row.get(1)?,
+        context_id: row.get(2)?,
+        correlation_id: row.get(3)?,
+    })
 }
 
 /// Decorate the innermost enclosing range of `entry` with depth +
@@ -341,7 +371,7 @@ fn cold_fallback(
     source: Source,
     rowids: &[i64],
     nesting: &NvtxNesting,
-) -> Result<HashMap<i64, NvtxContext>> {
+) -> NsysQueryResult<HashMap<i64, NvtxContext>> {
     let table = source.table();
     let placeholders = std::iter::repeat_n("?", rowids.len())
         .collect::<Vec<_>>()
@@ -424,31 +454,52 @@ fn cold_fallback(
         }
     };
 
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("prepare cold-fallback reverse-NVTX SQL")?;
+    cold_fallback_with_sql(trace.conn(), &sql, rowids, nesting)
+}
+
+fn cold_fallback_with_sql(
+    conn: &duckdb::Connection,
+    sql: &str,
+    rowids: &[i64],
+    nesting: &NvtxNesting,
+) -> NsysQueryResult<HashMap<i64, NvtxContext>> {
     let params: Vec<Value> = rowids.iter().map(|&id| Value::BigInt(id)).collect();
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+    let rows = crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        &params,
+        crate::query_sql::exec::NVTX_REVERSE_COLD_FALLBACK,
+        cold_fallback_sql_row,
+    )?;
 
     let mut out: HashMap<i64, NvtxContext> = HashMap::with_capacity(rowids.len());
-    while let Some(r) = rows.next()? {
-        let event_rowid: i64 = r.get(0)?;
-        let nvtx_rowid: i64 = r.get(1)?;
-        let name: String = r.get(2)?;
-        let nesting_entry = nesting.get(&nvtx_rowid).copied().unwrap_or_default();
+    for row in rows {
+        let nesting_entry = nesting.get(&row.nvtx_rowid).copied().unwrap_or_default();
         out.insert(
-            event_rowid,
+            row.event_rowid,
             NvtxContext {
-                range_id: RowId::new(EventKind::Nvtx, nvtx_rowid),
-                name,
+                range_id: RowId::new(EventKind::Nvtx, row.nvtx_rowid),
+                name: row.name,
                 depth: nesting_entry.depth,
                 iter_index: Some(nesting_entry.iter_index),
             },
         );
     }
     Ok(out)
+}
+
+struct ColdFallbackSqlRow {
+    event_rowid: i64,
+    nvtx_rowid: i64,
+    name: String,
+}
+
+fn cold_fallback_sql_row(row: &duckdb::Row<'_>) -> Result<ColdFallbackSqlRow, duckdb::Error> {
+    Ok(ColdFallbackSqlRow {
+        event_rowid: row.get(0)?,
+        nvtx_rowid: row.get(1)?,
+        name: row.get(2)?,
+    })
 }
 
 /// Group row_ids by their CUPTI kind so a mixed-kind batch fans out to
@@ -458,7 +509,7 @@ pub fn lookup_for_row_ids(
     trace: &Trace,
     ids: &[RowId],
     nesting: &NvtxNesting,
-) -> Result<HashMap<RowId, NvtxContext>> {
+) -> NsysQueryResult<HashMap<RowId, NvtxContext>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
@@ -490,5 +541,179 @@ fn kind_of(source: Source) -> EventKind {
         Source::Memset => EventKind::Memset,
         Source::Sync => EventKind::Sync,
         Source::Runtime => EventKind::Runtime,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn lookup_gpu_kind_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let index = RuntimeNvtxParent::empty();
+        let nesting = NvtxNesting::default();
+
+        let err = match lookup_gpu_kind_with_sql(&conn, "SELECT * FROM", &[1], &index, &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "malformed reverse-GPU SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_gpu_kind_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let index = RuntimeNvtxParent::empty();
+        let nesting = NvtxNesting::default();
+        let sql = "SELECT \
+                   ? AS event_rowid, \
+                   ? AS device_id, \
+                   0::BIGINT AS context_id, \
+                   0::BIGINT AS correlation_id";
+
+        let err = match lookup_gpu_kind_with_sql(&conn, sql, &[1], &index, &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "unbound reverse-GPU SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_gpu_kind_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let index = RuntimeNvtxParent::empty();
+        let nesting = NvtxNesting::default();
+        let sql = "SELECT \
+                   'not-a-rowid' AS event_rowid, \
+                   0::INTEGER AS device_id, \
+                   0::BIGINT AS context_id, \
+                   0::BIGINT AS correlation_id \
+                   WHERE ? IS NOT NULL";
+
+        let err = match lookup_gpu_kind_with_sql(&conn, sql, &[1], &index, &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "malformed reverse-GPU row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cold_fallback_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let nesting = NvtxNesting::default();
+
+        let err = match cold_fallback_with_sql(&conn, "SELECT * FROM", &[1], &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "malformed reverse-cold SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cold_fallback_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let nesting = NvtxNesting::default();
+        let sql = "SELECT \
+                   ? AS event_rowid, \
+                   ? AS nvtx_rowid, \
+                   'range' AS name";
+
+        let err = match cold_fallback_with_sql(&conn, sql, &[1], &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "unbound reverse-cold SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn cold_fallback_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let nesting = NvtxNesting::default();
+        let sql = "SELECT \
+                   'not-a-rowid' AS event_rowid, \
+                   1::BIGINT AS nvtx_rowid, \
+                   'range' AS name \
+                   WHERE ? IS NOT NULL";
+
+        let err = match cold_fallback_with_sql(&conn, sql, &[1], &nesting) {
+            Ok(rows) => anyhow::bail!(
+                "malformed reverse-cold row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
     }
 }

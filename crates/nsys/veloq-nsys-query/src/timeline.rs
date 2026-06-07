@@ -16,13 +16,19 @@
 //! Buckets with zero contribution are omitted from the response —
 //! `total_matched` counts only the non-empty buckets.
 
-use crate::{EventKind, KindFilter};
-use anyhow::{Context, Result};
+use crate::query_sql::{
+    event_scan::{EventScanFilterOptions, NvtxFilterPolicy, event_scan_filter},
+    event_semantics::EventSemantics,
+    exec,
+};
+use crate::{EventKind, KindFilter, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::path::Path;
-use veloq_core::time::TimeWindow;
+use veloq_core::{time::TimeWindow, timeline_bucket_key};
 use veloq_nsys_data::Trace;
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{SqlFragment, total_matched_bigint_expr, window};
 
 /// Kinds `timeline` is willing to bucket. GPU-busy-time kinds only:
 /// `Sync` is intentionally excluded because synchronisation events are
@@ -36,6 +42,7 @@ pub const ALLOWED_KINDS: [EventKind; 4] = [
     EventKind::Memset,
     EventKind::Graph,
 ];
+const NVTX_ATTRIBUTABLE_KINDS: &[EventKind] = &ALLOWED_KINDS;
 
 #[derive(Debug, Clone)]
 pub struct TimelineRequest {
@@ -69,8 +76,17 @@ impl Default for TimelineRequest {
 
 impl TimelineRequest {
     /// Parse the `--interval` CLI string (`1ms`, `100us`, `1.2s`, …) into ns.
-    pub fn parse_interval(s: &str) -> Result<i64> {
-        crate::parse_positive_duration(s, "--interval")
+    pub fn parse_interval(s: &str) -> NsysQueryResult<i64> {
+        let ns = veloq_core::time::parse_duration_ns(s).map_err(|source| {
+            NsysQueryError::TimelineIntervalInvalid {
+                value: s.to_string(),
+                source,
+            }
+        })?;
+        if ns <= 0 {
+            return Err(NsysQueryError::TimelineIntervalTooSmall { interval_ns: ns });
+        }
+        Ok(ns)
     }
 }
 
@@ -117,15 +133,19 @@ pub struct Bucket {
     pub graph_count: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<TimelineResponse> {
     crate::check_limit(req.limit)?;
     if req.interval_ns <= 0 {
-        anyhow::bail!("--interval must be positive (got {} ns)", req.interval_ns);
+        return Err(NsysQueryError::TimelineIntervalTooSmall {
+            interval_ns: req.interval_ns,
+        });
     }
 
-    let trace = Trace::open(path)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
 
-    let abs_window = trace.resolve_window(req.time_window)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
     // Filter requested kinds against timeline's allow-list (GPU
     // only). The shared `--type` + `--nvtx` resolver in
@@ -136,10 +156,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
     if let KindFilter::Only(v) = &req.kinds {
         for k in v {
             if !ALLOWED_KINDS.contains(k) {
-                anyhow::bail!(
-                    "timeline only buckets GPU kinds (kernel/memcpy/memset/graph); got `{}`",
-                    k.as_str()
-                );
+                return Err(NsysQueryError::TimelineKindNotAllowed { kind: k.as_str() });
             }
         }
     }
@@ -166,7 +183,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
     // time offsets the user typed.
     let anchor = match abs_window {
         Some((s, _)) => s,
-        None => trace.read_origins()?.0.primary.start_ns,
+        None => {
+            trace
+                .read_origins()
+                .map_err(NsysQueryError::data)?
+                .0
+                .primary
+                .start_ns
+        }
     };
 
     let attribution = match req.nvtx.as_deref() {
@@ -183,9 +207,9 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
-        let (sql, params) = per_kind_select(*kind, abs_window, nvtx_scope, req.device, req.stream)?;
-        subqueries.push(sql);
-        per_kind_params.extend(params);
+        let fragment = per_kind_select(*kind, abs_window, nvtx_scope, req.device, req.stream)?;
+        subqueries.push(fragment.sql);
+        per_kind_params.extend(fragment.params);
     }
     let union = subqueries.join(" UNION ALL ");
 
@@ -197,6 +221,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
     // The bucket-generator: range(bucket_start_low, bucket_end_high, interval_ns).
     // We compute the low/high directly from the events' extent so the
     // cross-join doesn't generate buckets covering empty timeline regions.
+    let bucket_ns = req.interval_ns;
+    let bucket_end_expr = format!("b.bucket_start + {bucket_ns}");
+    let clipped_ns_expr = window::bucket_clipped_duration_expr(
+        "e.start_ns",
+        "e.end_ns",
+        "b.bucket_start",
+        &bucket_end_expr,
+    );
     let sql = format!(
         r#"
         WITH {attribution_prefix} events AS ({union}),
@@ -221,7 +253,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
                 e.kind,
                 GREATEST(
                     0,
-                    LEAST(e.end_ns, b.bucket_start + {bucket}) - GREATEST(e.start_ns, b.bucket_start)
+                    {clipped_ns_expr}
                 ) AS clipped_ns
             FROM buckets b
             JOIN events e
@@ -247,13 +279,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
             GROUP BY bucket_start, bucket_end
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM agg
         ORDER BY bucket_start
         LIMIT ?
         "#,
-        bucket = req.interval_ns,
+        bucket = bucket_ns,
         anchor = anchor,
+        total_matched = total_matched_bigint_expr(),
     );
 
     // Bind order:
@@ -267,33 +300,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
     params.extend(per_kind_params);
     params.push(Value::BigInt(req.limit as i64));
 
-    let conn = trace.conn();
-    let mut stmt = conn.prepare(&sql).context("preparing timeline SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-
-    let mut buckets: Vec<Bucket> = Vec::new();
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        let start_ns: i64 = r.get("bucket_start")?;
-        let end_ns: i64 = r.get("bucket_end")?;
-        buckets.push(Bucket {
-            key: format!("bucket|{start_ns}..{end_ns}"),
-            start_ns,
-            end_ns,
-            total_ns: r.get("total_ns")?,
-            kernel_ns: r.get("kernel_ns")?,
-            memcpy_ns: r.get("memcpy_ns")?,
-            memset_ns: r.get("memset_ns")?,
-            graph_ns: r.get("graph_ns")?,
-            count: r.get("count")?,
-            kernel_count: r.get("kernel_count")?,
-            memcpy_count: r.get("memcpy_count")?,
-            memset_count: r.get("memset_count")?,
-            graph_count: r.get("graph_count")?,
-        });
-        total_matched = r.get("total_matched")?;
-    }
+    let (buckets, total_matched) = hydrate_timeline_rows(&trace, &sql, &params)?;
 
     Ok(TimelineResponse {
         interval_ns: req.interval_ns,
@@ -302,6 +309,55 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> Result<TimelineResp
         time_window_ns: abs_window,
         nvtx_scope: req.nvtx.clone(),
         rows: buckets,
+    })
+}
+
+fn hydrate_timeline_rows(
+    trace: &Trace,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<(Vec<Bucket>, i64)> {
+    let rows = exec::query_rows(
+        trace.conn(),
+        sql,
+        params,
+        exec::TIMELINE_AGGREGATE,
+        timeline_sql_row,
+    )?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::First,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok(row.bucket),
+    )
+}
+
+struct TimelineSqlRow {
+    bucket: Bucket,
+    total_matched: i64,
+}
+
+fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Error> {
+    let start_ns: i64 = row.get("bucket_start")?;
+    let end_ns: i64 = row.get("bucket_end")?;
+    Ok(TimelineSqlRow {
+        bucket: Bucket {
+            key: timeline_bucket_key(start_ns, end_ns),
+            start_ns,
+            end_ns,
+            total_ns: row.get("total_ns")?,
+            kernel_ns: row.get("kernel_ns")?,
+            memcpy_ns: row.get("memcpy_ns")?,
+            memset_ns: row.get("memset_ns")?,
+            graph_ns: row.get("graph_ns")?,
+            count: row.get("count")?,
+            kernel_count: row.get("kernel_count")?,
+            memcpy_count: row.get("memcpy_count")?,
+            memset_count: row.get("memset_count")?,
+            graph_count: row.get("graph_count")?,
+        },
+        total_matched: row.get("total_matched")?,
     })
 }
 
@@ -315,72 +371,185 @@ fn per_kind_select(
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
     device: Option<i32>,
     stream: Option<i64>,
-) -> Result<(String, Vec<Value>)> {
+) -> NsysQueryResult<SqlFragment> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
-        anyhow::bail!(
-            "internal: timeline only buckets GPU kinds; got `{}`",
-            kind.as_str()
-        );
+        return Err(NsysQueryError::internal_unsupported_kind(
+            "timeline",
+            kind.as_str(),
+        ));
     }
-    let table = kind.table();
-    let label = kind.as_str();
+    let sem = EventSemantics::new(kind);
 
-    let mut params: Vec<Value> = Vec::new();
-    let mut where_parts: Vec<String> = Vec::new();
-
-    if let Some((start, end)) = abs_window {
-        // Drop events entirely outside the window. Per-event clipping
-        // happens in the `clipped` CTE via GREATEST/LEAST.
-        where_parts.push(r#"t.start < ? AND t."end" > ?"#.to_string());
-        params.push(Value::BigInt(end));
-        params.push(Value::BigInt(start));
-    }
-    if let Some(dev) = device {
-        where_parts.push(format!("{} = ?", crate::kind_sql::GPU_DEVICE_ID_EXPR));
-        params.push(Value::Int(dev));
-    }
-    if let Some(stm) = stream {
-        where_parts.push(format!("{} = ?", crate::kind_sql::GPU_STREAM_ID_EXPR));
-        params.push(Value::BigInt(stm));
-    }
-    if nvtx_scope.is_attributed() {
-        // Mirrors `stats::per_kind_subquery`: kinds that NVTX attribution
-        // doesn't cover (graph_trace rolls up captured work that may not
-        // sit under any current NVTX scope) emit `WHERE FALSE` so their
-        // UNION ALL slot produces zero rows, instead of bailing. Without
-        // this, `--type all --nvtx` crashes on traces that contain
-        // graph_trace data because `ALLOWED_KINDS` includes `Graph`.
-        let view: Option<&'static str> = match kind {
-            EventKind::Kernel => Some(crate::nvtx_attribution::KERNEL_VIEW),
-            EventKind::Memcpy => Some(crate::nvtx_attribution::MEMCPY_VIEW),
-            EventKind::Memset => Some(crate::nvtx_attribution::MEMSET_VIEW),
-            EventKind::Graph => None,
-            EventKind::Runtime
-            | EventKind::Osrt
-            | EventKind::Nvtx
-            | EventKind::Sync
-            | EventKind::GraphNode
-            | EventKind::GraphEvent
-            | EventKind::CudaEvent
-            | EventKind::Overhead
-            | EventKind::CpuSample => {
-                anyhow::bail!("internal: NVTX attribution unsupported for `{}`", label)
-            }
-        };
-        match view {
-            Some(v) => where_parts.push(crate::nvtx_attribution::filter_clause(v, "t")),
-            None => where_parts.push("FALSE".to_string()),
-        }
-    }
-    let where_clause = if where_parts.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_parts.join(" AND "))
-    };
+    let filter = event_scan_filter(
+        sem,
+        EventScanFilterOptions {
+            abs_window,
+            device,
+            stream,
+            nvtx_scope,
+            nvtx_policy: NvtxFilterPolicy::ErrorUnlessKindIn {
+                verb: "timeline",
+                allowed: NVTX_ATTRIBUTABLE_KINDS,
+            },
+        },
+        &[],
+    )?;
+    let where_clause = filter.where_clause();
+    let params = filter.into_params();
 
     let sql = format!(
         "SELECT '{label}' AS kind, t.start AS start_ns, t.\"end\" AS end_ns \
-         FROM nsight.{table} t {where_clause}"
+         FROM nsight.{table} t {where_clause}",
+        label = sem.label(),
+        table = sem.table(),
     );
-    Ok((sql, params))
+    Ok(SqlFragment::new(sql, params))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: Vec<(&str, &str, Vec<&str>)>) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in &tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in &tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn minimal_trace() -> Result<(TempDir, Trace)> {
+        let (dir, pqtdir) = parquet_fixture(vec![(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            Vec::new(),
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+        Ok((dir, trace))
+    }
+
+    fn timeline_hydration_sql(total_ns_expr: &str) -> String {
+        format!(
+            "SELECT \
+             0::BIGINT AS bucket_start, \
+             10::BIGINT AS bucket_end, \
+             {total_ns_expr} AS total_ns, \
+             1::BIGINT AS kernel_ns, \
+             0::BIGINT AS memcpy_ns, \
+             0::BIGINT AS memset_ns, \
+             0::BIGINT AS graph_ns, \
+             1::BIGINT AS count, \
+             1::BIGINT AS kernel_count, \
+             0::BIGINT AS memcpy_count, \
+             0::BIGINT AS memset_count, \
+             0::BIGINT AS graph_count, \
+             1::BIGINT AS total_matched"
+        )
+    }
+
+    #[test]
+    fn parse_interval_invalid_literal_returns_typed_error() -> anyhow::Result<()> {
+        let err = match TimelineRequest::parse_interval("bogus") {
+            Ok(ns) => anyhow::bail!("expected invalid interval to fail, got {ns} ns"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.timeline-interval-invalid");
+        match err {
+            crate::NsysQueryError::TimelineIntervalInvalid { value, .. } => {
+                assert_eq!(value, "bogus");
+            }
+            other => anyhow::bail!("expected TimelineIntervalInvalid, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_timeline_rows_prepare_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+
+        let err = match hydrate_timeline_rows(&trace, "SELECT * FROM", &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed timeline SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_timeline_rows_query_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+
+        let err = match hydrate_timeline_rows(&trace, "SELECT ? AS bucket_start", &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "unbound timeline SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_timeline_rows_read_error_is_typed() -> Result<()> {
+        let (_dir, trace) = minimal_trace()?;
+        let sql = timeline_hydration_sql("'not-total'");
+
+        let err = match hydrate_timeline_rows(&trace, &sql, &[]) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed timeline row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
 }

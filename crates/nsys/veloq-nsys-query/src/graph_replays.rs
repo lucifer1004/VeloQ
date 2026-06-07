@@ -13,8 +13,7 @@
 //! the packed [`veloq_nsys_data::SyntheticId`] display value for the
 //! full triple.
 
-use crate::RowId;
-use anyhow::{Context, Result};
+use crate::{NsysQueryError, NsysQueryResult, RowId};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -23,6 +22,8 @@ use veloq_core::sort::build_order_by;
 use veloq_core::time::TimeWindow;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
 use veloq_nsys_data::{SyntheticId, Trace};
+use veloq_query::duckdb::list::{TotalCarrier, infallible_count_error, total_matched};
+use veloq_query::sql::{name, total_matched_bigint_expr};
 
 #[derive(Debug, Clone)]
 pub struct GraphReplaysRequest {
@@ -196,14 +197,19 @@ struct NodeEvent {
     end_ns: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: GraphReplaysRequest) -> Result<GraphReplaysResponse> {
+pub fn run<P: AsRef<Path>>(
+    path: P,
+    req: GraphReplaysRequest,
+) -> NsysQueryResult<GraphReplaysResponse> {
     crate::check_limit(req.limit)?;
     if req.top_nodes_limit == 0 {
-        anyhow::bail!("--top-nodes must be at least 1");
+        return Err(NsysQueryError::GraphReplaysTopNodesTooSmall);
     }
 
-    let trace = Trace::open(path)?;
-    let abs_window = trace.resolve_window(req.time_window)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
     let mode = capture_mode(&trace)?;
 
     let mut rows = match mode {
@@ -212,7 +218,8 @@ pub fn run<P: AsRef<Path>>(path: P, req: GraphReplaysRequest) -> Result<GraphRep
         CaptureMode::None => Vec::new(),
     };
 
-    let total_matched = rows.first().map(|(_, total)| *total).unwrap_or(0);
+    let total_matched = total_matched::<i64, _>(&rows, TotalCarrier::First, |(_, total)| *total)
+        .map_err(infallible_count_error)?;
     let mut out_rows = Vec::with_capacity(rows.len());
     for (summary, _) in rows.drain(..) {
         let launcher = find_launcher(&trace, &summary)?;
@@ -275,13 +282,12 @@ pub fn run<P: AsRef<Path>>(path: P, req: GraphReplaysRequest) -> Result<GraphRep
     })
 }
 
-fn capture_mode(trace: &Trace) -> Result<CaptureMode> {
+fn capture_mode(trace: &Trace) -> NsysQueryResult<CaptureMode> {
     if trace.table_exists("CUPTI_ACTIVITY_KIND_GRAPH_TRACE") {
-        let count: i64 = trace.conn().query_row(
+        let count = count_capture_mode_rows(
+            trace.conn(),
             "SELECT COUNT(*) FROM nsight.CUPTI_ACTIVITY_KIND_GRAPH_TRACE \
              WHERE correlationId IS NOT NULL AND start IS NOT NULL AND \"end\" IS NOT NULL",
-            [],
-            |r| r.get(0),
         )?;
         if count > 0 {
             return Ok(CaptureMode::GraphTrace);
@@ -291,7 +297,7 @@ fn capture_mode(trace: &Trace) -> Result<CaptureMode> {
     if !node_event_subqueries(trace).is_empty() {
         let union = node_event_subqueries(trace).join(" UNION ALL ");
         let sql = format!("WITH event_rows AS ({union}) SELECT COUNT(*) FROM event_rows");
-        let count: i64 = trace.conn().query_row(&sql, [], |r| r.get(0))?;
+        let count = count_capture_mode_rows(trace.conn(), &sql)?;
         if count > 0 {
             return Ok(CaptureMode::GraphNodes);
         }
@@ -300,11 +306,16 @@ fn capture_mode(trace: &Trace) -> Result<CaptureMode> {
     Ok(CaptureMode::None)
 }
 
+fn count_capture_mode_rows(conn: &duckdb::Connection, sql: &str) -> NsysQueryResult<i64> {
+    conn.query_row(sql, [], |r| r.get(0))
+        .map_err(|source| crate::NsysQueryError::sql_query("graph-replays", "capture-mode", source))
+}
+
 fn query_graph_trace(
     trace: &Trace,
     req: &GraphReplaysRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<(ReplaySummary, i64)>> {
+) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
     let mut params = Vec::new();
     let (scope_cte, scoped_join) = launch_scope_sql(trace, req.nvtx.as_deref(), &mut params)?;
     let mut where_parts = vec![
@@ -354,21 +365,22 @@ fn query_graph_trace(
             {scoped_join}
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM scoped
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
 
-    collect_replay_summaries(trace, &sql, &params).context("querying graph_trace replays")
+    collect_replay_summaries(trace.conn(), &sql, &params)
 }
 
 fn query_graph_nodes(
     trace: &Trace,
     req: &GraphReplaysRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<(ReplaySummary, i64)>> {
+) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
     let subqueries = node_event_subqueries(trace);
     if subqueries.is_empty() {
         return Ok(Vec::new());
@@ -417,47 +429,51 @@ fn query_graph_nodes(
             {scoped_join}
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM scoped
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
 
-    collect_replay_summaries(trace, &sql, &params).context("querying graph node replays")
+    collect_replay_summaries(trace.conn(), &sql, &params)
 }
 
 fn collect_replay_summaries(
-    trace: &Trace,
+    conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-) -> Result<Vec<(ReplaySummary, i64)>> {
-    let mut stmt = trace.conn().prepare(sql)?;
-    let params_ref = crate::bind(params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let mut out = Vec::new();
-    while let Some(r) = rows.next()? {
-        out.push((
-            ReplaySummary {
-                device_id: r.get("device_id")?,
-                context_id: r.get("context_id")?,
-                correlation_id: r.get("correlation_id")?,
-                start_ns: r.get("start_ns")?,
-                end_ns: r.get("end_ns")?,
-                sum_gpu_ns: r.get("sum_gpu_ns")?,
-                event_count: r.get("event_count")?,
-                kernel_count: r.get("kernel_count")?,
-                memcpy_count: r.get("memcpy_count")?,
-                memset_count: r.get("memset_count")?,
-                graph_trace_count: r.get("graph_trace_count")?,
-                stream_count: r.get("stream_count")?,
-                graph_id: r.get("graph_id")?,
-                graph_exec_id: r.get("graph_exec_id")?,
-            },
-            r.get("total_matched")?,
-        ));
-    }
-    Ok(out)
+) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
+    crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        params,
+        crate::query_sql::exec::GRAPH_REPLAYS_REPLAY_SUMMARY,
+        replay_summary_row,
+    )
+}
+
+fn replay_summary_row(row: &duckdb::Row<'_>) -> Result<(ReplaySummary, i64), duckdb::Error> {
+    Ok((
+        ReplaySummary {
+            device_id: row.get("device_id")?,
+            context_id: row.get("context_id")?,
+            correlation_id: row.get("correlation_id")?,
+            start_ns: row.get("start_ns")?,
+            end_ns: row.get("end_ns")?,
+            sum_gpu_ns: row.get("sum_gpu_ns")?,
+            event_count: row.get("event_count")?,
+            kernel_count: row.get("kernel_count")?,
+            memcpy_count: row.get("memcpy_count")?,
+            memset_count: row.get("memset_count")?,
+            graph_trace_count: row.get("graph_trace_count")?,
+            stream_count: row.get("stream_count")?,
+            graph_id: row.get("graph_id")?,
+            graph_exec_id: row.get("graph_exec_id")?,
+        },
+        row.get("total_matched")?,
+    ))
 }
 
 fn node_event_subqueries(trace: &Trace) -> Vec<String> {
@@ -566,7 +582,7 @@ fn launch_scope_sql(
     trace: &Trace,
     nvtx: Option<&str>,
     params: &mut Vec<Value>,
-) -> Result<(String, String)> {
+) -> NsysQueryResult<(String, String)> {
     let Some(pattern) = nvtx else {
         return Ok((String::new(), String::new()));
     };
@@ -576,15 +592,15 @@ fn launch_scope_sql(
         "TARGET_INFO_CUDA_CONTEXT_INFO",
     ] {
         if !trace.table_exists(table) {
-            anyhow::bail!(
-                "graph-replays --nvtx requires `{table}`, which is not present in this trace"
-            );
+            return Err(NsysQueryError::GraphReplaysNvtxPrereqTableMissing { table });
         }
     }
-    let like_pattern = crate::search_glob_to_like(pattern);
-    params.push(Value::Text(like_pattern.clone()));
-    params.push(Value::Text(like_pattern));
-    let cte = r#"
+    let name_match = name::glob_like("nvtx_name", pattern);
+    let path_match = name::glob_like("p.nvtx_path", pattern);
+    params.extend(name_match.params);
+    params.extend(path_match.params);
+    let cte = format!(
+        r#"
         matched_launches AS MATERIALIZED (
             SELECT DISTINCT
                 CAST(c.deviceId AS INTEGER) AS device_id,
@@ -600,7 +616,7 @@ fn launch_scope_sql(
                   SELECT 1
                   FROM (
                       SELECT
-                          MAX(CASE WHEN nvtx_name LIKE ? ESCAPE '\' THEN 1 ELSE 0 END) AS name_match,
+                          MAX(CASE WHEN {name_match_sql} THEN 1 ELSE 0 END) AS name_match,
                           string_agg(nvtx_name, '/' ORDER BY nvtx_start ASC, nvtx_end DESC, nvtx_rowid ASC) AS nvtx_path
                       FROM (
                           SELECT
@@ -616,23 +632,26 @@ fn launch_scope_sql(
                       ) enclosing
                   ) p
                   WHERE p.name_match = 1
-                     OR p.nvtx_path LIKE ? ESCAPE '\'
+                     OR {path_match_sql}
               )
         ),
-        "#
-    .to_string();
+        "#,
+        name_match_sql = name_match.sql,
+        path_match_sql = path_match.sql,
+    );
     Ok((
         cte,
         "JOIN matched_launches ml USING (device_id, context_id, correlation_id)".to_string(),
     ))
 }
 
-fn order_by_sql(sort: Option<&SortSpec>) -> Result<String> {
+fn order_by_sql(sort: Option<&SortSpec>) -> NsysQueryResult<String> {
     let default_sort = SortSpec::single("wall");
     let sort = sort.unwrap_or(&default_sort);
     let mut parts = Vec::new();
     for field in sort.fields() {
-        let (key, dir) = SortKey::from_field(field)?;
+        let (key, dir) =
+            SortKey::from_field(field).map_err(NsysQueryError::graph_replays_sort_invalid)?;
         let col = match key {
             SortKey::Wall => "wall_ns",
             SortKey::Sum => "sum_gpu_ns",
@@ -647,7 +666,7 @@ fn order_by_sql(sort: Option<&SortSpec>) -> Result<String> {
     ))
 }
 
-fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> Result<Option<RowId>> {
+fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Option<RowId>> {
     if !trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
         || !trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO")
     {
@@ -676,17 +695,24 @@ fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> Result<Option<RowId>>
         Value::BigInt(replay.start_ns),
         Value::BigInt(replay.start_ns),
     ];
-    let mut stmt = trace.conn().prepare(sql)?;
-    let bound = crate::bind(&params);
-    let mut rows = stmt.query(bound.as_slice())?;
-    Ok(if let Some(row) = rows.next()? {
-        Some(RowId::new(crate::EventKind::Runtime, row.get("rowid")?))
-    } else {
-        None
-    })
+    lookup_launcher_row(trace.conn(), sql, &params)
 }
 
-fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> Result<Vec<NodeEvent>> {
+fn lookup_launcher_row(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<Option<RowId>> {
+    crate::query_sql::exec::query_optional_row(
+        conn,
+        sql,
+        params,
+        crate::query_sql::exec::GRAPH_REPLAYS_LAUNCHER_LOOKUP,
+        |row| Ok(RowId::new(crate::EventKind::Runtime, row.get("rowid")?)),
+    )
+}
+
+fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Vec<NodeEvent>> {
     let subqueries = node_event_subqueries(trace);
     if subqueries.is_empty() {
         return Ok(Vec::new());
@@ -708,21 +734,32 @@ fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> Result<Vec<NodeEve
         Value::BigInt(replay.context_id),
         Value::BigInt(replay.correlation_id),
     ];
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let bound = crate::bind(&params);
-    let mut rows = stmt.query(bound.as_slice())?;
-    let mut out = Vec::new();
-    while let Some(r) = rows.next()? {
-        out.push(NodeEvent {
-            kind: r.get("kind")?,
-            name: r.get("name")?,
-            graph_node_id: r.get("graph_node_id")?,
-            stream_id: r.get("stream_id")?,
-            start_ns: r.get("start_ns")?,
-            end_ns: r.get("end_ns")?,
-        });
-    }
-    Ok(out)
+    hydrate_node_events(trace.conn(), &sql, &params)
+}
+
+fn hydrate_node_events(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<Vec<NodeEvent>> {
+    crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        params,
+        crate::query_sql::exec::GRAPH_REPLAYS_NODE_EVENT,
+        node_event_row,
+    )
+}
+
+fn node_event_row(row: &duckdb::Row<'_>) -> Result<NodeEvent, duckdb::Error> {
+    Ok(NodeEvent {
+        kind: row.get("kind")?,
+        name: row.get("name")?,
+        graph_node_id: row.get("graph_node_id")?,
+        stream_id: row.get("stream_id")?,
+        start_ns: row.get("start_ns")?,
+        end_ns: row.get("end_ns")?,
+    })
 }
 
 fn busy_ns(mut intervals: Vec<(i64, i64)>) -> i64 {
@@ -811,9 +848,287 @@ fn top_nodes(events: &[NodeEvent], replay_wall_ns: i64, limit: usize) -> Vec<Gra
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn replay_summary_hydration_sql(sum_expr: &str) -> String {
+        format!(
+            "SELECT \
+             0::INTEGER AS device_id, \
+             1::BIGINT AS context_id, \
+             2::BIGINT AS correlation_id, \
+             10::BIGINT AS start_ns, \
+             20::BIGINT AS end_ns, \
+             {sum_expr} AS sum_gpu_ns, \
+             1::BIGINT AS event_count, \
+             1::BIGINT AS kernel_count, \
+             0::BIGINT AS memcpy_count, \
+             0::BIGINT AS memset_count, \
+             0::BIGINT AS graph_trace_count, \
+             1::BIGINT AS stream_count, \
+             CAST(NULL AS BIGINT) AS graph_id, \
+             CAST(NULL AS BIGINT) AS graph_exec_id, \
+             1::BIGINT AS total_matched"
+        )
+    }
+
+    fn node_event_hydration_sql(graph_node_expr: &str) -> String {
+        format!(
+            "SELECT \
+             'kernel' AS kind, \
+             'node' AS name, \
+             {graph_node_expr} AS graph_node_id, \
+             7::BIGINT AS stream_id, \
+             10::BIGINT AS start_ns, \
+             20::BIGINT AS end_ns"
+        )
+    }
 
     #[test]
     fn busy_ns_unions_overlaps() {
         assert_eq!(busy_ns(vec![(0, 10), (5, 15), (20, 25)]), 20);
+    }
+
+    #[test]
+    fn capture_mode_count_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match count_capture_mode_rows(&conn, "SELECT * FROM") {
+            Ok(count) => anyhow::bail!("malformed capture-mode SQL should fail, got {count}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_replay_summaries_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match collect_replay_summaries(&conn, "SELECT * FROM", &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed replay-summary SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_replay_summaries_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   ? AS device_id, \
+                   1::BIGINT AS context_id, \
+                   2::BIGINT AS correlation_id, \
+                   10::BIGINT AS start_ns, \
+                   20::BIGINT AS end_ns, \
+                   10::BIGINT AS sum_gpu_ns, \
+                   1::BIGINT AS event_count, \
+                   1::BIGINT AS kernel_count, \
+                   0::BIGINT AS memcpy_count, \
+                   0::BIGINT AS memset_count, \
+                   0::BIGINT AS graph_trace_count, \
+                   1::BIGINT AS stream_count, \
+                   CAST(NULL AS BIGINT) AS graph_id, \
+                   CAST(NULL AS BIGINT) AS graph_exec_id, \
+                   1::BIGINT AS total_matched";
+
+        let err = match collect_replay_summaries(&conn, sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "unbound replay-summary SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn collect_replay_summaries_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = replay_summary_hydration_sql("'not-sum'");
+
+        let err = match collect_replay_summaries(&conn, &sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed replay-summary row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_launcher_row_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match lookup_launcher_row(&conn, "SELECT * FROM", &[]) {
+            Ok(row) => anyhow::bail!("malformed launcher SQL should fail, got {row:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_launcher_row_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match lookup_launcher_row(&conn, "SELECT ? AS rowid", &[]) {
+            Ok(row) => anyhow::bail!("unbound launcher SQL parameter should fail, got {row:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn lookup_launcher_row_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match lookup_launcher_row(&conn, "SELECT 'not-rowid' AS rowid", &[]) {
+            Ok(row) => anyhow::bail!("malformed launcher row should fail, got {row:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_node_events_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_node_events(&conn, "SELECT * FROM", &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed node-event SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_node_events_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   ? AS kind, \
+                   'node' AS name, \
+                   1::BIGINT AS graph_node_id, \
+                   7::BIGINT AS stream_id, \
+                   10::BIGINT AS start_ns, \
+                   20::BIGINT AS end_ns";
+
+        let err = match hydrate_node_events(&conn, sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "unbound node-event SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_node_events_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = node_event_hydration_sql("'not-node-id'");
+
+        let err = match hydrate_node_events(&conn, &sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed node-event row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
     }
 }

@@ -421,3 +421,194 @@ fn schema_rejects_non_json_format() -> Result<()> {
     assert!(env.pointer("/error").is_some());
     Ok(())
 }
+
+#[test]
+fn schema_unknown_target_has_specific_error_code() -> Result<()> {
+    let out = run_veloq(["ncu", "schema", "bogus"])?;
+    assert!(
+        !out.status.success(),
+        "schema bogus target should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.command.unknown-schema-target")
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("unknown ncu schema target `bogus`"),
+        "message should name rejected target: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn missing_ncu_report_has_specific_error_code() -> Result<()> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let missing = dir.path().join("missing.ncu-rep");
+    let missing_arg = missing.to_string_lossy().into_owned();
+    let out = run_veloq(["ncu", "summary", missing_arg.as_str()])?;
+    assert!(
+        !out.status.success(),
+        "missing ncu report should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.input.missing")
+    );
+    assert_eq!(
+        env.pointer("/trace/path").and_then(Value::as_str),
+        Some(missing_arg.as_str())
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("not found") && message.contains("missing.ncu-rep"),
+        "message should name the missing report: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn launches_invalid_grid_has_specific_error_code() -> Result<()> {
+    let trace = vector_add()?;
+    let out = run_veloq([
+        "ncu",
+        "launches",
+        trace.to_string_lossy().as_ref(),
+        "--grid",
+        "4096xnopex1",
+    ])?;
+    assert!(
+        !out.status.success(),
+        "launches invalid grid should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.command.invalid-launch-dims")
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--grid") && message.contains("4096xnopex1"),
+        "message should name rejected flag and value: {message}"
+    );
+    let chain = env
+        .pointer("/error/chain")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        chain
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|entry| entry.contains("invalid axis")),
+        "chain should keep parse-axis detail: {chain:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn launches_zero_limit_has_specific_error_code() -> Result<()> {
+    let trace = vector_add()?;
+    let out = run_veloq([
+        "ncu",
+        "launches",
+        trace.to_string_lossy().as_ref(),
+        "--limit",
+        "0",
+    ])?;
+    assert!(
+        !out.status.success(),
+        "launches --limit 0 should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.command.limit-too-small")
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--limit") && message.contains("0"),
+        "message should name rejected limit: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn metrics_empty_counter_has_specific_error_code() -> Result<()> {
+    let trace = vector_add()?;
+    let out = run_veloq([
+        "ncu",
+        "metrics",
+        trace.to_string_lossy().as_ref(),
+        "--counter",
+        "",
+    ])?;
+    assert!(
+        !out.status.success(),
+        "metrics empty --counter should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.command.empty-counter-glob")
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--counter"),
+        "message should name rejected flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn disasm_out_of_range_row_id_has_specific_error_code() -> Result<()> {
+    let trace = vector_add()?;
+    let out = run_veloq([
+        "ncu",
+        "disasm",
+        trace.to_string_lossy().as_ref(),
+        "--row-id",
+        "launch:9999",
+    ])?;
+    assert!(
+        !out.status.success(),
+        "disasm out-of-range row-id should exit non-zero"
+    );
+    let env: Value =
+        serde_json::from_slice(&out.stdout).context("error envelope must be valid JSON")?;
+    assert_eq!(
+        env.pointer("/error/code").and_then(Value::as_str),
+        Some("ncu.command.launch-row-id-out-of-range")
+    );
+    let message = env
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("launch:9999") && message.contains("out of range"),
+        "message should name rejected row_id and range failure: {message}"
+    );
+    Ok(())
+}

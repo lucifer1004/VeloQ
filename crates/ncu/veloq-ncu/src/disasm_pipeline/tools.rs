@@ -2,9 +2,9 @@
 //! invoked once per cubin during disasm-acquisition; this module
 //! captures stdout, surfaces warnings from stderr (and the leading
 //! `<tool> warning :` lines that some captures put on stdout before
-//! the real payload), and rejects non-zero exits with a contextful
-//! `anyhow::Error` so the caller can decide whether to bail or
-//! degrade.
+//! the real payload), and rejects non-zero exits with a typed
+//! [`crate::error::NcuSourceError`] so the caller can decide whether
+//! to bail or degrade.
 //!
 //! Tool-missing errors land here too: `Command::new` itself doesn't
 //! check `PATH`, but `.output()` does — failure to spawn surfaces as
@@ -12,9 +12,10 @@
 //! the binary name and cubin path so an agent's envelope chain
 //! pinpoints what's missing.
 
-use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
+
+use crate::error::{NcuSourceError, NcuSourceResult};
 
 /// Captured tool output. `warnings` is the union of stderr lines and
 /// leading non-data lines on stdout (the JSON / PTX payload starts
@@ -28,24 +29,30 @@ pub struct ToolOutput {
 /// or non-UTF-8 output is an error; stderr always lands in `warnings`
 /// regardless of the exit code so partial captures still expose what
 /// the tool complained about.
-pub fn run_tool(bin: &'static str, cubin_path: &Path, args: &[&str]) -> Result<ToolOutput> {
+pub fn run_tool(
+    bin: &'static str,
+    cubin_path: &Path,
+    args: &[&str],
+) -> NcuSourceResult<ToolOutput> {
     let mut cmd = Command::new(bin);
     cmd.args(args).arg(cubin_path);
     let output = cmd
         .output()
-        .with_context(|| format!("invoking {bin} {args:?} on {}", cubin_path.display()))?;
+        .map_err(|source| NcuSourceError::disasm_tool_spawn(bin, cubin_path, args, source))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "{bin} {args:?} on {} exited with status {}: {stderr}",
-            cubin_path.display(),
-            output.status,
-        );
+        return Err(NcuSourceError::disasm_tool_failed(
+            bin,
+            cubin_path,
+            args,
+            output.status.to_string(),
+            stderr.trim().to_string(),
+        ));
     }
-    let stdout =
-        String::from_utf8(output.stdout).with_context(|| format!("{bin} stdout was not UTF-8"))?;
-    let stderr =
-        String::from_utf8(output.stderr).with_context(|| format!("{bin} stderr was not UTF-8"))?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|source| NcuSourceError::disasm_tool_output_utf8(bin, "stdout", source))?;
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|source| NcuSourceError::disasm_tool_output_utf8(bin, "stderr", source))?;
     let warnings = collect_warnings(bin, &stdout, &stderr);
     Ok(ToolOutput { stdout, warnings })
 }
@@ -73,4 +80,28 @@ pub fn collect_warnings(bin: &str, stdout: &str, stderr: &str) -> Vec<String> {
         }
     }
     warnings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn missing_tool_error_is_typed() -> Result<()> {
+        let cubin = std::env::temp_dir().join(format!(
+            "veloq-ncu-missing-tool-{}.cubin",
+            std::process::id()
+        ));
+        let err = run_tool(
+            "veloq-ncu-definitely-missing-tool",
+            &cubin,
+            &["--emit-json"],
+        )
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("missing tool should error"))?;
+        assert_eq!(err.code().as_str(), "ncu.input.disasm-tool-spawn");
+        Ok(())
+    }
 }

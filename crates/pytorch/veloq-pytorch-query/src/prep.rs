@@ -1,4 +1,4 @@
-use crate::dto::{PrepAuxiliary, PrepResponse, PrepRow};
+use crate::dto::{PrepAuxiliary, PrepResponse, PrepRow, TraceSchemaSurveyDto};
 use veloq_pytorch_data::PrepState;
 
 pub fn prep_response(state: PrepState, built: bool) -> PrepResponse {
@@ -22,6 +22,7 @@ pub fn prep_response(state: PrepState, built: bool) -> PrepResponse {
             cache_version: state.cache_version,
             cache_fresh: state.cache_fresh,
             built,
+            schema_survey: state.schema_survey.as_ref().map(TraceSchemaSurveyDto::from),
         },
     }
 }

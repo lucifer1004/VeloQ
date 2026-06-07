@@ -17,10 +17,10 @@
 //! still produces a usable response — agents can pass a heuristic
 //! id list without pre-filtering for existence.
 
-use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::native::{NativeLaunch, NativeMetric, cache};
 
 /// `veloq ncu inspect` response payload.
@@ -110,18 +110,17 @@ impl LaunchDetails {
 
 /// Resolve every `row_id` against the native sidecar's launches and
 /// build the response in input order.
-pub fn run<P: AsRef<Path>>(path: P, row_ids: &[String]) -> Result<InspectResponse> {
-    anyhow::ensure!(
-        !row_ids.is_empty(),
-        "ncu inspect needs at least one --row-id"
-    );
+pub fn run<P: AsRef<Path>>(path: P, row_ids: &[String]) -> NcuSourceResult<InspectResponse> {
+    if row_ids.is_empty() {
+        return Err(NcuSourceError::InspectRowIdRequired);
+    }
     let path = path.as_ref();
     let sidecar = cache::build_or_load(path)?;
     let n_launches = sidecar.launches.len();
 
     let mut rows: Vec<LaunchDetailsRow> = Vec::with_capacity(row_ids.len());
     for raw in row_ids {
-        let row = match parse_launch_idx(raw) {
+        let row = match crate::row_id::parse_launch_idx(raw) {
             Ok(idx) => match sidecar.launches.get(idx) {
                 Some(launch) => LaunchDetailsRow::Launch(Box::new(LaunchDetails::from_launch(
                     raw.clone(),
@@ -152,18 +151,18 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[String]) -> Result<InspectRespons
     })
 }
 
-/// Parse the `"launch:<n>"` form. Future row-id kinds (range:N, ...)
-/// join here; until then we reject anything else loudly so an agent
-/// typo doesn't silently miss. Mirrors [`crate::row_id::parse_launch_idx`],
-/// the shared parser used by the drill verbs.
-fn parse_launch_idx(s: &str) -> Result<usize> {
-    let (kind, idx) = s
-        .split_once(':')
-        .with_context(|| format!("expected `launch:<idx>`, got `{s}`"))?;
-    anyhow::ensure!(
-        kind == "launch",
-        "ncu inspect currently supports only `launch:<idx>` row_ids (got `{kind}`)"
-    );
-    idx.parse::<usize>()
-        .with_context(|| format!("invalid launch index `{idx}` in `{s}`"))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn empty_row_id_list_error_is_typed() -> Result<()> {
+        let err = run("missing.ncu-rep", &[])
+            .err()
+            .context("empty row_ids should error before opening the report")?;
+        assert_eq!(err.code().as_str(), "ncu.command.inspect-row-id-required");
+        Ok(())
+    }
 }

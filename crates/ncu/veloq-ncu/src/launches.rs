@@ -10,10 +10,10 @@
 //!
 //! Reads the native sidecar ([`crate::native::cache`]).
 
-use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::native::{NativeLaunch, cache};
 
 /// CLI inputs for `ncu launches`. Built by `source.rs` from the
@@ -104,11 +104,10 @@ pub struct LaunchRow {
 /// `--block` filters and the row cap. `count` is the post-limit
 /// count, `total_matched` is the pre-limit match count so agents
 /// can decide whether to raise `--limit` or narrow the filter.
-pub fn run<P: AsRef<Path>>(path: P, req: LaunchesRequest) -> Result<LaunchesResponse> {
-    anyhow::ensure!(
-        req.limit > 0,
-        "limit must be at least 1 (limit=0 suppresses every row including the total_matched / scope totals carried on them)"
-    );
+pub fn run<P: AsRef<Path>>(path: P, req: LaunchesRequest) -> NcuSourceResult<LaunchesResponse> {
+    if req.limit == 0 {
+        return Err(NcuSourceError::limit_too_small(req.limit));
+    }
     let path = path.as_ref();
     let sidecar = cache::build_or_load(path)?;
     let meta_cache_path = cache::path_for(path).display().to_string();
@@ -165,14 +164,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: LaunchesRequest) -> Result<LaunchesResp
 
 /// Pre-compile `"WxHxD"` into a tuple. `0` on an axis means "any
 /// value matches"; callers feed the result to [`matches_dims`].
-pub fn parse_dims(s: &str) -> Result<[u64; 3]> {
+pub fn parse_dims(s: &str) -> NcuSourceResult<[u64; 3]> {
     let parts: Vec<&str> = s.split(['x', 'X']).collect();
     let [x, y, z] = parts.as_slice() else {
-        anyhow::bail!("expected `WxHxD` (got `{s}`); pad unused axes with 0 (e.g. `1024x1x1`)");
+        return Err(NcuSourceError::launch_dims_shape(s));
     };
-    let parse_axis = |raw: &str| -> Result<u64> {
+    let parse_axis = |raw: &str| -> NcuSourceResult<u64> {
         raw.parse::<u64>()
-            .map_err(|e| anyhow::anyhow!("invalid axis `{raw}` in `{s}`: {e}"))
+            .map_err(|source| NcuSourceError::launch_dims_axis(s, raw, source))
     };
     Ok([parse_axis(x)?, parse_axis(y)?, parse_axis(z)?])
 }
@@ -193,4 +192,29 @@ fn matches_dims(actual: [u64; 3], filter: Option<[u64; 3]>) -> bool {
     f.iter()
         .zip(actual.iter())
         .all(|(want, got)| *want == 0 || want == got)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn parse_dims_shape_error_is_typed() -> Result<()> {
+        let err = parse_dims("1024x1").err().context("parse should fail")?;
+        assert_eq!(err.code().as_str(), "ncu.command.invalid-launch-dims");
+        assert!(matches!(err, NcuSourceError::LaunchDimsShape { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_dims_axis_error_is_typed() -> Result<()> {
+        let err = parse_dims("1024xnopex1")
+            .err()
+            .context("parse should fail")?;
+        assert_eq!(err.code().as_str(), "ncu.command.invalid-launch-dims");
+        assert!(matches!(err, NcuSourceError::LaunchDimsAxis { .. }));
+        Ok(())
+    }
 }

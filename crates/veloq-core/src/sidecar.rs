@@ -22,12 +22,78 @@
 //! JSON disasm cache) stay on their own; this helper is for the
 //! "bincode blob with a version byte" case only.
 
-use anyhow::{Context, Result};
+use crate::{ErrorCode, VeloqDiagnostic};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fs;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use thiserror::Error;
+
+pub type SidecarResult<T> = Result<T, SidecarError>;
+
+#[derive(Debug, Error)]
+pub enum SidecarError {
+    #[error("reading {label} at {path}")]
+    Read {
+        label: &'static str,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("decoding {label} header")]
+    DecodeHeader {
+        label: &'static str,
+        #[source]
+        source: bincode::error::DecodeError,
+    },
+    #[error("decoding {label}")]
+    Decode {
+        label: &'static str,
+        #[source]
+        source: bincode::error::DecodeError,
+    },
+    #[error("encoding {label}")]
+    Encode {
+        label: &'static str,
+        #[source]
+        source: bincode::error::EncodeError,
+    },
+    #[error("creating {label} parent directory at {path}")]
+    CreateParent {
+        label: &'static str,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("writing {label} temp file at {path}")]
+    WriteTemp {
+        label: &'static str,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("renaming {label} temp into place at {path}")]
+    Rename {
+        label: &'static str,
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl VeloqDiagnostic for SidecarError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Read { .. } => ErrorCode::IO_READ,
+            Self::DecodeHeader { .. } | Self::Decode { .. } => ErrorCode::SIDECAR_DECODE,
+            Self::Encode { .. } => ErrorCode::SIDECAR_ENCODE,
+            Self::CreateParent { .. } => ErrorCode::IO_CREATE_DIR,
+            Self::WriteTemp { .. } => ErrorCode::IO_WRITE,
+            Self::Rename { .. } => ErrorCode::IO_PUBLISH,
+        }
+    }
+}
 
 /// File-system fingerprint of the source artifact a sidecar covers.
 /// Captures the two facts every cache invalidation depends on:
@@ -115,12 +181,15 @@ impl<T> SidecarCache<T> {
     /// reading the payload. `Ok(None)` for missing files; decode
     /// errors propagate so a corrupt sidecar is visible rather than
     /// silently treated as absent.
-    pub fn read_header(&self) -> Result<Option<SidecarHeader>> {
+    pub fn read_header(&self) -> SidecarResult<Option<SidecarHeader>> {
         if !self.path.exists() {
             return Ok(None);
         }
-        let bytes = fs::read(&self.path)
-            .with_context(|| format!("reading {} at {}", self.label, self.path.display()))?;
+        let bytes = fs::read(&self.path).map_err(|source| SidecarError::Read {
+            label: self.label,
+            path: path_string(&self.path),
+            source,
+        })?;
         // The header struct mirrors the leading three fields of
         // `CacheFile<T>` exactly. bincode's positional encoding means
         // decoding just the header from the start of the buffer
@@ -133,8 +202,12 @@ impl<T> SidecarCache<T> {
             source_size: u64,
         }
         let (h, _read): (HeaderOnly, _) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .with_context(|| format!("decoding {} header", self.label))?;
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).map_err(
+                |source| SidecarError::DecodeHeader {
+                    label: self.label,
+                    source,
+                },
+            )?;
         Ok(Some(SidecarHeader {
             version: h.version,
             fingerprint: SourceFingerprint {
@@ -152,15 +225,22 @@ impl<T: DeserializeOwned> SidecarCache<T> {
     /// changed) with an info-level log line explaining which check
     /// failed. Decode/I/O errors propagate as `Err` so the caller
     /// can decide whether to rebuild or surface.
-    pub fn try_load(&self, source_fp: SourceFingerprint) -> Result<Option<T>> {
+    pub fn try_load(&self, source_fp: SourceFingerprint) -> SidecarResult<Option<T>> {
         if !self.path.exists() {
             return Ok(None);
         }
-        let bytes = fs::read(&self.path)
-            .with_context(|| format!("reading {} at {}", self.label, self.path.display()))?;
+        let bytes = fs::read(&self.path).map_err(|source| SidecarError::Read {
+            label: self.label,
+            path: path_string(&self.path),
+            source,
+        })?;
         let (file, _read): (CacheFile<T>, _) =
-            bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
-                .with_context(|| format!("decoding {}", self.label))?;
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).map_err(
+                |source| SidecarError::Decode {
+                    label: self.label,
+                    source,
+                },
+            )?;
         if file.version != self.version {
             log::info!(
                 "{} version mismatch ({} vs {}); rebuilding",
@@ -188,36 +268,38 @@ impl<T: Serialize> SidecarCache<T> {
     ///
     /// Writes via a `<path>.tmp` sibling + `rename(2)` so a crashed
     /// write never leaves a half-corrupt sidecar in place.
-    pub fn write(&self, source_fp: SourceFingerprint, payload: &T) -> Result<()> {
+    pub fn write(&self, source_fp: SourceFingerprint, payload: &T) -> SidecarResult<()> {
         let file = CacheFileRef {
             version: self.version,
             source_mtime_secs: source_fp.mtime_secs,
             source_size: source_fp.size,
             payload,
         };
-        let bytes = bincode::serde::encode_to_vec(&file, bincode::config::standard())
-            .with_context(|| format!("encoding {}", self.label))?;
+        let bytes = bincode::serde::encode_to_vec(&file, bincode::config::standard()).map_err(
+            |source| SidecarError::Encode {
+                label: self.label,
+                source,
+            },
+        )?;
         let mut tmp = self.path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp_path = PathBuf::from(tmp);
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "creating {} parent directory at {}",
-                    self.label,
-                    parent.display()
-                )
+            fs::create_dir_all(parent).map_err(|source| SidecarError::CreateParent {
+                label: self.label,
+                path: path_string(parent),
+                source,
             })?;
         }
-        fs::write(&tmp_path, &bytes).with_context(|| {
-            format!("writing {} temp file at {}", self.label, tmp_path.display())
+        fs::write(&tmp_path, &bytes).map_err(|source| SidecarError::WriteTemp {
+            label: self.label,
+            path: path_string(&tmp_path),
+            source,
         })?;
-        fs::rename(&tmp_path, &self.path).with_context(|| {
-            format!(
-                "renaming {} temp into place at {}",
-                self.label,
-                self.path.display()
-            )
+        fs::rename(&tmp_path, &self.path).map_err(|source| SidecarError::Rename {
+            label: self.label,
+            path: path_string(&self.path),
+            source,
         })?;
         log::info!(
             "wrote {}: {} bytes → {}",
@@ -227,6 +309,10 @@ impl<T: Serialize> SidecarCache<T> {
         );
         Ok(())
     }
+}
+
+fn path_string(path: &Path) -> String {
+    path.display().to_string()
 }
 
 /// Owned on-disk shape used during decode. Field names are
@@ -257,8 +343,11 @@ struct CacheFileRef<'a, T> {
 mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
+    use std::error::Error;
     use std::fs;
     use std::path::PathBuf;
+
+    type TestResult<T> = Result<T, Box<dyn Error>>;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Demo {
@@ -266,7 +355,7 @@ mod tests {
         s: String,
     }
 
-    fn tmpdir() -> Result<PathBuf> {
+    fn tmpdir() -> TestResult<PathBuf> {
         let d = std::env::temp_dir().join(format!(
             "veloq-sidecar-test-{}",
             std::process::id() as u64 * 1_000_000
@@ -275,7 +364,7 @@ mod tests {
                     .map(|d| d.as_nanos() as u64)
                     .unwrap_or(0)
         ));
-        fs::create_dir_all(&d).with_context(|| format!("creating tmp dir {}", d.display()))?;
+        fs::create_dir_all(&d)?;
         Ok(d)
     }
 
@@ -287,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_load_returns_written_payload() -> Result<()> {
+    fn round_trip_load_returns_written_payload() -> TestResult<()> {
         let dir = tmpdir()?;
         let path = dir.join("demo.cache");
         let cache: SidecarCache<Demo> = SidecarCache::new(path, 7, "demo cache");
@@ -298,13 +387,13 @@ mod tests {
         cache.write(fp(1234, 999), &payload)?;
         let back = cache
             .try_load(fp(1234, 999))?
-            .ok_or_else(|| anyhow::anyhow!("just-written cache should load"))?;
+            .ok_or_else(|| std::io::Error::other("just-written cache should load"))?;
         assert_eq!(back, payload);
         Ok(())
     }
 
     #[test]
-    fn try_load_missing_returns_none() -> Result<()> {
+    fn try_load_missing_returns_none() -> TestResult<()> {
         let dir = tmpdir()?;
         let path = dir.join("does-not-exist.cache");
         let cache: SidecarCache<Demo> = SidecarCache::new(path, 1, "demo cache");
@@ -313,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn version_mismatch_rebuilds() -> Result<()> {
+    fn version_mismatch_rebuilds() -> TestResult<()> {
         let dir = tmpdir()?;
         let path = dir.join("demo.cache");
         let writer: SidecarCache<Demo> = SidecarCache::new(path.clone(), 1, "demo cache");
@@ -330,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn source_changed_rebuilds() -> Result<()> {
+    fn source_changed_rebuilds() -> TestResult<()> {
         let dir = tmpdir()?;
         let path = dir.join("demo.cache");
         let cache: SidecarCache<Demo> = SidecarCache::new(path, 1, "demo cache");
@@ -348,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_from_real_file_round_trips() -> Result<()> {
+    fn fingerprint_from_real_file_round_trips() -> TestResult<()> {
         let dir = tmpdir()?;
         let src = dir.join("source.bin");
         fs::write(&src, b"hello world")?;

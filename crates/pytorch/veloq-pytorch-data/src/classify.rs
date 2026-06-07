@@ -41,11 +41,11 @@ pub(crate) fn classify_event(
     {
         return EventType::Memory;
     }
-    if is_comm {
-        return EventType::Comm;
-    }
     if lower_cat.contains("cpu_op") || args.contains_key("External id") {
         return EventType::CpuOp;
+    }
+    if is_comm {
+        return EventType::Comm;
     }
     EventType::CpuOp
 }

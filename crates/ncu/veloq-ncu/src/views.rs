@@ -7,7 +7,7 @@
 //! consistency contract.
 
 use std::collections::BTreeSet;
-use veloq_core::tabular::{TabularView, cell_opt};
+use veloq_core::tabular::{TabularView, cell_opt, push_count_meta};
 
 use crate::disasm::DisasmResponse;
 use crate::inspect::{InspectResponse, LaunchDetailsRow};
@@ -53,11 +53,6 @@ fn render_json_scalar(v: &serde_json::Value) -> String {
 
 fn cell_f64_opt(value: Option<f64>) -> String {
     value.map(format_float).unwrap_or_default()
-}
-
-fn push_count_meta(view: &mut TabularView, count: usize, total_matched: usize) {
-    view.push_meta("count", count.to_string());
-    view.push_meta("total_matched", total_matched.to_string());
 }
 
 /// CSV / table projection of the native `ncu summary`.

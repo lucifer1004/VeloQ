@@ -5,9 +5,8 @@
 //! same Rust type that `serde_json` serializes on successful command
 //! output, then wrapped in the shared envelope by `source.rs`.
 
-use anyhow::Result;
-
 use crate::disasm::DisasmResponse;
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::inspect::InspectResponse;
 use crate::launches::LaunchesResponse;
 use crate::lists::{GraphsResponse, RangesResponse, SourcesResponse};
@@ -24,22 +23,19 @@ pub struct SchemaPayload {
 }
 
 /// Dispatch `target` to the matching NCU response payload type.
-pub fn schema_value_for(target: &str) -> Result<serde_json::Value> {
-    let value = match target {
-        "summary" => serde_json::to_value(schemars::schema_for!(NativeSummaryResponse))?,
-        "launches" => serde_json::to_value(schemars::schema_for!(LaunchesResponse))?,
-        "inspect" => serde_json::to_value(schemars::schema_for!(InspectResponse))?,
-        "metrics" => serde_json::to_value(schemars::schema_for!(MetricsResponse))?,
-        "disasm" => serde_json::to_value(schemars::schema_for!(DisasmResponse))?,
-        "ranges" => serde_json::to_value(schemars::schema_for!(RangesResponse))?,
-        "graphs" => serde_json::to_value(schemars::schema_for!(GraphsResponse))?,
-        "sources" => serde_json::to_value(schemars::schema_for!(SourcesResponse))?,
-        "source-metrics" => serde_json::to_value(schemars::schema_for!(SourceMetricsResponse))?,
-        "warp-stalls" => serde_json::to_value(schemars::schema_for!(WarpStallsResponse))?,
-        other => anyhow::bail!(
-            "unknown ncu schema target `{other}`; expected one of: \
-             summary, launches, inspect, metrics, disasm, ranges, graphs, sources, source-metrics, warp-stalls"
-        ),
+pub fn schema_value_for(target: &str) -> NcuSourceResult<serde_json::Value> {
+    let schema = match target {
+        "summary" => schemars::schema_for!(NativeSummaryResponse),
+        "launches" => schemars::schema_for!(LaunchesResponse),
+        "inspect" => schemars::schema_for!(InspectResponse),
+        "metrics" => schemars::schema_for!(MetricsResponse),
+        "disasm" => schemars::schema_for!(DisasmResponse),
+        "ranges" => schemars::schema_for!(RangesResponse),
+        "graphs" => schemars::schema_for!(GraphsResponse),
+        "sources" => schemars::schema_for!(SourcesResponse),
+        "source-metrics" => schemars::schema_for!(SourceMetricsResponse),
+        "warp-stalls" => schemars::schema_for!(WarpStallsResponse),
+        other => return Err(NcuSourceError::unknown_schema_target(other)),
     };
-    Ok(value)
+    serde_json::to_value(schema).map_err(|source| NcuSourceError::serialize_schema(target, source))
 }

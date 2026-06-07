@@ -18,6 +18,7 @@
 pub mod cli;
 pub mod disasm;
 pub mod disasm_pipeline;
+pub mod error;
 pub mod glob;
 pub mod help;
 pub mod inspect;
@@ -33,4 +34,5 @@ pub mod views;
 pub mod warp_stalls;
 
 pub use cli::Cmd;
+pub use error::{NcuSourceError, NcuSourceResult};
 pub use source::NcuSource;

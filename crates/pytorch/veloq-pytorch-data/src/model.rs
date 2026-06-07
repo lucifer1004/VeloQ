@@ -16,9 +16,20 @@ pub struct TraceSet {
     pub links: Vec<EventLink>,
     pub collectives: Vec<CollectiveGroup>,
     pub capabilities: Capabilities,
+    pub schema_survey: TraceSchemaSurvey,
 }
 
 impl TraceSet {
+    pub fn query_trace(&self) -> QueryTrace {
+        QueryTrace {
+            input_path: self.input_path.clone(),
+            artifact_dir: self.artifact_dir.clone(),
+            fingerprint: self.fingerprint.clone(),
+            trace_span: self.trace_span,
+            capabilities: self.capabilities.clone(),
+        }
+    }
+
     pub fn trace_ref(&self) -> EnvelopeTraceRef {
         EnvelopeTraceRef {
             kind: SOURCE_KIND,
@@ -48,7 +59,36 @@ impl TraceSet {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryTrace {
+    pub input_path: String,
+    pub artifact_dir: String,
+    pub fingerprint: InputFingerprint,
+    pub trace_span: Option<TimeRange>,
+    pub capabilities: Capabilities,
+}
+
+impl QueryTrace {
+    pub fn trace_ref(&self) -> EnvelopeTraceRef {
+        EnvelopeTraceRef {
+            kind: SOURCE_KIND,
+            path: self.input_path.clone(),
+        }
+    }
+
+    pub fn envelope_trace_span(&self) -> Option<TraceSpan> {
+        self.trace_span.map(|r| TraceSpan {
+            origin_ns: r.start_ns,
+            span_ns: r.duration_ns,
+        })
+    }
+
+    pub fn is_multi_rank(&self) -> bool {
+        self.capabilities.rank_count > 1
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TimeRange {
     pub start_ns: i64,
     pub end_ns: i64,
@@ -64,6 +104,7 @@ pub struct InputFingerprint {
 pub struct FileFingerprint {
     pub path: String,
     pub mtime_secs: i64,
+    pub mtime_nanos: u32,
     pub size: u64,
 }
 
@@ -155,6 +196,11 @@ pub struct Event {
     pub correlation_id: Option<i64>,
     pub step: Option<i64>,
     pub step_row_id: Option<String>,
+    pub python_id: Option<i64>,
+    pub python_parent_id: Option<i64>,
+    pub python_context_row_id: Option<String>,
+    pub python_context_name: Option<String>,
+    pub python_context_path: Option<String>,
     pub is_comm: bool,
     pub comm_kind: Option<String>,
     pub bytes: Option<i64>,
@@ -208,15 +254,18 @@ pub struct CollectiveGroup {
     pub start_ns: i64,
     pub end_ns: i64,
     pub duration_ns: i64,
-    pub skew_ns: i64,
+    pub skew_ns: Option<i64>,
     pub slow_rank: Option<i64>,
     pub per_rank: Vec<CollectiveRankTiming>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectiveRankTiming {
-    pub rank: i64,
+    pub rank: Option<i64>,
     pub row_id: String,
+    pub cpu_row_id: Option<String>,
+    pub kernel_row_ids: Vec<String>,
+    pub event_row_ids: Vec<String>,
     pub name: String,
     pub start_ns: i64,
     pub duration_ns: i64,
@@ -235,6 +284,7 @@ pub struct Capabilities {
     pub has_gpu_activity: bool,
     pub has_memory_events: bool,
     pub has_python_events: bool,
+    pub has_python_stack: bool,
     pub has_comm_events: bool,
     pub has_steps: bool,
     pub has_flows: bool,
@@ -249,6 +299,7 @@ pub struct PrepState {
     pub cache_version: u32,
     pub cache_fresh: bool,
     pub sidecars: Vec<SidecarState>,
+    pub schema_survey: Option<TraceSchemaSurvey>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +308,44 @@ pub struct SidecarState {
     pub name: String,
     pub path: String,
     pub present: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceSchemaSurvey {
+    pub raw_event_count: usize,
+    pub parsed_event_count: usize,
+    pub flow_marker_count: usize,
+    pub skipped_event_count: usize,
+    pub files: Vec<TraceFileSchemaSurvey>,
+    pub phase_counts: BTreeMap<String, usize>,
+    pub category_counts: BTreeMap<String, usize>,
+    pub event_type_counts: BTreeMap<String, usize>,
+    pub arg_key_counts: BTreeMap<String, usize>,
+    pub typed_arg_coverage: TypedArgCoverage,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TraceFileSchemaSurvey {
+    pub trace_index: u32,
+    pub raw_event_count: usize,
+    pub parsed_event_count: usize,
+    pub flow_marker_count: usize,
+    pub skipped_event_count: usize,
+    pub top_level_keys: Vec<String>,
+    pub has_device_properties: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TypedArgCoverage {
+    pub rank: usize,
+    pub worker: usize,
+    pub device_id: usize,
+    pub stream_id: usize,
+    pub external_id: usize,
+    pub correlation_id: usize,
+    pub step: usize,
+    pub bytes: usize,
+    pub shape: usize,
 }
 
 #[derive(Debug, Clone)]

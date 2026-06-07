@@ -1,0 +1,25 @@
+[package]
+name = "veloq-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Source-neutral data processing helpers for VeloQ profile backends."
+include = ["src/**/*.rs"]
+
+[dependencies]
+arrow.workspace = true
+flate2.workspace = true
+log.workspace = true
+parquet.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+veloq-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -398,10 +398,20 @@ fn recipes_lists_registered_workflows() -> Result<()> {
 fn recipes_show_unknown_id_errors() -> Result<()> {
     let out = run_veloq(["recipes", "no-such-recipe"])?;
     assert_eq!(out.status.code(), Some(1));
+    assert!(
+        out.stderr.is_empty(),
+        "json meta error should keep stderr quiet; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let v = parse_stdout(&out)?;
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
+    assert_eq!(at(&v, "/error/code")?.as_str(), Some("meta.unknown-recipe"));
+    assert_eq!(
+        at(&v, "/error/hint")?.as_str(),
+        Some("run `veloq recipes` to list registered ids")
+    );
     assert!(
         msg.contains("no-such-recipe"),
         "error must name the missing id: {msg}",

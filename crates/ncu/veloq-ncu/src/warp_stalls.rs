@@ -19,11 +19,11 @@
 //! only — no severity ranking, no percentages (a jq one-liner over the
 //! counts), no remediation hints. Those live in the skill docs.
 
-use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::glob;
 use crate::native::{self, NativeSidecar, NativeWarpStallPc};
 
@@ -36,14 +36,12 @@ pub enum Axis {
 }
 
 impl Axis {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NcuSourceResult<Self> {
         match s {
             "line" => Ok(Axis::Line),
             "sass" => Ok(Axis::Sass),
             "reason" => Ok(Axis::Reason),
-            other => {
-                anyhow::bail!("unknown --by axis `{other}`; expected one of: line, sass, reason")
-            }
+            other => Err(NcuSourceError::unknown_warp_stalls_axis(other)),
         }
     }
 
@@ -130,7 +128,7 @@ pub struct WarpStallsResponse {
     pub auxiliary: WarpStallsAuxiliary,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: WarpStallsRequest) -> Result<WarpStallsResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: WarpStallsRequest) -> NcuSourceResult<WarpStallsResponse> {
     let sidecar = native::cache::build_or_load(path.as_ref())?;
     let cache_path = native::cache::path_for(path.as_ref()).display().to_string();
     run_on_sidecar(&sidecar, req, cache_path)
@@ -144,16 +142,21 @@ pub fn run_on_sidecar(
     sidecar: &NativeSidecar,
     req: WarpStallsRequest,
     cache_path: String,
-) -> Result<WarpStallsResponse> {
-    anyhow::ensure!(req.limit > 0, "--limit must be at least 1");
+) -> NcuSourceResult<WarpStallsResponse> {
+    if req.limit == 0 {
+        return Err(NcuSourceError::limit_too_small(req.limit));
+    }
     let idx = crate::row_id::parse_launch_idx(&req.row_id)?;
     let n_launches = sidecar.launches.len();
-    anyhow::ensure!(
-        idx < n_launches,
-        "launch idx {idx} out of range ({n_launches} launches in this report)"
-    );
+    if idx >= n_launches {
+        return Err(NcuSourceError::launch_row_id_out_of_range(
+            &req.row_id,
+            idx,
+            n_launches,
+        ));
+    }
     let Some(launch) = sidecar.launches.get(idx) else {
-        anyhow::bail!("internal: launch:{idx} vanished after bounds check");
+        return Err(NcuSourceError::launch_vanished_after_bounds_check(idx));
     };
 
     let file_matcher = req.file_glob.as_deref().map(glob::compile);
@@ -305,4 +308,18 @@ fn reason_rows(lk: &str, per_reason: &BTreeMap<String, u64>) -> Vec<WarpStallsRo
             .then_with(|| a.reason.cmp(&b.reason))
     });
     rows.into_iter().map(WarpStallsRow::Reason).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn axis_parse_error_is_typed() -> Result<()> {
+        let err = Axis::parse("pc").err().context("axis parse should fail")?;
+        assert_eq!(err.code().as_str(), "ncu.command.unknown-warp-stalls-axis");
+        Ok(())
+    }
 }

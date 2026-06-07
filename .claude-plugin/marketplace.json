@@ -8,7 +8,7 @@
     {
       "name": "veloq-profile-analysis",
       "description": "Profile-analysis skills (nsys + ncu + pytorch) backed by the veloq CLI. Install the veloq binary separately via scripts/install.sh.",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "source": "./"
     }
   ]

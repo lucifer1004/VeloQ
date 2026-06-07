@@ -13,6 +13,7 @@
 
 use crate::cli::Cmd;
 use crate::disasm;
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::inspect;
 use crate::launches;
 use crate::lists;
@@ -25,13 +26,12 @@ use crate::views::{
     disasm_view, graphs_view, inspect_view, launches_view, metrics_view, native_summary_view,
     ranges_view, source_metrics_view, sources_view, warp_stalls_view,
 };
-use anyhow::Result;
 use clap::{ArgMatches, Command, FromArgMatches, Subcommand};
 use std::path::Path;
 use veloq_core::{
-    Envelope, EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef,
+    Envelope, EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef, SourceRunResult,
     tabular::{TabularView, emit_csv, emit_table},
-    write_error_envelope,
+    write_diagnostic_error_envelope,
 };
 
 pub struct NcuSource;
@@ -84,22 +84,20 @@ impl ProfileSource for NcuSource {
         crate::help::inject_long_about(Cmd::augment_subcommands(parent))
     }
 
-    fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> Result<i32> {
+    fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {
         let cmd = Cmd::from_arg_matches(matches)?;
         let verb = cmd.name();
         let qualified = format!("{}.{verb}", Self::KIND);
 
         if let Cmd::Schema { target } = &cmd {
             if fmt != OutputFormat::Json {
-                let err = anyhow::anyhow!(
-                    "veloq-ncu schema currently supports only --format json (got `{fmt}`)"
-                );
+                let err = NcuSourceError::UnsupportedSchemaFormat { fmt };
                 emit_err(verb, None, &err, fmt);
                 return Ok(1);
             }
             match schema_value_for(target) {
                 Ok(schema) => {
-                    veloq_core::emit_envelope(
+                    if let Err(err) = veloq_core::emit_envelope(
                         Self::source_ref(),
                         qualified,
                         None,
@@ -109,7 +107,12 @@ impl ProfileSource for NcuSource {
                             target: target.clone(),
                             schema,
                         },
-                    )?;
+                    )
+                    .map_err(NcuSourceError::serialize_envelope)
+                    {
+                        emit_err(verb, None, &err, fmt);
+                        return Ok(1);
+                    }
                     return Ok(0);
                 }
                 Err(err) => {
@@ -121,8 +124,11 @@ impl ProfileSource for NcuSource {
 
         let trace = cmd
             .trace_path()
-            .ok_or_else(|| anyhow::anyhow!("internal: ncu verb missing trace path"))?
+            .ok_or(NcuSourceError::MissingTracePath)?
             .to_path_buf();
+        if emit_missing_trace_error(verb, &trace, fmt) {
+            return Ok(1);
+        }
 
         // Detail verbs (launches / inspect / metrics / disasm / ranges
         // / graphs / sources / source-metrics) ship their own narrow
@@ -138,19 +144,27 @@ impl ProfileSource for NcuSource {
                 limit,
                 ..
             } => {
-                let grid = match grid.as_deref().map(launches::parse_dims).transpose() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        emit_err(verb, Some(&trace), &err, fmt);
-                        return Ok(1);
-                    }
+                let grid = match grid.as_deref() {
+                    Some(value) => match launches::parse_dims(value).map(Some) {
+                        Ok(value) => value,
+                        Err(source) => {
+                            let err = NcuSourceError::invalid_launch_dims("--grid", value, source);
+                            emit_err(verb, Some(&trace), &err, fmt);
+                            return Ok(1);
+                        }
+                    },
+                    None => None,
                 };
-                let block = match block.as_deref().map(launches::parse_dims).transpose() {
-                    Ok(v) => v,
-                    Err(err) => {
-                        emit_err(verb, Some(&trace), &err, fmt);
-                        return Ok(1);
-                    }
+                let block = match block.as_deref() {
+                    Some(value) => match launches::parse_dims(value).map(Some) {
+                        Ok(value) => value,
+                        Err(source) => {
+                            let err = NcuSourceError::invalid_launch_dims("--block", value, source);
+                            emit_err(verb, Some(&trace), &err, fmt);
+                            return Ok(1);
+                        }
+                    },
+                    None => None,
                 };
                 let req = launches::LaunchesRequest {
                     kernel_glob: kernel.clone(),
@@ -159,24 +173,27 @@ impl ProfileSource for NcuSource {
                     block,
                     limit: *limit,
                 };
-                return emit_response(
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     launches::run(&trace, req),
                     launches_view,
-                );
+                )?);
             }
             Cmd::Inspect { row_ids, .. } => {
-                return emit_response(
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     inspect::run(&trace, row_ids),
                     inspect_view,
-                );
+                )?);
             }
             Cmd::Metrics {
                 counter,
@@ -185,61 +202,79 @@ impl ProfileSource for NcuSource {
                 limit,
                 ..
             } => {
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                if emit_counter_glob_error(verb, &trace, counter, fmt) {
+                    return Ok(1);
+                }
                 let req = metrics::MetricsRequest {
                     counter_glob: counter.clone(),
                     kernel_glob: kernel.clone(),
                     per_launch: *per_launch,
                     limit: *limit,
                 };
-                return emit_response(
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     metrics::run(&trace, req),
                     metrics_view,
-                );
+                )?);
             }
             Cmd::Disasm { row_id, .. } => {
-                return emit_response(
+                if emit_launch_row_id_error(verb, &trace, row_id, fmt) {
+                    return Ok(1);
+                }
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     disasm::run(&trace, row_id),
                     disasm_view,
-                );
+                )?);
             }
             // Auxiliary list verbs — each is a thin sidecar projection.
             Cmd::Ranges { limit, .. } => {
-                return emit_response(
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     lists::ranges(&trace, *limit),
                     ranges_view,
-                );
+                )?);
             }
             Cmd::Graphs { limit, .. } => {
-                return emit_response(
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     lists::graphs(&trace, *limit),
                     graphs_view,
-                );
+                )?);
             }
             Cmd::Sources { limit, .. } => {
-                return emit_response(
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     lists::sources(&trace, *limit),
                     sources_view,
-                );
+                )?);
             }
             Cmd::SourceMetrics {
                 row_id,
@@ -258,6 +293,20 @@ impl ProfileSource for NcuSource {
                         return Ok(1);
                     }
                 };
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                if line.is_some() && file.is_none() {
+                    let err = NcuSourceError::SourceMetricsLineWithoutFile;
+                    emit_err(verb, Some(&trace), &err, fmt);
+                    return Ok(1);
+                }
+                if emit_counter_glob_error(verb, &trace, counter, fmt) {
+                    return Ok(1);
+                }
+                if emit_launch_row_id_error(verb, &trace, row_id, fmt) {
+                    return Ok(1);
+                }
                 let req = crate::source_metrics::SourceMetricsRequest {
                     row_id: row_id.clone(),
                     counter_glob: counter.clone(),
@@ -267,14 +316,14 @@ impl ProfileSource for NcuSource {
                     sort: sort.clone(),
                     limit: *limit,
                 };
-                return emit_response(
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     crate::source_metrics::run(&trace, req),
                     source_metrics_view,
-                );
+                )?);
             }
             Cmd::WarpStalls {
                 row_id,
@@ -290,20 +339,26 @@ impl ProfileSource for NcuSource {
                         return Ok(1);
                     }
                 };
+                if emit_limit_error(verb, &trace, *limit, fmt) {
+                    return Ok(1);
+                }
+                if emit_launch_row_id_error(verb, &trace, row_id, fmt) {
+                    return Ok(1);
+                }
                 let req = crate::warp_stalls::WarpStallsRequest {
                     row_id: row_id.clone(),
                     by: axis,
                     file_glob: file.clone(),
                     limit: *limit,
                 };
-                return emit_response(
+                return Ok(emit_typed_response(
                     verb,
                     &qualified,
                     &trace,
                     fmt,
                     crate::warp_stalls::run(&trace, req),
                     warp_stalls_view,
-                );
+                )?);
             }
             _ => {}
         }
@@ -338,33 +393,59 @@ impl ProfileSource for NcuSource {
                 meta_cache_path: native::cache::path_for(&trace).display().to_string(),
             },
         };
-        let trace_str = trace.display().to_string();
-        match fmt {
-            OutputFormat::Json => {
-                veloq_core::emit_envelope(
-                    Self::source_ref(),
-                    qualified,
-                    Some(Self::trace_ref(&trace)),
-                    None,
-                    None,
-                    response,
-                )?;
-            }
-            OutputFormat::Csv => emit_csv(&native_summary_view(&response), &qualified, &trace_str)?,
-            OutputFormat::Table => {
-                emit_table(&native_summary_view(&response), &qualified, &trace_str)?;
+        match emit_response_value(&qualified, &trace, fmt, response, native_summary_view) {
+            Ok(code) => Ok(code),
+            Err(err) => {
+                emit_err(verb, Some(&trace), &err, fmt);
+                Ok(1)
             }
         }
-        Ok(0)
     }
 }
 
-/// Shim around [`write_error_envelope`] that takes the NCU-typed
+fn emit_limit_error(verb: &str, trace: &Path, limit: usize, fmt: OutputFormat) -> bool {
+    if limit > 0 {
+        return false;
+    }
+    let err = NcuSourceError::limit_too_small(limit);
+    emit_err(verb, Some(trace), &err, fmt);
+    true
+}
+
+fn emit_counter_glob_error(verb: &str, trace: &Path, counter: &str, fmt: OutputFormat) -> bool {
+    if counter.split(',').any(|part| !part.trim().is_empty()) {
+        return false;
+    }
+    let err = NcuSourceError::counter_glob_empty();
+    emit_err(verb, Some(trace), &err, fmt);
+    true
+}
+
+fn emit_missing_trace_error(verb: &str, trace: &Path, fmt: OutputFormat) -> bool {
+    if trace.exists() || native::cache::path_for(trace).is_file() {
+        return false;
+    }
+    let err = NcuSourceError::trace_not_found(trace);
+    emit_err(verb, Some(trace), &err, fmt);
+    true
+}
+
+fn emit_launch_row_id_error(verb: &str, trace: &Path, row_id: &str, fmt: OutputFormat) -> bool {
+    match crate::row_id::parse_launch_idx(row_id) {
+        Ok(_) => false,
+        Err(err) => {
+            emit_err(verb, Some(trace), &err, fmt);
+            true
+        }
+    }
+}
+
+/// Shim around [`write_diagnostic_error_envelope`] that takes the NCU-typed
 /// trace path. Centralizes the `Option<&Path> -> Option<EnvelopeTraceRef>`
 /// projection so the `run()` arms stay terse. `trace_span` is always
 /// `None` for NCU today (see the trace-span note in `run()`).
-fn emit_err(verb: &str, trace: Option<&Path>, err: &anyhow::Error, fmt: OutputFormat) {
-    write_error_envelope(
+fn emit_err(verb: &str, trace: Option<&Path>, err: &NcuSourceError, fmt: OutputFormat) {
+    write_diagnostic_error_envelope(
         NcuSource::source_ref(),
         verb,
         trace.map(NcuSource::trace_ref),
@@ -374,19 +455,14 @@ fn emit_err(verb: &str, trace: Option<&Path>, err: &anyhow::Error, fmt: OutputFo
     );
 }
 
-/// Per-verb response dispatch. Builds and prints either a
-/// JSON envelope or a CSV/table projection of the response. The
-/// `to_view` closure is per verb (`ranges_view`, `launches_view`,
-/// …) and only runs in the CSV/table branches, so JSON callers
-/// don't pay for tabular column derivation.
-fn emit_response<T, F>(
+fn emit_typed_response<T, F>(
     verb: &str,
     qualified: &str,
     trace: &Path,
     fmt: OutputFormat,
-    response: Result<T>,
+    response: NcuSourceResult<T>,
     to_view: F,
-) -> Result<i32>
+) -> NcuSourceResult<i32>
 where
     T: serde::Serialize,
     F: FnOnce(&T) -> TabularView,
@@ -398,6 +474,26 @@ where
             return Ok(1);
         }
     };
+    match emit_response_value(qualified, trace, fmt, response, to_view) {
+        Ok(code) => Ok(code),
+        Err(err) => {
+            emit_err(verb, Some(trace), &err, fmt);
+            Ok(1)
+        }
+    }
+}
+
+fn emit_response_value<T, F>(
+    qualified: &str,
+    trace: &Path,
+    fmt: OutputFormat,
+    response: T,
+    to_view: F,
+) -> NcuSourceResult<i32>
+where
+    T: serde::Serialize,
+    F: FnOnce(&T) -> TabularView,
+{
     let trace_str = trace.display().to_string();
     match fmt {
         OutputFormat::Json => {
@@ -409,7 +505,11 @@ where
                 None,
                 response,
             );
-            println!("{}", env.to_json_pretty()?);
+            println!(
+                "{}",
+                env.to_json_pretty()
+                    .map_err(NcuSourceError::serialize_envelope)?
+            );
         }
         OutputFormat::Csv => emit_csv(&to_view(&response), qualified, &trace_str)?,
         OutputFormat::Table => emit_table(&to_view(&response), qualified, &trace_str)?,

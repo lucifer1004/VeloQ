@@ -18,8 +18,7 @@
 //! the event, plus the range's nesting depth and a 0-based
 //! `iter_index` among same-name repeats.
 
-use crate::{EventKind, RowId};
-use anyhow::Result;
+use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 use serde::Serialize;
 
 /// Shared fields on every `EventRef` variant. Lives in a separate
@@ -205,7 +204,7 @@ impl EventRef {
     /// the per-kind headline columns and only have the shared base
     /// available. Errors when `kind` is `CpuSample`, which has no
     /// EventRef variant.
-    pub fn from_base(kind: EventKind, base: EventRefBase) -> Result<Self> {
+    pub fn from_base(kind: EventKind, base: EventRefBase) -> NsysQueryResult<Self> {
         Ok(match kind {
             EventKind::Kernel => EventRef::Kernel(EventRefKernel {
                 base,
@@ -241,11 +240,9 @@ impl EventRef {
             EventKind::GraphEvent => EventRef::GraphEvent(base),
             EventKind::CudaEvent => EventRef::CudaEvent(base),
             EventKind::Overhead => EventRef::Overhead(base),
-            EventKind::CpuSample => anyhow::bail!(
-                "internal: EventRef::from_base called with CpuSample, which has no EventRef \
-                 variant (cpu_sample rows surface via `metrics --type cpu-sampling` and \
-                 `inspect cpu_sample:<id>`, never via search/correlate)"
-            ),
+            EventKind::CpuSample => {
+                return Err(NsysQueryError::SearchCpuSampleUnsupported);
+            }
         })
     }
 }

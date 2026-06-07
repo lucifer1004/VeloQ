@@ -90,15 +90,96 @@ fn symbol_axis_collapses_unresolved_per_module() -> Result<()> {
     assert_eq!(func_a.module_name.as_deref(), Some("libapp.so"));
     assert_eq!(func_a.kernel_mode, Some(false));
     assert_eq!(func_a.unresolved, Some(false));
+    assert_eq!(func_a.sample_row_id.as_deref(), Some("cpu_sample:1"));
+    assert_eq!(func_a.sample_start_ns, Some(100_000_000));
 
     let func_b = row_by_key(&r.rows, "func_b")?;
     assert_eq!(func_b.samples, 1);
+    assert_eq!(func_b.sample_row_id.as_deref(), Some("cpu_sample:3"));
 
     let unres = row_by_key(&r.rows, "<unresolved>@[kernel.kallsyms]")?;
     assert_eq!(unres.samples, 1);
     assert_eq!(unres.kernel_mode, Some(true));
     assert_eq!(unres.unresolved, Some(true));
     assert!(unres.symbol_name.is_none(), "unresolved row has no symbol");
+    assert_eq!(unres.sample_row_id.as_deref(), Some("cpu_sample:4"));
+    Ok(())
+}
+
+#[test]
+fn stack_axis_groups_callchain_signatures() -> Result<()> {
+    let trace = fixture::with_cpu_sampling()?;
+    let req = cpu_req(|r| {
+        r.group_by = Some("stack".to_string());
+    });
+    let r = expect_cpu_sampling(veloq_nsys_query::metrics::run(trace.path(), req)?)?;
+    assert_eq!(r.auxiliary.group_by, "stack");
+    assert_eq!(r.rows.len(), 3);
+
+    let hot = r
+        .rows
+        .iter()
+        .find(|row| row.samples == 4)
+        .ok_or_else(|| anyhow!("expected 4-sample stack row"))?;
+    assert!(hot.key.starts_with("stack|"));
+    assert_eq!(hot.stack_hash.as_deref(), hot.key.strip_prefix("stack|"));
+    assert_eq!(hot.stack_depth, Some(3));
+    assert_eq!(hot.sample_row_id.as_deref(), Some("cpu_sample:1"));
+    assert!(
+        hot.stack_frames
+            .iter()
+            .any(|frame| frame == "func_a@libapp.so"),
+        "frames: {:?}",
+        hot.stack_frames
+    );
+    assert!(
+        hot.stack_frames.iter().any(|frame| frame == "[Max depth]"),
+        "frames: {:?}",
+        hot.stack_frames
+    );
+    Ok(())
+}
+
+#[test]
+fn stack_axis_name_glob_matches_any_frame() -> Result<()> {
+    let trace = fixture::with_cpu_sampling()?;
+    let req = cpu_req(|r| {
+        r.group_by = Some("stack".to_string());
+        r.name_glob = Some("*func_b*".to_string());
+    });
+    let r = expect_cpu_sampling(veloq_nsys_query::metrics::run(trace.path(), req)?)?;
+    assert_eq!(r.rows.len(), 1);
+    let row = r
+        .rows
+        .first()
+        .ok_or_else(|| anyhow!("expected one stack row"))?;
+    assert_eq!(row.samples, 1);
+    assert!(
+        row.stack_frames
+            .iter()
+            .any(|frame| frame == "func_b@libapp.so"),
+        "frames: {:?}",
+        row.stack_frames
+    );
+    Ok(())
+}
+
+#[test]
+fn stack_axis_rejects_bucket_mode() -> Result<()> {
+    let trace = fixture::with_cpu_sampling()?;
+    let req = cpu_req(|r| {
+        r.group_by = Some("stack".to_string());
+        r.common.bucket_ns = Some(20_000_000);
+    });
+    let err = match veloq_nsys_query::metrics::run(trace.path(), req) {
+        Ok(_) => bail!("expected stack bucket mode to error"),
+        Err(e) => e,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--group-by stack does not support --bucket"),
+        "got: {msg}"
+    );
     Ok(())
 }
 

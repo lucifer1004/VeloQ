@@ -40,7 +40,6 @@
 //! acquire the flock at `<stem>.nsys-rep.veloq/export.lock` performs the export; the
 //! second blocks, re-checks the cache, and short-circuits.
 
-use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -50,6 +49,8 @@ use std::sync::OnceLock;
 #[cfg(not(unix))]
 use std::time::UNIX_EPOCH;
 use veloq_core::{ARTIFACT_DIR_SUFFIX, artifact_dir_for};
+
+use crate::{NsysDataError, NsysDataResult};
 
 /// Directory suffix matching nsys's own naming
 /// (`nsys_recipe.lib.data_reader.ParquetLoader::output_suffix`).
@@ -84,10 +85,10 @@ pub struct ResolvedTracePath {
 ///
 /// `.sqlite` inputs are rejected outright; veloq has no SQLite
 /// ingestion path.
-pub fn resolve_trace(path: &Path) -> Result<ResolvedTracePath> {
+pub fn resolve_trace(path: &Path) -> NsysDataResult<ResolvedTracePath> {
     if is_nsys_rep(path) {
         if !path.exists() {
-            bail!("trace not found: {}", path.display());
+            return Err(NsysDataError::trace_not_found(path.display()));
         }
         return Ok(ResolvedTracePath {
             source_path: path.to_path_buf(),
@@ -96,10 +97,9 @@ pub fn resolve_trace(path: &Path) -> Result<ResolvedTracePath> {
     }
     if let Some(owner) = generated_parquetdir_owner(path) {
         if !owner.exists() {
-            bail!(
-                "generated parquetdir belongs to missing .nsys-rep source: {}",
-                owner.display()
-            );
+            return Err(NsysDataError::generated_parquetdir_source_missing(
+                owner.display(),
+            ));
         }
         return Ok(ResolvedTracePath {
             source_path: owner.clone(),
@@ -108,7 +108,7 @@ pub fn resolve_trace(path: &Path) -> Result<ResolvedTracePath> {
     }
     if is_parquetdir(path) {
         if !path.exists() {
-            bail!("parquetdir not found: {}", path.display());
+            return Err(NsysDataError::parquetdir_not_found(path.display()));
         }
         return Ok(ResolvedTracePath {
             source_path: path.to_path_buf(),
@@ -116,12 +116,7 @@ pub fn resolve_trace(path: &Path) -> Result<ResolvedTracePath> {
         });
     }
     if path.extension().is_some_and(|e| e == "sqlite") {
-        bail!(
-            "veloq does not read .sqlite traces directly. \
-             Pass the original .nsys-rep instead.\n\
-             Rejected: {}",
-            path.display()
-        );
+        return Err(NsysDataError::sqlite_input_unsupported(path.display()));
     }
     // Otherwise pass through unchanged — useful for unit tests that
     // pass dummy paths the rest of the pipeline won't follow.
@@ -129,11 +124,6 @@ pub fn resolve_trace(path: &Path) -> Result<ResolvedTracePath> {
         source_path: path.to_path_buf(),
         pqtdir_path: path.to_path_buf(),
     })
-}
-
-/// Back-compat helper for callers that only need the parquetdir.
-pub fn resolve_trace_path(path: &Path) -> Result<PathBuf> {
-    Ok(resolve_trace(path)?.pqtdir_path)
 }
 
 fn is_nsys_rep(path: &Path) -> bool {
@@ -198,7 +188,7 @@ fn nsys_generated_pqtdir_paths_for(export_cwd: &Path) -> [PathBuf; 2] {
     [export_cwd.join(EXPORT_BASENAME), export_cwd.join(name)]
 }
 
-fn ensure_parquetdir(nsys_rep: &Path) -> Result<PathBuf> {
+fn ensure_parquetdir(nsys_rep: &Path) -> NsysDataResult<PathBuf> {
     let pqtdir = pqtdir_path_for(nsys_rep);
 
     // Lock-free fast path.
@@ -209,7 +199,7 @@ fn ensure_parquetdir(nsys_rep: &Path) -> Result<PathBuf> {
     let lock_path = lock_path_for(nsys_rep);
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("creating artifact directory {}", parent.display()))?;
+            .map_err(|source| NsysDataError::artifact_dir_create(parent.display(), source))?;
     }
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -217,10 +207,10 @@ fn ensure_parquetdir(nsys_rep: &Path) -> Result<PathBuf> {
         .create(true)
         .truncate(false)
         .open(&lock_path)
-        .with_context(|| format!("opening parquetdir export lockfile {}", lock_path.display()))?;
+        .map_err(|source| NsysDataError::nsys_export_lockfile_open(lock_path.display(), source))?;
     lock_file
         .lock()
-        .with_context(|| format!("flock {}", lock_path.display()))?;
+        .map_err(|source| NsysDataError::nsys_export_lock_acquire(lock_path.display(), source))?;
 
     // Re-check cache validity under the lock — a concurrent process
     // may have produced the parquetdir while we waited.
@@ -235,21 +225,22 @@ fn ensure_parquetdir(nsys_rep: &Path) -> Result<PathBuf> {
     Ok(pqtdir)
 }
 
-fn publish_existing_generated_export(source: &Path, pqtdir: &Path) -> Result<bool> {
+fn publish_existing_generated_export(source: &Path, pqtdir: &Path) -> NsysDataResult<bool> {
     let cache_root = artifact_dir_for(source);
     for generated_path in nsys_generated_pqtdir_paths_for(&cache_root) {
         if !cache_valid(source, &generated_path)? {
             continue;
         }
         if pqtdir.exists() {
-            fs::remove_dir_all(pqtdir)
-                .with_context(|| format!("removing stale parquetdir {}", pqtdir.display()))?;
+            fs::remove_dir_all(pqtdir).map_err(|source| {
+                NsysDataError::nsys_parquetdir_stale_remove(pqtdir.display(), source)
+            })?;
         }
-        fs::rename(&generated_path, pqtdir).with_context(|| {
-            format!(
-                "publishing parquetdir {} to {}",
+        fs::rename(&generated_path, pqtdir).map_err(|source| {
+            NsysDataError::nsys_parquetdir_publish(
                 generated_path.display(),
-                pqtdir.display()
+                pqtdir.display(),
+                source,
             )
         })?;
         return Ok(true);
@@ -263,7 +254,7 @@ fn publish_existing_generated_export(source: &Path, pqtdir: &Path) -> Result<boo
 /// own ctime (which on some filesystems doesn't advance on child
 /// writes). On Unix, Rust's `created()` is birth time rather than
 /// ctime, so use `MetadataExt::ctime` explicitly.
-fn cache_valid(nsys_rep: &Path, pqtdir: &Path) -> Result<bool> {
+fn cache_valid(nsys_rep: &Path, pqtdir: &Path) -> NsysDataResult<bool> {
     if !pqtdir.is_dir() {
         return Ok(false);
     }
@@ -273,9 +264,9 @@ fn cache_valid(nsys_rep: &Path, pqtdir: &Path) -> Result<bool> {
         return Ok(false);
     }
     let src_meta = fs::metadata(nsys_rep)
-        .with_context(|| format!("stat .nsys-rep source {}", nsys_rep.display()))?;
+        .map_err(|source| NsysDataError::nsys_cache_source_stat(nsys_rep.display(), source))?;
     let sentinel_meta = fs::metadata(&sentinel)
-        .with_context(|| format!("stat parquetdir sentinel {}", sentinel.display()))?;
+        .map_err(|source| NsysDataError::nsys_cache_sentinel_stat(sentinel.display(), source))?;
     let (Some(src), Some(cached)) = (change_time_key(&src_meta), change_time_key(&sentinel_meta))
     else {
         return Ok(false);
@@ -297,33 +288,45 @@ fn change_time_key(meta: &fs::Metadata) -> Option<(i64, i64)> {
         .map(|d| (d.as_secs() as i64, d.subsec_nanos() as i64))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CapabilityProbeFailure {
+    ParquetdirUnsupported { detected: String },
+    ProbeFailed { message: String },
+}
+
+impl CapabilityProbeFailure {
+    fn to_data_error(&self) -> NsysDataError {
+        match self {
+            Self::ParquetdirUnsupported { detected } => {
+                NsysDataError::nsys_parquetdir_unsupported(detected)
+            }
+            Self::ProbeFailed { message } => NsysDataError::nsys_parquetdir_probe_failed(message),
+        }
+    }
+}
+
 /// Capability probe — cached for the process lifetime.
-fn probe_nsys_capability() -> Result<()> {
-    static PROBED: OnceLock<Result<(), String>> = OnceLock::new();
+fn probe_nsys_capability() -> NsysDataResult<()> {
+    static PROBED: OnceLock<std::result::Result<(), CapabilityProbeFailure>> = OnceLock::new();
     let result = PROBED.get_or_init(|| match has_parquetdir_support(Path::new("nsys")) {
         Ok(true) => Ok(()),
         Ok(false) => {
             let detected = nsys_version_string().unwrap_or_else(|_| "unknown".into());
-            Err(format!(
-                "veloq requires nsys ≥ 2024.6 (parquetdir export not supported by this nsys).\n\
-                 Detected: {detected}\n\
-                 Upgrade nsys to 2024.6 or newer."
-            ))
+            Err(CapabilityProbeFailure::ParquetdirUnsupported { detected })
         }
-        Err(e) => Err(format!(
-            "could not probe `nsys export --help type` for parquetdir support — \
-             ensure the Nsight Systems CLI is installed and on PATH ({e:#})"
-        )),
+        Err(e) => Err(CapabilityProbeFailure::ProbeFailed {
+            message: format!("{e:#}"),
+        }),
     });
-    result
-        .as_ref()
-        .map(|_| ())
-        .map_err(|msg| anyhow::anyhow!("{msg}"))
+    match result {
+        Ok(()) => Ok(()),
+        Err(failure) => Err(failure.to_data_error()),
+    }
 }
 
 /// Visible to tests so a fake-nsys can be exercised. Production
 /// callers go through `probe_nsys_capability`.
-pub(crate) fn has_parquetdir_support(nsys_bin: &Path) -> Result<bool> {
+pub(crate) fn has_parquetdir_support(nsys_bin: &Path) -> NsysDataResult<bool> {
     // Retry on `ETXTBSY` (raw os error 26): on some setups (NFS-backed
     // bin dirs, just-written test fixtures, the kernel-side mmap+exec
     // serialisation window) the file is briefly busy right after we
@@ -344,9 +347,8 @@ pub(crate) fn has_parquetdir_support(nsys_bin: &Path) -> Result<bool> {
                 continue;
             }
             Err(e) => {
-                return Err(anyhow::Error::new(e)).with_context(|| {
-                    format!("running `{} export --help type`", nsys_bin.display())
-                });
+                let command = format!("{} export --help type", nsys_bin.display());
+                return Err(NsysDataError::nsys_parquetdir_help_spawn(command, e));
             }
         }
     };
@@ -360,11 +362,16 @@ pub(crate) fn has_parquetdir_support(nsys_bin: &Path) -> Result<bool> {
     Ok(combined.contains("parquetdir"))
 }
 
-fn nsys_version_string() -> Result<String> {
-    let out = Command::new("nsys")
+fn nsys_version_string() -> NsysDataResult<String> {
+    nsys_version_string_with_command(Path::new("nsys"))
+}
+
+fn nsys_version_string_with_command(nsys_bin: &Path) -> NsysDataResult<String> {
+    let command = format!("{} --version", nsys_bin.display());
+    let out = Command::new(nsys_bin)
         .arg("--version")
         .output()
-        .context("running `nsys --version`")?;
+        .map_err(|source| NsysDataError::nsys_version_spawn(command, source))?;
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if s.is_empty() {
         Ok(String::from_utf8_lossy(&out.stderr).trim().to_string())
@@ -373,11 +380,12 @@ fn nsys_version_string() -> Result<String> {
     }
 }
 
-fn export(source: &Path, pqtdir: &Path) -> Result<()> {
+fn export(source: &Path, pqtdir: &Path) -> NsysDataResult<()> {
     export_with_command(source, pqtdir, Path::new("nsys"))
 }
 
-fn export_with_command(source: &Path, pqtdir: &Path, nsys_bin: &Path) -> Result<()> {
+fn export_with_command(source: &Path, pqtdir: &Path, nsys_bin: &Path) -> NsysDataResult<()> {
+    let export_command = format!("{} export -t parquetdir", nsys_bin.display());
     log::info!(
         "exporting {} → parquetdir via `nsys export -t parquetdir` …",
         source.display()
@@ -391,26 +399,21 @@ fn export_with_command(source: &Path, pqtdir: &Path, nsys_bin: &Path) -> Result<
     // path used by veloq.
     let cache_root = artifact_dir_for(source);
     fs::create_dir_all(&cache_root)
-        .with_context(|| format!("creating artifact directory {}", cache_root.display()))?;
+        .map_err(|source| NsysDataError::artifact_dir_create(cache_root.display(), source))?;
     for generated_path in nsys_generated_pqtdir_paths_for(&cache_root) {
         if generated_path.is_dir() {
-            fs::remove_dir_all(&generated_path).with_context(|| {
-                format!(
-                    "removing stale generated parquetdir {}",
-                    generated_path.display()
-                )
+            fs::remove_dir_all(&generated_path).map_err(|source| {
+                NsysDataError::nsys_export_generated_path_remove(generated_path.display(), source)
             })?;
         } else if generated_path.exists() {
-            fs::remove_file(&generated_path).with_context(|| {
-                format!(
-                    "removing stale generated parquetdir placeholder {}",
-                    generated_path.display()
-                )
+            fs::remove_file(&generated_path).map_err(|source| {
+                NsysDataError::nsys_export_generated_path_remove(generated_path.display(), source)
             })?;
         }
     }
-    let source_arg = fs::canonicalize(source)
-        .with_context(|| format!("canonicalizing .nsys-rep source {}", source.display()))?;
+    let source_arg = fs::canonicalize(source).map_err(|source_err| {
+        NsysDataError::nsys_export_source_canonicalize(source.display(), source_err)
+    })?;
     let mut attempts = 0;
     let out = loop {
         match Command::new(nsys_bin)
@@ -428,19 +431,17 @@ fn export_with_command(source: &Path, pqtdir: &Path, nsys_bin: &Path) -> Result<
             Ok(out) => break out,
             Err(e) if retry_text_file_busy(&e, &mut attempts) => continue,
             Err(e) => {
-                return Err(anyhow::Error::new(e)).with_context(
-                    || "running `nsys export -t parquetdir` — ensure the Nsight Systems CLI is installed and on PATH",
-                );
+                return Err(NsysDataError::nsys_export_spawn(export_command, e));
             }
         }
     };
     forward_child_output_to_stderr(&out);
     if !out.status.success() {
-        bail!(
-            "`nsys export -t parquetdir` failed (exit {:?}) for {}",
+        return Err(NsysDataError::nsys_export_failed(
+            export_command,
             out.status.code(),
-            source.display()
-        );
+            source.display(),
+        ));
     }
 
     let generated_pqtdir = nsys_generated_pqtdir_paths_for(&cache_root)
@@ -452,29 +453,27 @@ fn export_with_command(source: &Path, pqtdir: &Path, nsys_bin: &Path) -> Result<
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(" or ");
-            anyhow::anyhow!(
-                "`nsys export -t parquetdir` reported success but produced no directory at {expected}"
-            )
+            NsysDataError::nsys_export_output_missing(expected)
         })?;
     if generated_pqtdir != pqtdir {
         if pqtdir.exists() {
-            fs::remove_dir_all(pqtdir)
-                .with_context(|| format!("removing stale parquetdir {}", pqtdir.display()))?;
+            fs::remove_dir_all(pqtdir).map_err(|source| {
+                NsysDataError::nsys_parquetdir_stale_remove(pqtdir.display(), source)
+            })?;
         }
-        fs::rename(&generated_pqtdir, pqtdir).with_context(|| {
-            format!(
-                "publishing parquetdir {} to {}",
+        fs::rename(&generated_pqtdir, pqtdir).map_err(|source| {
+            NsysDataError::nsys_parquetdir_publish(
                 generated_pqtdir.display(),
-                pqtdir.display()
+                pqtdir.display(),
+                source,
             )
         })?;
     }
 
     if !pqtdir.is_dir() {
-        bail!(
-            "`nsys export -t parquetdir` reported success but produced no directory at {}",
-            pqtdir.display()
-        );
+        return Err(NsysDataError::nsys_export_output_missing(
+            pqtdir.display().to_string(),
+        ));
     }
 
     log::info!(
@@ -518,40 +517,76 @@ fn retry_text_file_busy(e: &std::io::Error, attempts: &mut usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn missing_nsys_rep_returns_typed_error() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing = dir.path().join("missing.nsys-rep");
+        let err = match resolve_trace(&missing) {
+            Ok(path) => anyhow::bail!(
+                "missing report should not resolve to {}",
+                path.pqtdir_path.display()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.trace-not-found");
+        assert!(matches!(err, crate::NsysDataError::TraceNotFound { .. }));
+        Ok(())
+    }
+
     #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    #[cfg(unix)]
+    fn write_fake_nsys(path: &Path, body: &str) -> Result<()> {
+        let mut f = fs::File::create(path)?;
+        f.write_all(body.as_bytes())?;
+        f.sync_all()?;
+        drop(f);
+        let mut perms = fs::metadata(path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms)?;
+        Ok(())
+    }
+
     #[test]
     fn non_nsys_rep_paths_are_passed_through() -> Result<()> {
-        let pqtdir_like = Path::new("/tmp/trace_pqtdir");
+        let dir = tempfile::tempdir()?;
+        let pqtdir_like = dir.path().join("trace_pqtdir");
         // is_parquetdir → returns true; but path doesn't exist → bail.
-        let err = match resolve_trace_path(pqtdir_like) {
+        let err = match resolve_trace(&pqtdir_like) {
             Ok(path) => anyhow::bail!(
                 "missing parquetdir should not resolve to {}",
-                path.display()
+                path.pqtdir_path.display()
             ),
             Err(err) => err,
         };
-        assert!(format!("{err:#}").contains("not found"));
+        assert_eq!(err.code().as_str(), "nsys.data.parquetdir-not-found");
 
         // Unknown extension: pass-through.
         let bare = Path::new("/tmp/example");
-        assert_eq!(resolve_trace_path(bare)?, bare);
+        assert_eq!(resolve_trace(bare)?.pqtdir_path, bare);
         Ok(())
     }
 
     #[test]
     fn sqlite_input_is_rejected() -> Result<()> {
         let p = Path::new("/tmp/trace.sqlite");
-        let err = match resolve_trace_path(p) {
-            Ok(path) => anyhow::bail!("sqlite input should not resolve to {}", path.display()),
+        let err = match resolve_trace(p) {
+            Ok(path) => anyhow::bail!(
+                "sqlite input should not resolve to {}",
+                path.pqtdir_path.display()
+            ),
             Err(err) => err,
         };
-        let msg = format!("{err:#}");
-        assert!(msg.contains(".sqlite"));
-        assert!(msg.contains(".nsys-rep"));
+        assert_eq!(err.code().as_str(), "nsys.data.sqlite-input-unsupported");
+        assert!(err.to_string().contains(".sqlite"));
+        assert!(err.to_string().contains(".nsys-rep"));
         Ok(())
     }
 
@@ -613,8 +648,34 @@ mod tests {
             ),
             Err(err) => err,
         };
-        assert!(format!("{err:#}").contains("generated parquetdir"));
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.generated-parquetdir-source-missing"
+        );
         Ok(())
+    }
+
+    #[test]
+    fn capability_probe_failures_return_typed_errors() {
+        let unsupported = CapabilityProbeFailure::ParquetdirUnsupported {
+            detected: "nsys version 2024.5.0".to_string(),
+        }
+        .to_data_error();
+        assert_eq!(
+            unsupported.code().as_str(),
+            "nsys.data.nsys-parquetdir-unsupported"
+        );
+        assert!(unsupported.to_string().contains("2024.5.0"));
+
+        let probe_failed = CapabilityProbeFailure::ProbeFailed {
+            message: "No such file or directory".to_string(),
+        }
+        .to_data_error();
+        assert_eq!(
+            probe_failed.code().as_str(),
+            "nsys.data.nsys-parquetdir-probe-failed"
+        );
+        assert!(probe_failed.to_string().contains("No such file"));
     }
 
     #[cfg(unix)]
@@ -736,6 +797,268 @@ echo placeholder > "${{out}}_pqtdir/META_DATA_EXPORT.parquet"
             !cwd.join("trace_pqtdir").exists(),
             "export must not write beside caller cwd"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_spawn_failure_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        let pqtdir = pqtdir_path_for(&source);
+        let missing_nsys = dir.path().join("missing-nsys");
+
+        let err = match export_with_command(&source, &pqtdir, &missing_nsys) {
+            Ok(()) => anyhow::bail!("missing nsys binary should not export successfully"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-export-spawn");
+        assert!(matches!(err, crate::NsysDataError::NsysExportSpawn { .. }));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_nonzero_exit_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        let pqtdir = pqtdir_path_for(&source);
+        let fake_nsys = dir.path().join("nsys");
+        write_fake_nsys(
+            &fake_nsys,
+            r#"#!/bin/sh
+exit 9
+"#,
+        )?;
+
+        let err = match export_with_command(&source, &pqtdir, &fake_nsys) {
+            Ok(()) => anyhow::bail!("failing nsys export should not succeed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-export-failed");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysExportFailed {
+                exit_code: Some(9),
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_missing_output_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        let pqtdir = pqtdir_path_for(&source);
+        let fake_nsys = dir.path().join("nsys");
+        write_fake_nsys(
+            &fake_nsys,
+            r#"#!/bin/sh
+exit 0
+"#,
+        )?;
+
+        let err = match export_with_command(&source, &pqtdir, &fake_nsys) {
+            Ok(()) => anyhow::bail!("empty nsys export should not succeed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-export-output-missing");
+        match err {
+            crate::NsysDataError::NsysExportOutputMissing { expected } => {
+                assert!(expected.contains(EXPORT_BASENAME));
+            }
+            other => anyhow::bail!("expected NsysExportOutputMissing, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cache_valid_missing_source_stat_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing_source = dir.path().join("missing.nsys-rep");
+        let pqtdir = dir.path().join("trace_pqtdir");
+        fs::create_dir_all(&pqtdir)?;
+        fs::write(pqtdir.join(SENTINEL_TABLE), b"sentinel")?;
+
+        let err = match cache_valid(&missing_source, &pqtdir) {
+            Ok(valid) => anyhow::bail!("missing source should not return cache_valid={valid}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-cache-source-stat");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysCacheSourceStat { .. }
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_parquetdir_lockfile_open_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        fs::create_dir_all(lock_path_for(&source))?;
+
+        let err = match ensure_parquetdir(&source) {
+            Ok(path) => anyhow::bail!(
+                "lockfile directory should not resolve to {}",
+                path.display()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-export-lockfile-open");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysExportLockfileOpen { .. }
+        ));
+        Ok(())
+    }
+
+    fn create_valid_generated_export(source: &Path) -> Result<PathBuf> {
+        let cache_root = artifact_dir_for(source);
+        fs::create_dir_all(&cache_root)?;
+        let mut candidates = nsys_generated_pqtdir_paths_for(&cache_root).into_iter();
+        let generated = candidates
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing generated path candidate"))?;
+        fs::create_dir_all(&generated)?;
+        fs::write(generated.join(SENTINEL_TABLE), b"placeholder")?;
+        Ok(generated)
+    }
+
+    #[test]
+    fn publish_existing_generated_export_stale_file_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        let pqtdir = pqtdir_path_for(&source);
+        if let Some(parent) = pqtdir.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&pqtdir, b"not a directory")?;
+        let _generated = create_valid_generated_export(&source)?;
+
+        let err = match publish_existing_generated_export(&source, &pqtdir) {
+            Ok(published) => anyhow::bail!("stale file should not publish={published}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.nsys-parquetdir-stale-remove"
+        );
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysParquetdirStaleRemove { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn publish_existing_generated_export_rename_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+        let target = dir.path().join("missing-parent").join("parquetdir");
+        let _generated = create_valid_generated_export(&source)?;
+
+        let err = match publish_existing_generated_export(&source, &target) {
+            Ok(published) => anyhow::bail!("missing parent should not publish={published}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-parquetdir-publish");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysParquetdirPublish { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn capability_probe_spawn_failure_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing_nsys = dir.path().join("missing-nsys");
+
+        let err = match has_parquetdir_support(&missing_nsys) {
+            Ok(supported) => anyhow::bail!("missing nsys binary should not report {supported}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-parquetdir-help-spawn");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysParquetdirHelpSpawn { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn nsys_version_spawn_failure_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let missing_nsys = dir.path().join("missing-nsys");
+
+        let err = match nsys_version_string_with_command(&missing_nsys) {
+            Ok(version) => anyhow::bail!("missing nsys binary should not return {version}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.nsys-version-spawn");
+        assert!(matches!(err, crate::NsysDataError::NsysVersionSpawn { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn export_source_canonicalize_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("missing.nsys-rep");
+        let nsys_bin = dir.path().join("nsys");
+
+        let err = match export_with_command(&source, &pqtdir_path_for(&source), &nsys_bin) {
+            Ok(()) => anyhow::bail!("missing source should not export successfully"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.nsys-export-source-canonicalize"
+        );
+        assert!(matches!(
+            err,
+            crate::NsysDataError::NsysExportSourceCanonicalize { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn export_artifact_dir_create_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, b"not a directory")?;
+        let source = blocker.join("trace.nsys-rep");
+        let nsys_bin = dir.path().join("nsys");
+
+        let err = match export_with_command(&source, &pqtdir_path_for(&source), &nsys_bin) {
+            Ok(()) => anyhow::bail!("blocked artifact path should not export successfully"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.artifact-dir-create");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::ArtifactDirCreate { .. }
+        ));
         Ok(())
     }
 

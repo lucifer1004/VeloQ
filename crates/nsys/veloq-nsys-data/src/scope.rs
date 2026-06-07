@@ -34,8 +34,7 @@
 //! [`veloq_core::AppliedScope`] stays cross-source so per-source
 //! resolvers all emit the same envelope shape.
 
-use crate::Trace;
-use anyhow::{Context, Result};
+use crate::{NsysDataResult, Trace};
 use std::collections::HashSet;
 use thiserror::Error;
 use veloq_core::{AppliedScope, Warning, WarningCode, WarningSeverity};
@@ -106,34 +105,28 @@ impl AmbiguityError {
 /// `run()` converts the error into an `EnvelopeError` whose
 /// `meta.warnings` carries the structured `multi-device-ambiguous`
 /// code.
-pub fn resolve_scope(trace: &Trace, req: ScopeRequest) -> Result<ResolvedScope, ResolveError> {
-    let devices = device_set(trace).map_err(ResolveError::Probe)?;
-
+pub fn resolve_scope(
+    trace: &Trace,
+    req: ScopeRequest,
+) -> std::result::Result<ResolvedScope, ResolveError> {
     // Case analysis. Note that `req.device` and
     // `req.all_devices` are mutually exclusive at the clap level; we
     // still defensively double-check here so internal callers that
     // bypass clap can't pass both.
-    if req.device.is_some() && req.all_devices {
-        return Err(ResolveError::Probe(anyhow::anyhow!(
-            "internal: --device and --all-devices are mutually exclusive but both were supplied"
-        )));
+    if let (true, Some(device)) = (req.all_devices, req.device) {
+        return Err(ResolveError::probe(
+            crate::NsysDataError::scope_conflicting_device_flags(device),
+        ));
     }
 
     // Case analysis split by `all_devices` first so the match stays
     // exhaustive without a wildcard arm (each branch enumerates every
     // `(device, device_count)` pair it can hit).
     let (resolved_device, aggregated_over): (Option<i32>, Vec<String>) = if req.all_devices {
-        // (Case 4) `--all-devices` opts into the aggregate. `--device`
-        // is rejected at clap level (`conflicts_with`); defensive check
-        // here catches internal callers that bypass clap.
-        if let Some(d) = req.device {
-            return Err(ResolveError::Probe(anyhow::anyhow!(
-                "internal: --device {d} + --all-devices reached the resolver — \
-                 clap should have rejected this at parse time"
-            )));
-        }
+        // (Case 4) `--all-devices` opts into the aggregate.
         (None, vec!["device".to_string()])
     } else {
+        let devices = device_set(trace).map_err(ResolveError::probe)?;
         match (req.device, devices.len()) {
             // Zero-device trace (no events at all). Resolver returns
             // None; verb's SQL will produce an empty result — the
@@ -165,7 +158,7 @@ pub fn resolve_scope(trace: &Trace, req: ScopeRequest) -> Result<ResolvedScope, 
     // v1 contract; the verb's host-thread SQL uses that value to
     // dedupe TP-replica rows.
     let native_pid = match resolved_device {
-        Some(d) => native_pid_for_device(trace, d).unwrap_or(None),
+        Some(d) => native_pid_for_device(trace, d).map_err(ResolveError::probe)?,
         None => None,
     };
 
@@ -193,7 +186,13 @@ pub enum ResolveError {
     #[error(transparent)]
     Ambiguous(AmbiguityError),
     #[error("probing scope: {0:#}")]
-    Probe(anyhow::Error),
+    Probe(#[source] Box<crate::NsysDataError>),
+}
+
+impl ResolveError {
+    fn probe(source: crate::NsysDataError) -> Self {
+        Self::Probe(Box::new(source))
+    }
 }
 
 /// Set of distinct `deviceId`s present in the trace's GPU event
@@ -201,17 +200,29 @@ pub enum ResolveError {
 /// per CUDA device the runtime knew about); falls back to `SELECT DISTINCT
 /// deviceId FROM CUPTI_ACTIVITY_KIND_KERNEL` when the inventory table
 /// is absent.
-fn device_set(trace: &Trace) -> Result<HashSet<i32>> {
+fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
     let mut out = HashSet::new();
 
     if trace.has_table("TARGET_INFO_GPU") {
         let mut stmt = trace
             .conn()
             .prepare("SELECT CAST(cuDevice AS INTEGER) FROM nsight.TARGET_INFO_GPU")
-            .context("preparing TARGET_INFO_GPU device probe")?;
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            let id: Option<i32> = r.get(0)?;
+            .map_err(|source| {
+                crate::NsysDataError::scope_device_probe_column_missing(
+                    "TARGET_INFO_GPU",
+                    "cuDevice",
+                    source,
+                )
+            })?;
+        let mut rows = stmt.query([]).map_err(|source| {
+            crate::NsysDataError::scope_device_probe_query("TARGET_INFO_GPU", source)
+        })?;
+        while let Some(r) = rows.next().map_err(|source| {
+            crate::NsysDataError::scope_device_probe_read("TARGET_INFO_GPU", source)
+        })? {
+            let id: Option<i32> = r.get(0).map_err(|source| {
+                crate::NsysDataError::scope_device_probe_read("TARGET_INFO_GPU", source)
+            })?;
             if let Some(id) = id {
                 out.insert(id);
             }
@@ -240,13 +251,19 @@ fn device_set(trace: &Trace) -> Result<HashSet<i32>> {
              FROM nsight.\"{table}\" \
              WHERE deviceId IS NOT NULL"
         );
-        let mut stmt = trace
-            .conn()
-            .prepare(&sql)
-            .with_context(|| format!("preparing DISTINCT deviceId fallback probe for {table}"))?;
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            let id: i32 = r.get(0)?;
+        let mut stmt = trace.conn().prepare(&sql).map_err(|source| {
+            crate::NsysDataError::scope_device_probe_column_missing(table, "deviceId", source)
+        })?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|source| crate::NsysDataError::scope_device_probe_query(table, source))?;
+        while let Some(r) = rows
+            .next()
+            .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?
+        {
+            let id: i32 = r
+                .get(0)
+                .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
             out.insert(id);
         }
     }
@@ -270,26 +287,106 @@ fn device_set(trace: &Trace) -> Result<HashSet<i32>> {
 /// nsys captures), or no row matches the device — both are valid
 /// "host pid unknown" states and the caller surfaces `null` to the
 /// agent.
-fn native_pid_for_device(trace: &Trace, device: i32) -> Result<Option<i64>> {
+fn native_pid_for_device(trace: &Trace, device: i32) -> NsysDataResult<Option<i64>> {
     if !trace.has_table("TARGET_INFO_CUDA_CONTEXT_INFO") {
         return Ok(None);
     }
-    let mut stmt = trace.conn().prepare(
-        "SELECT CAST(processId AS BIGINT) FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO \
+    let mut stmt = trace
+        .conn()
+        .prepare(
+            "SELECT CAST(processId AS BIGINT) FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO \
          WHERE CAST(deviceId AS INTEGER) = ? \
          ORDER BY processId ASC LIMIT 1",
-    )?;
-    let mut rows = stmt.query([device])?;
-    Ok(if let Some(row) = rows.next()? {
-        Some(row.get::<_, i64>(0)?)
-    } else {
-        None
-    })
+        )
+        .map_err(|source| {
+            crate::NsysDataError::scope_device_probe_column_missing(
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "deviceId/processId",
+                source,
+            )
+        })?;
+    let mut rows = stmt.query([device]).map_err(|source| {
+        crate::NsysDataError::scope_device_probe_query("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+    })?;
+    Ok(
+        if let Some(row) = rows.next().map_err(|source| {
+            crate::NsysDataError::scope_device_probe_read("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+        })? {
+            Some(row.get::<_, i64>(0).map_err(|source| {
+                crate::NsysDataError::scope_device_probe_read(
+                    "TARGET_INFO_CUDA_CONTEXT_INFO",
+                    source,
+                )
+            })?)
+        } else {
+            None
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: &[(&str, &str)]) -> Result<(TempDir, PathBuf)> {
+        let tables_with_rows = tables
+            .iter()
+            .map(|(table, ddl)| (*table, *ddl, Vec::new()))
+            .collect::<Vec<_>>();
+        parquet_fixture_with_rows(&tables_with_rows)
+    }
+
+    fn parquet_fixture_with_rows(tables: &[(&str, &str, Vec<&str>)]) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn assert_scope_probe_query_error(
+        err: crate::NsysDataError,
+        expected_table: &str,
+    ) -> Result<()> {
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-query");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some((
+                "scope device probe",
+                crate::DuckdbPhase::Query,
+                expected_table
+            ))
+        );
+        Ok(())
+    }
+
+    fn downcast_scope_probe_error(err: ResolveError) -> Result<crate::NsysDataError> {
+        match err {
+            ResolveError::Probe(err) => Ok(*err),
+            ResolveError::Ambiguous(err) => {
+                anyhow::bail!("expected scope probe error, got ambiguity: {err}")
+            }
+        }
+    }
 
     #[test]
     fn ambiguity_error_carries_multi_device_warning_code() {
@@ -306,5 +403,165 @@ mod tests {
             "message must mention both flags: {}",
             e.message
         );
+    }
+
+    #[test]
+    fn conflicting_device_scope_flags_have_typed_data_error() {
+        let err = crate::NsysDataError::scope_conflicting_device_flags(7);
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.scope-conflicting-device-flags"
+        );
+        assert!(err.to_string().contains("--device 7"));
+        assert!(err.to_string().contains("--all-devices"));
+    }
+
+    #[test]
+    fn target_info_gpu_probe_missing_cudevice_has_typed_data_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (id BIGINT)",
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(&trace, ScopeRequest::default()) {
+            Ok(scope) => anyhow::bail!("malformed TARGET_INFO_GPU should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.scope-device-probe-column-missing"
+        );
+        match err {
+            crate::NsysDataError::ScopeDeviceProbeColumnMissing { table, column, .. } => {
+                assert_eq!(table, "TARGET_INFO_GPU");
+                assert_eq!(column, "cuDevice");
+            }
+            other => anyhow::bail!("expected ScopeDeviceProbeColumnMissing, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn target_info_gpu_probe_bad_cudevice_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice TEXT)",
+                vec!["INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES ('bad')"],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(&trace, ScopeRequest::default()) {
+            Ok(scope) => anyhow::bail!("invalid TARGET_INFO_GPU should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+
+        assert_scope_probe_query_error(err, "TARGET_INFO_GPU")
+    }
+
+    #[test]
+    fn fallback_device_probe_missing_deviceid_has_typed_data_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(&[(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(&trace, ScopeRequest::default()) {
+            Ok(scope) => anyhow::bail!("malformed kernel table should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.scope-device-probe-column-missing"
+        );
+        match err {
+            crate::NsysDataError::ScopeDeviceProbeColumnMissing { table, column, .. } => {
+                assert_eq!(table, "CUPTI_ACTIVITY_KIND_KERNEL");
+                assert_eq!(column, "deviceId");
+            }
+            other => anyhow::bail!("expected ScopeDeviceProbeColumnMissing, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fallback_device_probe_bad_deviceid_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT, deviceId TEXT)"#,
+            vec![
+                r#"INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL (start, "end", deviceId) VALUES (0, 1, 'bad')"#,
+            ],
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(&trace, ScopeRequest::default()) {
+            Ok(scope) => anyhow::bail!("invalid kernel deviceId should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+
+        assert_scope_probe_query_error(err, "CUPTI_ACTIVITY_KIND_KERNEL")
+    }
+
+    #[test]
+    fn native_pid_probe_missing_context_processid_surfaces_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                vec!["INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)"],
+            ),
+            (
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (deviceId BIGINT)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(
+            &trace,
+            ScopeRequest {
+                device: Some(0),
+                ..ScopeRequest::default()
+            },
+        ) {
+            Ok(scope) => anyhow::bail!("malformed context table should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.scope-device-probe-column-missing"
+        );
+        match err {
+            crate::NsysDataError::ScopeDeviceProbeColumnMissing { table, column, .. } => {
+                assert_eq!(table, "TARGET_INFO_CUDA_CONTEXT_INFO");
+                assert_eq!(column, "deviceId/processId");
+            }
+            other => anyhow::bail!("expected ScopeDeviceProbeColumnMissing, got {other:?}"),
+        }
+        Ok(())
     }
 }

@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Summarize one PyTorch trace or a directory of rank traces.
+    /// Summarize one PyTorch trace file.
     Summary {
-        /// Path to `.pt.trace.json`, `.pt.trace.json.gz`, or a trace directory.
+        /// Path to `.pt.trace.json` or `.pt.trace.json.gz`.
         trace: PathBuf,
     },
 
@@ -26,7 +26,7 @@ pub enum Cmd {
     /// Aggregate event durations and counts by one or more axes.
     Stats {
         trace: PathBuf,
-        /// Comma-separated axes: name,type,step,rank,device,stream,shape,comm-kind.
+        /// Comma-separated axes: name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path.
         #[arg(long, default_value = "name")]
         group_by: String,
         #[command(flatten)]
@@ -71,13 +71,19 @@ pub enum Cmd {
         common: CommonArgs,
     },
 
-    /// Analyze multi-rank DDP/NCCL collective timing.
+    /// Analyze communication collectives within one PyTorch trace file.
     Collectives {
-        /// Path to a directory containing per-rank PyTorch traces.
+        /// Path to `.pt.trace.json` or `.pt.trace.json.gz`.
         trace: PathBuf,
         /// Restrict groups to one profiler step.
         #[arg(long)]
         step: Option<i64>,
+        /// Restrict to one PyTorch distributed rank.
+        #[arg(long, conflicts_with = "all_ranks")]
+        rank: Option<i64>,
+        /// Opt into reporting all ranks when a trace contains multiple ranks.
+        #[arg(long = "all-ranks", default_value_t = false)]
+        all_ranks: bool,
         /// Max collectives to return.
         #[arg(long, default_value_t = 100)]
         limit: usize,

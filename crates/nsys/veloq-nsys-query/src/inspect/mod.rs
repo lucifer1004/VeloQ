@@ -25,8 +25,9 @@ pub use overhead::OverheadDetails;
 pub use sync::{CudaEventDetails, SyncDetails};
 
 use crate::column_map::{self, ColumnMap, maybe_col, opt_string};
-use crate::{EventKind, RowId};
-use anyhow::{Context, Result};
+use crate::query_sql::exec::{SqlLabel, query_optional_row_fallible};
+use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
+use duckdb::types::Value;
 use serde::Serialize;
 use std::path::Path;
 use veloq_nsys_data::Trace;
@@ -274,10 +275,10 @@ impl EventDetails {
     }
 }
 
-pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> Result<InspectResponse> {
+pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<InspectResponse> {
     // inspect reads a few individual CUPTI/NVTX/graph rows; `Trace::open`
     // already exposes every `nsight.<TABLE>`, so no extra setup is needed.
-    let trace = Trace::open(path)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
     let columns = column_map::load_standard(trace.conn())?;
 
     // Compute NVTX nesting once when *any* requested row_id either is
@@ -299,7 +300,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> Result<InspectResponse
         Some(
             trace
                 .nvtx_nesting()
-                .context("computing NVTX nesting depth for inspect")?,
+                .map_err(NsysQueryError::nvtx_nesting_load)?,
         )
     } else {
         None
@@ -309,7 +310,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> Result<InspectResponse
     let nvtx_tree = if needs_nvtx_tree {
         Some(
             veloq_nsys_data::nvtx_tree::build_or_load(&trace)
-                .context("building NVTX tree for inspect nvtx hierarchy fields")?,
+                .map_err(NsysQueryError::nvtx_tree_load)?,
         )
     } else {
         None
@@ -350,8 +351,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> Result<InspectResponse
     // enclosing NVTX range surfaced as `nvtx_context`. One SQL per
     // kind present, so a 100-row mixed batch fans out to ≤4 SQLs.
     if let Some(nesting_map) = nesting.as_ref() {
-        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, row_ids, nesting_map)
-            .context("populating NVTX context for inspect rows")?;
+        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, row_ids, nesting_map)?;
         for event in &mut events {
             attach_nvtx_context(event, &contexts);
         }
@@ -385,6 +385,104 @@ fn attach_nvtx_context(
     }
 }
 
+fn query_inspect_row(
+    conn: &duckdb::Connection,
+    kind: &'static str,
+    sql: &str,
+    id: RowId,
+    hydrate: impl FnOnce(&duckdb::Row<'_>) -> NsysQueryResult<EventDetails>,
+) -> NsysQueryResult<Option<EventDetails>> {
+    let params = [Value::BigInt(id.rowid)];
+    query_optional_row_fallible(conn, sql, &params, SqlLabel::new("inspect", kind), hydrate)
+}
+
+pub(super) fn map_inspect_read<T>(
+    kind: &'static str,
+    result: std::result::Result<T, duckdb::Error>,
+) -> NsysQueryResult<T> {
+    result.map_err(|source| crate::NsysQueryError::sql_read("inspect", kind, source))
+}
+
 // Schema-probe helpers (`ColumnMap`, `load_columns`, `has`,
 // `maybe_col`, `opt_string`) live in `crate::column_map` — both
 // `inspect` and `search` consume them.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn row_id() -> RowId {
+        RowId::new(EventKind::Kernel, 1)
+    }
+
+    #[test]
+    fn query_inspect_row_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match query_inspect_row(&conn, "test_kind", "SELECT * FROM", row_id(), |_| {
+            Err(crate::NsysQueryError::internal_sql_kind_tag_invalid(
+                "inspect",
+                "unexpected_hydrate",
+            ))
+        }) {
+            Ok(_) => anyhow::bail!("malformed inspect SQL should not succeed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("inspect", crate::SqlPhase::Prepare, "test_kind"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_inspect_row_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS value WHERE ? IS NOT NULL";
+
+        let err = match query_inspect_row(&conn, "test_kind", sql, row_id(), |_| {
+            Err(crate::NsysQueryError::internal_sql_kind_tag_invalid(
+                "inspect",
+                "unexpected_hydrate",
+            ))
+        }) {
+            Ok(_) => anyhow::bail!("unbound inspect SQL should not succeed"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("inspect", crate::SqlPhase::Query, "test_kind"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_inspect_row_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'not-an-int' AS value WHERE ? IS NOT NULL";
+
+        let err = match query_inspect_row(&conn, "test_kind", sql, row_id(), |row| {
+            let _: i64 = map_inspect_read("test_kind", row.get(0))?;
+            Ok(EventDetails::NotFound {
+                key: row_id().to_string(),
+                row_id: row_id(),
+            })
+        }) {
+            Ok(_) => anyhow::bail!("malformed inspect row should not hydrate"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("inspect", crate::SqlPhase::Read, "test_kind"))
+        );
+        Ok(())
+    }
+}

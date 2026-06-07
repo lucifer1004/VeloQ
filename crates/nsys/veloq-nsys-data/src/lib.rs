@@ -28,6 +28,7 @@
 pub mod adapter;
 pub mod capabilities;
 pub mod correlation;
+pub mod error;
 pub mod hardware;
 pub mod meta_cache;
 pub mod nsys_rep;
@@ -40,6 +41,9 @@ pub mod sidecar;
 pub mod sql_expr;
 pub mod trace_map;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use adapter::{
     AdapterChoice, AdapterMeta, AdapterStatus, DetectionMethod, SchemaAdapter, SchemaVersion,
     pick_adapter, table_exists,
@@ -49,6 +53,7 @@ pub use correlation::{
     CorrelatedRowIds, CorrelationIndex, CorrelationIndexStats, SyntheticId,
     native_pid_from_global_tid,
 };
+pub use error::{DuckdbPhase, NsysDataError, NsysDataResult};
 pub use hardware::{CpuInfo, DriverInfo, GpuInfo, HostInfo, NicInfo, SystemInfo};
 pub use meta_cache::{META_CACHE_VERSION, PerTableEntry, TraceMetaCache};
 pub use nvtx_nesting::{NvtxEntry, NvtxNesting};
@@ -58,7 +63,6 @@ pub use runtime_nvtx_parent::{
 };
 pub use veloq_core::time::TimeWindow;
 
-use anyhow::{Context, Result};
 use duckdb::Connection;
 use std::collections::HashSet;
 use std::fs;
@@ -236,7 +240,7 @@ impl Trace {
     /// Sets up the DuckDB `nsight` schema with views over every
     /// `<TABLE>.parquet` file in the parquetdir, then picks a schema
     /// adapter.
-    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub fn open<P: AsRef<Path>>(path: P) -> NsysDataResult<Self> {
         let resolved = nsys_rep::resolve_trace(path.as_ref())?;
         let source_path = resolved.source_path;
         let pqtdir_path = resolved.pqtdir_path;
@@ -316,26 +320,26 @@ impl Trace {
 
     /// Resolve an optional caller-provided `TimeWindow` to absolute ns
     /// using this trace's primary origin.
-    pub fn resolve_window(&self, w: Option<TimeWindow>) -> Result<Option<(i64, i64)>> {
+    pub fn resolve_window(&self, w: Option<TimeWindow>) -> NsysDataResult<Option<(i64, i64)>> {
         let Some(w) = w else { return Ok(None) };
         let (origins, _) = self.read_origins()?;
         let resolved = w
             .absolute(origins.primary.start_ns)
-            .context("--time-range resolves to an empty or inverted window")?;
+            .map_err(NsysDataError::time_range_empty)?;
         Ok(Some(resolved))
     }
 
     /// List every table veloq can resolve in this trace — i.e. every
     /// `<TABLE>.parquet` file in the parquetdir.
-    pub fn list_tables(&self) -> Result<Vec<String>> {
+    pub fn list_tables(&self) -> NsysDataResult<Vec<String>> {
         Ok(self.tables.clone())
     }
 
-    pub fn correlation_index(&self) -> Result<CorrelationIndex> {
+    pub fn correlation_index(&self) -> NsysDataResult<CorrelationIndex> {
         CorrelationIndex::build_or_load(self)
     }
 
-    pub fn nvtx_nesting(&self) -> Result<NvtxNesting> {
+    pub fn nvtx_nesting(&self) -> NsysDataResult<NvtxNesting> {
         if let Some(c) = self.meta_cache.get() {
             return Ok(c.nvtx_nesting.clone());
         }
@@ -353,11 +357,11 @@ impl Trace {
         self.compute_nvtx_nesting_uncached()
     }
 
-    pub(crate) fn compute_nvtx_nesting_uncached(&self) -> Result<NvtxNesting> {
+    pub(crate) fn compute_nvtx_nesting_uncached(&self) -> NsysDataResult<NvtxNesting> {
         nvtx_nesting::compute(self)
     }
 
-    pub fn meta_cache(&self) -> Result<&TraceMetaCache> {
+    pub fn meta_cache(&self) -> NsysDataResult<&TraceMetaCache> {
         if let Some(c) = self.meta_cache.get() {
             return Ok(c);
         }
@@ -365,7 +369,7 @@ impl Trace {
         let _ = self.meta_cache.set(built);
         self.meta_cache
             .get()
-            .context("meta_cache slot should be initialised after set/race")
+            .ok_or_else(NsysDataError::meta_cache_slot_uninitialised)
     }
 
     pub fn meta_cache_initialised(&self) -> bool {
@@ -373,7 +377,7 @@ impl Trace {
     }
 
     /// Compute the trace's primary + full origins.
-    pub fn read_origins(&self) -> Result<(TraceOrigins, Vec<(&'static str, TimeSpan)>)> {
+    pub fn read_origins(&self) -> NsysDataResult<(TraceOrigins, Vec<(&'static str, TimeSpan)>)> {
         let available: HashSet<&str> = self.tables.iter().map(String::as_str).collect();
 
         let mut per_table: Vec<(&'static str, TimeSpan)> = Vec::new();
@@ -386,10 +390,10 @@ impl Trace {
             let mut stmt = self
                 .conn
                 .prepare(&sql)
-                .with_context(|| format!("preparing origins query for {t}"))?;
+                .map_err(|source| NsysDataError::trace_origins_prepare(t, source))?;
             let (mn, mx): (Option<i64>, Option<i64>) = stmt
                 .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))
-                .with_context(|| format!("reading origins from {t}"))?;
+                .map_err(|source| NsysDataError::trace_origins_read(t, source))?;
             if let (Some(start_ns), Some(end_ns)) = (mn, mx) {
                 per_table.push((t, TimeSpan { start_ns, end_ns }));
             }
@@ -431,7 +435,10 @@ impl Trace {
         Ok((TraceOrigins { primary, full }, per_table))
     }
 
-    fn read_sample_table_span(&self, available: &HashSet<&str>) -> Result<Option<TimeSpan>> {
+    fn read_sample_table_span(
+        &self,
+        available: &HashSet<&str>,
+    ) -> NsysDataResult<Option<TimeSpan>> {
         let mut lo: i64 = i64::MAX;
         let mut hi: i64 = i64::MIN;
         let mut any = false;
@@ -446,10 +453,10 @@ impl Trace {
             let mut stmt = self
                 .conn
                 .prepare(&sql)
-                .with_context(|| format!("preparing sample span query for {t}"))?;
+                .map_err(|source| NsysDataError::trace_sample_span_prepare(*t, source))?;
             let (mn, mx): (Option<i64>, Option<i64>) = stmt
                 .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))
-                .with_context(|| format!("reading sample span from {t}"))?;
+                .map_err(|source| NsysDataError::trace_sample_span_read(*t, source))?;
             if let (Some(a), Some(b)) = (mn, mx) {
                 lo = lo.min(a);
                 hi = hi.max(b);
@@ -467,22 +474,30 @@ impl Trace {
     }
 
     /// Read NSys export metadata (schema version, product version, etc).
-    pub fn read_export_metadata(&self) -> Result<Vec<(String, String)>> {
-        let stmt = self
+    pub fn read_export_metadata(&self) -> NsysDataResult<Vec<(String, String)>> {
+        const TABLE: &str = "META_DATA_EXPORT";
+        if !self.has_table(TABLE) {
+            log::debug!("META_DATA_EXPORT absent — export metadata unavailable");
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
             .conn
-            .prepare("SELECT name, value FROM nsight.META_DATA_EXPORT");
-        let mut stmt = match stmt {
-            Ok(s) => s,
-            Err(e) => {
-                log::debug!("META_DATA_EXPORT not readable: {e}");
-                return Ok(Vec::new());
-            }
-        };
-        let mut rows = stmt.query([])?;
+            .prepare("SELECT name, value FROM nsight.META_DATA_EXPORT")
+            .map_err(|source| NsysDataError::export_metadata_prepare(TABLE, source))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|source| NsysDataError::export_metadata_query(TABLE, source))?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let k: String = row.get(0)?;
-            let v: duckdb::types::Value = row.get(1)?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|source| NsysDataError::export_metadata_read(TABLE, source))?
+        {
+            let k: String = row
+                .get(0)
+                .map_err(|source| NsysDataError::export_metadata_read(TABLE, source))?;
+            let v: duckdb::types::Value = row
+                .get(1)
+                .map_err(|source| NsysDataError::export_metadata_read(TABLE, source))?;
             out.push((k, value_to_string(&v)));
         }
         Ok(out)
@@ -519,10 +534,10 @@ fn resolve_thread_count() -> usize {
 /// Cap the connection's worker pool (see [`DUCKDB_THREAD_CAP`]). The
 /// thread count is a veloq-internal integer, never user input, so the
 /// `PRAGMA` literal is safe.
-fn configure_threads(conn: &Connection) -> Result<()> {
+fn configure_threads(conn: &Connection) -> NsysDataResult<()> {
     let threads = resolve_thread_count();
     conn.execute_batch(&format!("PRAGMA threads={threads}"))
-        .context("failed to set DuckDB thread count")?;
+        .map_err(NsysDataError::duckdb_thread_config)?;
     Ok(())
 }
 
@@ -530,21 +545,26 @@ fn configure_threads(conn: &Connection) -> Result<()> {
 /// register a view for every `<TABLE>.parquet` in the parquetdir.
 /// Returns the connection plus the sorted list of table names that
 /// got a view.
-fn open_nsight_duckdb(pqtdir: &Path) -> Result<(Connection, Vec<String>)> {
+fn open_nsight_duckdb(pqtdir: &Path) -> NsysDataResult<(Connection, Vec<String>)> {
     if !pqtdir.is_dir() {
-        anyhow::bail!("parquetdir not found: {}", pqtdir.display());
+        return Err(NsysDataError::parquetdir_not_found(pqtdir.display()));
     }
-    let conn = Connection::open_in_memory().context("failed to open in-memory DuckDB")?;
+    let conn = Connection::open_in_memory().map_err(NsysDataError::duckdb_open_in_memory)?;
     configure_threads(&conn)?;
     conn.execute_batch("CREATE SCHEMA IF NOT EXISTS nsight")
-        .context("failed to create nsight schema")?;
+        .map_err(NsysDataError::duckdb_schema_create)?;
 
-    let mut parquet_paths: Vec<PathBuf> = std::fs::read_dir(pqtdir)
-        .with_context(|| format!("reading parquetdir {}", pqtdir.display()))?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "parquet"))
-        .collect();
+    let mut parquet_paths: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(pqtdir)
+        .map_err(|source| NsysDataError::parquetdir_read(pqtdir.display(), source))?
+    {
+        let entry =
+            entry.map_err(|source| NsysDataError::parquetdir_read(pqtdir.display(), source))?;
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "parquet") {
+            parquet_paths.push(path);
+        }
+    }
     parquet_paths.sort();
 
     let mut tables: Vec<String> = Vec::with_capacity(parquet_paths.len());
@@ -558,35 +578,36 @@ fn open_nsight_duckdb(pqtdir: &Path) -> Result<(Connection, Vec<String>)> {
         };
         let path_lit = parquet_path
             .to_str()
-            .with_context(|| {
-                format!(
-                    "parquet path is not valid UTF-8: {}",
-                    parquet_path.display()
-                )
-            })?
+            .ok_or_else(|| NsysDataError::parquet_path_invalid_utf8(parquet_path.display()))?
             .replace('\'', "''");
         // `file_row_number AS rowid` gives every parquet row a
         // deterministic per-table identifier exposed through the JSON
         // envelope as `RowId.rowid`. Add 1 so the wire identifiers stay
         // 1-based and SQLite-compatible for scripts and rebuilt
         // sidecars.
+        let table_ident = quote_sql_identifier(&stem);
         let sql = format!(
-            "CREATE OR REPLACE VIEW nsight.\"{stem}\" AS \
+            "CREATE OR REPLACE VIEW nsight.{table_ident} AS \
              SELECT (file_row_number + 1) AS rowid, * \
              FROM read_parquet('{path_lit}', file_row_number = true)"
         );
-        conn.execute(&sql, [])
-            .with_context(|| format!("creating view nsight.\"{stem}\""))?;
+        conn.execute(&sql, []).map_err(|source| {
+            NsysDataError::parquet_view_create(stem.as_str(), parquet_path.display(), source)
+        })?;
         tables.push(stem);
     }
 
     Ok((conn, tables))
 }
 
+pub(crate) fn quote_sql_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 /// Register `nsight.nvtx_tree` over the sidecar parquet if one already
 /// exists fresh on disk. No-op when the sidecar is absent or stale;
 /// `open` must stay cheap, so this never triggers a sidecar build.
-fn attach_nvtx_tree_view_if_present(conn: &Connection, source_path: &Path) -> Result<()> {
+fn attach_nvtx_tree_view_if_present(conn: &Connection, source_path: &Path) -> NsysDataResult<()> {
     let sidecar = nvtx_tree::sidecar_path_for(source_path);
     if !sidecar.exists() || !nvtx_tree::sidecar_is_fresh_for_trace(source_path)? {
         return Ok(());
@@ -598,12 +619,8 @@ fn attach_nvtx_tree_view_if_present(conn: &Connection, source_path: &Path) -> Re
         );
         return Ok(());
     };
-    conn.execute(&sql, []).with_context(|| {
-        format!(
-            "registering nsight.nvtx_tree view from {}",
-            sidecar.display()
-        )
-    })?;
+    conn.execute(&sql, [])
+        .map_err(|source| NsysDataError::nvtx_tree_view_register(sidecar.display(), source))?;
     Ok(())
 }
 
@@ -625,5 +642,286 @@ fn value_to_string(v: &duckdb::types::Value) -> String {
         Value::Double(f) => f.to_string(),
         Value::Text(s) => s.clone(),
         other => format!("{other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: Vec<(&str, &str, Vec<&str>)>) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in &tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in &tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn valid_empty_kernel() -> (&'static str, &'static str, Vec<&'static str>) {
+        (
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn resolve_window_empty_range_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![valid_empty_kernel()])?;
+        let trace = Trace::open(&pqtdir)?;
+        let window = TimeWindow::parse("10ns-5ns")?;
+
+        let err = match trace.resolve_window(Some(window)) {
+            Ok(resolved) => anyhow::bail!("inverted window should not resolve: {resolved:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.time-range-empty");
+        match err {
+            NsysDataError::TimeRangeEmpty {
+                source: veloq_core::time::TimeParseError::EmptyRange { start: 10, end: 5 },
+            } => {}
+            other => anyhow::bail!("expected TimeRangeEmpty with EmptyRange, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn open_invalid_parquet_file_error_is_typed() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("bad_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        std::fs::write(
+            pqtdir.join("CUPTI_ACTIVITY_KIND_KERNEL.parquet"),
+            b"not a parquet file",
+        )?;
+
+        let err = match Trace::open(&pqtdir) {
+            Ok(_) => anyhow::bail!("invalid parquet file should fail while creating views"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.parquet-view-create");
+        match err {
+            NsysDataError::ParquetViewCreate { table, path, .. } => {
+                assert_eq!(table, "CUPTI_ACTIVITY_KIND_KERNEL");
+                assert!(path.contains("CUPTI_ACTIVITY_KIND_KERNEL.parquet"));
+            }
+            other => anyhow::bail!("expected ParquetViewCreate, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn open_parquet_filename_with_quote_creates_quoted_view() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![valid_empty_kernel()])?;
+        let src = pqtdir.join("CUPTI_ACTIVITY_KIND_KERNEL.parquet");
+        let quoted_table = "ODD\"TABLE";
+        std::fs::copy(&src, pqtdir.join(format!("{quoted_table}.parquet")))?;
+
+        let trace = Trace::open(&pqtdir)?;
+
+        assert!(trace.has_table(quoted_table));
+        assert_eq!(quote_sql_identifier(quoted_table), r#""ODD""TABLE""#);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_non_utf8_parquet_path_error_is_typed() -> Result<()> {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir
+            .path()
+            .join(OsString::from_vec(vec![b'p', b'q', b't', 0xff]));
+        std::fs::create_dir_all(&pqtdir)?;
+        std::fs::write(
+            pqtdir.join("CUPTI_ACTIVITY_KIND_KERNEL.parquet"),
+            b"not a parquet file",
+        )?;
+
+        let err = match Trace::open(&pqtdir) {
+            Ok(_) => anyhow::bail!("non-UTF-8 parquet path should fail before view creation"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.parquet-path-invalid-utf8");
+        match err {
+            NsysDataError::ParquetPathInvalidUtf8 { path } => {
+                assert!(path.contains("CUPTI_ACTIVITY_KIND_KERNEL.parquet"));
+            }
+            other => anyhow::bail!("expected ParquetPathInvalidUtf8, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn read_export_metadata_prepare_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "META_DATA_EXPORT",
+                "CREATE TABLE META_DATA_EXPORT (name TEXT)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_export_metadata() {
+            Ok(meta) => anyhow::bail!("malformed META_DATA_EXPORT should fail: {meta:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("export metadata", DuckdbPhase::Prepare, "META_DATA_EXPORT"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_export_metadata_read_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "META_DATA_EXPORT",
+                "CREATE TABLE META_DATA_EXPORT (name BLOB, value TEXT)",
+                vec!["INSERT INTO META_DATA_EXPORT (name, value) VALUES (BLOB 'abc', '1')"],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_export_metadata() {
+            Ok(meta) => anyhow::bail!("wrong-typed META_DATA_EXPORT should fail: {meta:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-read");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("export metadata", DuckdbPhase::Read, "META_DATA_EXPORT"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_origins_event_table_prepare_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "OSRT_API",
+                "CREATE TABLE OSRT_API (start BIGINT)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_origins() {
+            Ok((origins, _)) => anyhow::bail!("malformed OSRT_API should fail: {origins:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("trace origins", DuckdbPhase::Prepare, "OSRT_API"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_origins_event_table_read_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "OSRT_API",
+                r#"CREATE TABLE OSRT_API (start TEXT, "end" TEXT)"#,
+                vec![r#"INSERT INTO OSRT_API (start, "end") VALUES ('a', 'b')"#],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_origins() {
+            Ok((origins, _)) => anyhow::bail!("text OSRT_API span should fail: {origins:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-read");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("trace origins", DuckdbPhase::Read, "OSRT_API"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_origins_sample_table_prepare_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "GPU_METRICS",
+                "CREATE TABLE GPU_METRICS (typeId BIGINT, metricId BIGINT, value DOUBLE)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_origins() {
+            Ok((origins, _)) => anyhow::bail!("malformed GPU_METRICS should fail: {origins:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("trace sample span", DuckdbPhase::Prepare, "GPU_METRICS"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn read_origins_sample_table_read_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "GPU_METRICS",
+                "CREATE TABLE GPU_METRICS (timestamp TEXT)",
+                vec!["INSERT INTO GPU_METRICS (timestamp) VALUES ('not-ns')"],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match trace.read_origins() {
+            Ok((origins, _)) => anyhow::bail!("text GPU_METRICS span should fail: {origins:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-read");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("trace sample span", DuckdbPhase::Read, "GPU_METRICS"))
+        );
+        Ok(())
     }
 }

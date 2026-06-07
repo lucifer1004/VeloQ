@@ -13,7 +13,6 @@
 //! overlap is counted, not dropped. Compute/copy overlap falls out of
 //! inclusion-exclusion: `compute_union + copy_union − device_union`.
 
-use anyhow::{Context, Result};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -21,7 +20,7 @@ use std::path::Path;
 use veloq_core::time::TimeWindow;
 use veloq_nsys_data::Trace;
 
-use crate::EventKind;
+use crate::{EventKind, NsysQueryError, NsysQueryResult};
 
 /// GPU-busy kinds, matching `timeline::ALLOWED_KINDS`. `kernel` and
 /// `graph` are compute; `memcpy` and `memset` are copy.
@@ -245,11 +244,74 @@ struct DeviceAccum {
     streams: BTreeMap<i64, Vec<(i64, i64)>>,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: ConcurrencyRequest) -> Result<ConcurrencyResponse> {
+fn hydrate_concurrency_intervals(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    device: Option<i32>,
+) -> NsysQueryResult<BTreeMap<i32, DeviceAccum>> {
+    let mut by_device: BTreeMap<i32, DeviceAccum> = BTreeMap::new();
+    let rows = crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        params,
+        crate::query_sql::exec::CONCURRENCY_INTERVAL,
+        concurrency_interval_row,
+    )?;
+    for row in rows {
+        // A clipped interval can be empty (touches the window edge);
+        // drop those so they don't add zero-width noise.
+        if row.end_ns <= row.start_ns {
+            continue;
+        }
+        if device.is_some_and(|dev| row.device_id != dev) {
+            continue;
+        }
+        let acc = by_device.entry(row.device_id).or_default();
+        acc.all.push((row.start_ns, row.end_ns));
+        if row.is_compute != 0 {
+            acc.compute.push((row.start_ns, row.end_ns));
+        } else {
+            acc.copy.push((row.start_ns, row.end_ns));
+        }
+        acc.streams
+            .entry(row.stream_id)
+            .or_default()
+            .push((row.start_ns, row.end_ns));
+    }
+    Ok(by_device)
+}
+
+struct ConcurrencyIntervalRow {
+    device_id: i32,
+    stream_id: i64,
+    is_compute: i32,
+    start_ns: i64,
+    end_ns: i64,
+}
+
+fn concurrency_interval_row(
+    row: &duckdb::Row<'_>,
+) -> Result<ConcurrencyIntervalRow, duckdb::Error> {
+    Ok(ConcurrencyIntervalRow {
+        device_id: row.get(0)?,
+        stream_id: row.get(1)?,
+        is_compute: row.get(2)?,
+        start_ns: row.get(3)?,
+        end_ns: row.get(4)?,
+    })
+}
+
+pub fn run<P: AsRef<Path>>(
+    path: P,
+    req: ConcurrencyRequest,
+) -> NsysQueryResult<ConcurrencyResponse> {
     crate::check_limit(req.limit)?;
 
-    let trace = Trace::open(path)?;
-    let abs_window = trace.resolve_window(req.time_window)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
     let (sql, params) = fetch_sql(&trace, abs_window);
     if sql.is_empty() {
@@ -261,39 +323,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: ConcurrencyRequest) -> Result<Concurren
         });
     }
 
-    let mut by_device: BTreeMap<i32, DeviceAccum> = BTreeMap::new();
-    {
-        let conn = trace.conn();
-        let mut stmt = conn.prepare(&sql).context("preparing concurrency SQL")?;
-        let bound = crate::bind(&params);
-        let mut rows = stmt.query(bound.as_slice())?;
-        while let Some(r) = rows.next()? {
-            let device_id: i32 = r.get(0)?;
-            let stream_id: i64 = r.get(1)?;
-            let is_compute: i32 = r.get(2)?;
-            let start_ns: i64 = r.get(3)?;
-            let end_ns: i64 = r.get(4)?;
-            // A clipped interval can be empty (touches the window edge);
-            // drop those so they don't add zero-width noise.
-            if end_ns <= start_ns {
-                continue;
-            }
-            if req.device.is_some_and(|dev| device_id != dev) {
-                continue;
-            }
-            let acc = by_device.entry(device_id).or_default();
-            acc.all.push((start_ns, end_ns));
-            if is_compute != 0 {
-                acc.compute.push((start_ns, end_ns));
-            } else {
-                acc.copy.push((start_ns, end_ns));
-            }
-            acc.streams
-                .entry(stream_id)
-                .or_default()
-                .push((start_ns, end_ns));
-        }
-    }
+    let by_device = hydrate_concurrency_intervals(trace.conn(), &sql, &params, req.device)?;
 
     let total_matched = by_device.len() as i64;
 
@@ -351,6 +381,8 @@ pub fn run<P: AsRef<Path>>(path: P, req: ConcurrencyRequest) -> Result<Concurren
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
 
     #[test]
     fn measures_serial_back_to_back_has_no_overlap() {
@@ -382,5 +414,86 @@ mod tests {
         assert_eq!(union, 100);
         assert_eq!(sum - union, 10);
         assert_eq!(peak, 2);
+    }
+
+    #[test]
+    fn hydrate_concurrency_intervals_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_concurrency_intervals(&conn, "SELECT * FROM", &[], None) {
+            Ok(rows) => anyhow::bail!(
+                "malformed concurrency SQL should not hydrate successfully: {} devices",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_concurrency_intervals_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   ? AS device_id, \
+                   0::BIGINT AS stream_id, \
+                   1::INTEGER AS is_compute, \
+                   0::BIGINT AS s_ns, \
+                   10::BIGINT AS e_ns";
+
+        let err = match hydrate_concurrency_intervals(&conn, sql, &[], None) {
+            Ok(rows) => anyhow::bail!(
+                "unbound concurrency SQL parameter should not hydrate successfully: {} devices",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_concurrency_intervals_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   'not-a-device' AS device_id, \
+                   0::BIGINT AS stream_id, \
+                   1::INTEGER AS is_compute, \
+                   0::BIGINT AS s_ns, \
+                   10::BIGINT AS e_ns";
+
+        let err = match hydrate_concurrency_intervals(&conn, sql, &[], None) {
+            Ok(rows) => anyhow::bail!(
+                "malformed concurrency row should not hydrate successfully: {} devices",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
     }
 }

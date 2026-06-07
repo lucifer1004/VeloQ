@@ -192,12 +192,14 @@ install_binary() {
     # Download to a temp dir under the original asset name so the published
     # checksum (which lists that name) verifies before we install + rename.
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/veloq-install.XXXXXX")"
+    trap 'rm -rf "$tmp"' EXIT
     info "downloading $asset → $dest"
     fetch "$url" "${tmp}/${asset}"
     verify_sha256 "$tmp" "$asset" "$url"
     chmod +x "${tmp}/${asset}"
     mv -f "${tmp}/${asset}" "$dest"
     rm -rf "$tmp"
+    trap - EXIT
     info "installed: $dest"
 }
 
@@ -206,24 +208,39 @@ install_binary() {
 # ---------------------------------------------------------------------------
 # At release time the CI's skills-tarball job tar.gz's
 # .claude/skills/ and attaches it to the GitHub Release as
-# veloq-skills.tar.gz. We fetch + extract directly under
-# ~/.claude/skills/, overwriting any prior install.
+# veloq-skills.tar.gz. We fetch + extract into a staging directory, then
+# replace each installed skill directory wholesale so removed files do not
+# linger across upgrades.
 
 install_skills() {
-    local url tmp
+    local url archive extract_dir staged skill_dir skill_name dest installed
     url="${RELEASE_BASE}/${VERSION}/veloq-skills.tar.gz"
-    tmp=$(mktemp -t veloq-skills.XXXXXX.tar.gz)
-    trap 'rm -f "$tmp"' EXIT
+    extract_dir=
+    archive=$(mktemp -t veloq-skills.XXXXXX.tar.gz)
+    trap 'rm -f "$archive"; [ -z "$extract_dir" ] || rm -rf "$extract_dir"' EXIT
+    extract_dir="$(mktemp -d "${TMPDIR:-/tmp}/veloq-skills.XXXXXX")"
 
     mkdir -p "$SKILLS_DIR"
     info "downloading skills → $SKILLS_DIR"
-    fetch "$url" "$tmp"
-    # Tarball entries are `.claude/skills/<name>/...`. Stripping the
-    # leading `.claude/skills/` (= 2 components) keeps each skill's
-    # `<name>/SKILL.md` + `<name>/references/...` structure intact and
-    # lands them under `$SKILLS_DIR/<name>/`.
-    tar -xz -f "$tmp" -C "$SKILLS_DIR" --strip-components=2
-    rm -f "$tmp"
+    fetch "$url" "$archive"
+    tar -xz -f "$archive" -C "$extract_dir"
+
+    staged="${extract_dir}/.claude/skills"
+    [ -d "$staged" ] || die "skills archive is missing .claude/skills/"
+
+    installed=false
+    for skill_dir in "$staged"/*; do
+        [ -d "$skill_dir" ] || continue
+        skill_name="$(basename "$skill_dir")"
+        dest="${SKILLS_DIR}/${skill_name}"
+        rm -rf "$dest"
+        cp -R "$skill_dir" "$dest"
+        installed=true
+    done
+    $installed || die "skills archive did not contain any skill directories"
+
+    rm -f "$archive"
+    rm -rf "$extract_dir"
     trap - EXIT
     info "installed skills under $SKILLS_DIR/{nsys,ncu,pytorch}-profile-analysis"
 }

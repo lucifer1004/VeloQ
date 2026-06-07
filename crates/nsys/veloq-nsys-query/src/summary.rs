@@ -4,10 +4,11 @@
 //! origins veloq tracks (primary = GPU-execution-anchored, full = all
 //! events including OSRT/NVTX bootstrap), and per-table row counts.
 
-use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 use veloq_nsys_data::{CapabilityFlags, Trace};
+
+use crate::{NsysQueryError, NsysQueryResult};
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct Summary {
@@ -73,8 +74,8 @@ pub struct TableSummary {
     pub end_ns: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P) -> Result<Summary> {
-    let trace = Trace::open(path)?;
+pub fn run<P: AsRef<Path>>(path: P) -> NsysQueryResult<Summary> {
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
 
     // Hot path: pull everything from the metadata sidecar. First
     // call against a trace runs the COUNT(*) / MIN/MAX scans
@@ -83,7 +84,9 @@ pub fn run<P: AsRef<Path>>(path: P) -> Result<Summary> {
     // a few KB of bincode and skip SQL entirely. The cache
     // invalidates on trace mtime/size change, so editing the trace
     // file behind veloq's back doesn't serve stale data.
-    let meta = trace.meta_cache()?;
+    let meta = trace
+        .meta_cache()
+        .map_err(NsysQueryError::summary_meta_load)?;
 
     let per_table: Vec<TableSummary> = meta
         .per_table

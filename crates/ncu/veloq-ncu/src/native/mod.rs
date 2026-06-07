@@ -389,7 +389,7 @@ mod tests {
     fn golden() -> Result<NativeSidecar> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/source_metric_basic.ncu-rep.veloq/ncu-native.json.gz");
-        cache::read_gz_sidecar(&p)
+        Ok(cache::read_gz_sidecar(&p)?)
     }
 
     #[test]

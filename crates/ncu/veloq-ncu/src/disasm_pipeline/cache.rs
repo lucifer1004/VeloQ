@@ -11,11 +11,12 @@
 //! hundred KB), and human-readable JSON makes debugging
 //! nvdisasm-output edge cases immediate.
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use crate::error::{NcuSourceError, NcuSourceResult};
 
 use super::types::{CACHE_SCHEMA, CorrelatedEntry, clone_entry};
 
@@ -43,13 +44,18 @@ pub fn sidecar_dir(trace_path: &Path) -> PathBuf {
 /// Materialize the cubin bytes to `<report>.veloq/disasm/<sha>.cubin`,
 /// creating the sidecar directory if missing. Returns the cubin
 /// path. Idempotent: skips the write when the file already exists.
-pub fn extract_and_cache_cubin(trace_path: &Path, sha: &str, bytes: &[u8]) -> Result<PathBuf> {
+pub fn extract_and_cache_cubin(
+    trace_path: &Path,
+    sha: &str,
+    bytes: &[u8],
+) -> NcuSourceResult<PathBuf> {
     let dir = sidecar_dir(trace_path);
-    fs::create_dir_all(&dir).with_context(|| format!("creating sidecar dir {}", dir.display()))?;
+    fs::create_dir_all(&dir)
+        .map_err(|source| NcuSourceError::disasm_sidecar_dir_create(dir.display(), source))?;
     let cubin_path = dir.join(format!("{sha}.cubin"));
     if !cubin_path.exists() {
         fs::write(&cubin_path, bytes)
-            .with_context(|| format!("writing cubin to {}", cubin_path.display()))?;
+            .map_err(|source| NcuSourceError::disasm_cubin_write(cubin_path.display(), source))?;
     }
     Ok(cubin_path)
 }
@@ -64,20 +70,23 @@ pub fn correlated_cache_path(trace_path: &Path, sha: &str) -> PathBuf {
 /// `instruction_stride` matches the caller's request. Returns
 /// `Ok(None)` for missing, schema-mismatched, or stride-mismatched
 /// files — all three force a fresh acquire.
-pub fn load_cached(path: &Path, instruction_stride: u64) -> Result<Option<CorrelatedEntry>> {
+pub fn load_cached(
+    path: &Path,
+    instruction_stride: u64,
+) -> NcuSourceResult<Option<CorrelatedEntry>> {
     if !path.exists() {
         return Ok(None);
     }
-    let bytes =
-        fs::read(path).with_context(|| format!("reading correlated cache {}", path.display()))?;
+    let bytes = fs::read(path)
+        .map_err(|source| NcuSourceError::disasm_cache_read(path.display(), source))?;
     let raw: serde_json::Value = serde_json::from_slice(&bytes)
-        .with_context(|| format!("decoding correlated cache {}", path.display()))?;
+        .map_err(|source| NcuSourceError::disasm_cache_decode(path.display(), source))?;
     let schema = raw.get("schema").and_then(serde_json::Value::as_u64);
     if schema != Some(u64::from(CACHE_SCHEMA)) {
         return Ok(None);
     }
     let file: CacheFile = serde_json::from_value(raw)
-        .with_context(|| format!("decoding correlated cache {}", path.display()))?;
+        .map_err(|source| NcuSourceError::disasm_cache_decode(path.display(), source))?;
     if file.entry.instruction_stride != instruction_stride {
         return Ok(None);
     }
@@ -85,15 +94,15 @@ pub fn load_cached(path: &Path, instruction_stride: u64) -> Result<Option<Correl
 }
 
 /// Serialize `entry` and write it to the cache file at `path`.
-pub fn write_cache(path: &Path, entry: &CorrelatedEntry) -> Result<()> {
+pub fn write_cache(path: &Path, entry: &CorrelatedEntry) -> NcuSourceResult<()> {
     let file = CacheFile {
         schema: CACHE_SCHEMA,
         entry: clone_entry(entry),
     };
     let bytes = serde_json::to_vec_pretty(&file)
-        .with_context(|| format!("encoding correlated cache {}", path.display()))?;
+        .map_err(|source| NcuSourceError::disasm_cache_encode(path.display(), source))?;
     fs::write(path, bytes)
-        .with_context(|| format!("writing correlated cache {}", path.display()))?;
+        .map_err(|source| NcuSourceError::disasm_cache_write(path.display(), source))?;
     Ok(())
 }
 

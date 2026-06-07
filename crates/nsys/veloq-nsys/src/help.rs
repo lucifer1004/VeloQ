@@ -538,6 +538,7 @@ const METRICS_EXAMPLES: &[&str] = &[
     "veloq metrics T --type nic --counter 'IB: Bytes*' --bucket 50ms",
     "veloq metrics T --type cpu-sampling --limit 20",
     "veloq metrics T --type cpu-sampling --group-by tid --limit 10",
+    "veloq metrics T --type cpu-sampling --group-by stack --name '*cuda*' --limit 10",
     "veloq metrics T --type cpu-sched --group-by tid --limit 10",
     "veloq metrics T --type cpu-sched --bucket 1s",
 ];

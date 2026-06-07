@@ -106,6 +106,10 @@ fn unknown_axis_emits_structured_error() -> Result<()> {
     ])?;
     assert_eq!(out.status.code(), Some(1));
     let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.unknown-source-metrics-axis")
+    );
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
@@ -133,6 +137,10 @@ fn line_without_file_is_rejected() -> Result<()> {
     ])?;
     assert_eq!(out.status.code(), Some(1));
     let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.source-metrics-line-without-file")
+    );
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
@@ -159,12 +167,44 @@ fn non_launch_row_id_is_rejected() -> Result<()> {
     ])?;
     assert_eq!(out.status.code(), Some(1));
     let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.invalid-launch-row-id")
+    );
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
     assert!(
         msg.contains("launch:<idx>"),
         "expected the row-id parser to mention `launch:<idx>`; got: {msg}",
+    );
+    Ok(())
+}
+
+#[test]
+fn comma_only_counter_glob_is_rejected() -> Result<()> {
+    let trace = fixture()?;
+    let out = run_veloq([
+        "ncu",
+        "source-metrics",
+        trace.to_string_lossy().as_ref(),
+        "--row-id",
+        "launch:0",
+        "--counter",
+        ",",
+    ])?;
+    assert_eq!(out.status.code(), Some(1));
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.empty-counter-glob")
+    );
+    let msg = at(&v, "/error/message")?
+        .as_str()
+        .context("error.message must be a string")?;
+    assert!(
+        msg.contains("--counter"),
+        "expected empty-counter error to mention `--counter`; got: {msg}",
     );
     Ok(())
 }
@@ -591,11 +631,40 @@ fn warp_stalls_unknown_axis_errors() -> Result<()> {
     ])?;
     assert!(!out.status.success(), "bogus axis should fail");
     let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.unknown-warp-stalls-axis")
+    );
     assert!(
         at(&v, "/error/message")?
             .as_str()
             .is_some_and(|m| m.contains("unknown --by axis")),
         "expected structured axis error: {v}"
+    );
+    Ok(())
+}
+
+#[test]
+fn warp_stalls_out_of_range_row_id_errors() -> Result<()> {
+    let trace = populated_fixture()?;
+    let out = run_veloq([
+        "ncu",
+        "warp-stalls",
+        "--row-id",
+        "launch:9999",
+        &trace.to_string_lossy(),
+    ])?;
+    assert!(!out.status.success(), "out-of-range row-id should fail");
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("ncu.command.launch-row-id-out-of-range")
+    );
+    assert!(
+        at(&v, "/error/message")?
+            .as_str()
+            .is_some_and(|m| m.contains("launch:9999") && m.contains("out of range")),
+        "expected structured out-of-range error: {v}"
     );
     Ok(())
 }

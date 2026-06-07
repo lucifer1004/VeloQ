@@ -23,6 +23,13 @@
 *.veloq-ncu-meta
 *.veloq-ncu-disasm/
 .DS_Store
+__pycache__/
+*.py[cod]
+
+# Repo-maintained scripts are opt-in; local helper/bench scripts stay ignored.
+/scripts/*
+!/scripts/install.sh
+!/scripts/bump-version.sh
 
 # Local-only Claude handoff snapshots
 .claude/handoffs/

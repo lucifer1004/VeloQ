@@ -27,9 +27,9 @@ pub mod rollup;
 pub mod units;
 
 use crate::disasm_pipeline::SourceLineRef;
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::glob;
 use crate::native::{NativeLaunch, NativeMetric, NativeSidecar, Placement, cache};
-use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -177,14 +177,12 @@ pub enum Axis {
 }
 
 impl Axis {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NcuSourceResult<Self> {
         match s {
             "line" => Ok(Axis::Line),
             "sass" => Ok(Axis::Sass),
             "file" => Ok(Axis::File),
-            other => {
-                anyhow::bail!("unknown --by axis `{other}`; expected one of: line, sass, file")
-            }
+            other => Err(NcuSourceError::unknown_source_metrics_axis(other)),
         }
     }
 
@@ -199,7 +197,10 @@ impl Axis {
 
 /// Open the report (disasm-enabled walk), resolve the launch, run the
 /// gate + rollup, and project the result into the wire shape.
-pub fn run<P: AsRef<Path>>(path: P, req: SourceMetricsRequest) -> Result<SourceMetricsResponse> {
+pub fn run<P: AsRef<Path>>(
+    path: P,
+    req: SourceMetricsRequest,
+) -> NcuSourceResult<SourceMetricsResponse> {
     validate_request(&req)?;
     let sidecar = cache::build_or_load(path.as_ref())?;
     run_on_sidecar(&sidecar, req)
@@ -214,18 +215,21 @@ pub fn run<P: AsRef<Path>>(path: P, req: SourceMetricsRequest) -> Result<SourceM
 pub fn run_on_sidecar(
     sidecar: &NativeSidecar,
     req: SourceMetricsRequest,
-) -> Result<SourceMetricsResponse> {
+) -> NcuSourceResult<SourceMetricsResponse> {
     validate_request(&req)?;
     let idx = crate::row_id::parse_launch_idx(&req.row_id)?;
 
     // Out-of-range index — error consistent with `disasm`.
     let n_launches = sidecar.launches.len();
-    anyhow::ensure!(
-        idx < n_launches,
-        "launch idx {idx} out of range ({n_launches} launches in this report)"
-    );
+    if idx >= n_launches {
+        return Err(NcuSourceError::launch_row_id_out_of_range(
+            &req.row_id,
+            idx,
+            n_launches,
+        ));
+    }
     let Some(launch) = sidecar.launches.get(idx) else {
-        anyhow::bail!("internal: launch:{idx} vanished after bounds check");
+        return Err(NcuSourceError::launch_vanished_after_bounds_check(idx));
     };
 
     // The per-PC source attribution + placement tag
@@ -261,7 +265,7 @@ pub fn run_on_sidecar(
         .map(glob::compile)
         .collect();
     if counter_matchers.is_empty() {
-        anyhow::bail!("--counter must be a non-empty glob (comma-separated)");
+        return Err(NcuSourceError::counter_glob_empty());
     }
     let matches_any = |name: &str| counter_matchers.iter().any(|m| m.matches(name));
 
@@ -342,17 +346,22 @@ pub fn run_on_sidecar(
     })
 }
 
-fn validate_request(req: &SourceMetricsRequest) -> Result<()> {
-    anyhow::ensure!(req.limit > 0, "--limit must be at least 1");
-    anyhow::ensure!(
-        req.counter_glob.split(',').any(|s| !s.trim().is_empty()),
-        "--counter must be a non-empty glob (comma-separated)"
-    );
+fn validate_request(req: &SourceMetricsRequest) -> NcuSourceResult<()> {
+    if req.limit == 0 {
+        return Err(NcuSourceError::limit_too_small(req.limit));
+    }
+    if counter_glob_is_empty(&req.counter_glob) {
+        return Err(NcuSourceError::counter_glob_empty());
+    }
     if req.line.is_some() && req.file_glob.is_none() {
-        anyhow::bail!("--line requires --file (you can't pin a line without a file)");
+        return Err(NcuSourceError::SourceMetricsLineWithoutFile);
     }
     crate::row_id::parse_launch_idx(&req.row_id)?;
     Ok(())
+}
+
+fn counter_glob_is_empty(counter: &str) -> bool {
+    !counter.split(',').any(|part| !part.trim().is_empty())
 }
 
 /// `true` when `ncu_report` tagged at least one of this metric's
@@ -575,5 +584,22 @@ fn parse_sort_spec(spec: Option<&str>, default: Option<String>) -> (Option<Strin
             (Some(name), dir.eq_ignore_ascii_case("asc"))
         }
         _ => (default, false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+    use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn axis_parse_error_is_typed() -> Result<()> {
+        let err = Axis::parse("pc").err().context("axis parse should fail")?;
+        assert_eq!(
+            err.code().as_str(),
+            "ncu.command.unknown-source-metrics-axis"
+        );
+        Ok(())
     }
 }

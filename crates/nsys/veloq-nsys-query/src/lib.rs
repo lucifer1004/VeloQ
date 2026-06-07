@@ -7,6 +7,7 @@ pub mod column_map;
 pub mod concurrency;
 pub mod correlate;
 pub mod docgen;
+pub mod error;
 pub mod event_ref;
 pub mod gaps;
 pub mod graph_replays;
@@ -21,6 +22,7 @@ pub mod nvtx_attribution;
 pub mod nvtx_parent;
 pub mod nvtx_projection;
 pub mod nvtx_reverse;
+mod query_sql;
 pub mod row_id;
 pub mod search;
 pub mod slices;
@@ -29,6 +31,7 @@ pub mod stats_by_size;
 pub mod summary;
 pub mod timeline;
 
+pub use error::{NsysQueryError, NsysQueryResult, SqlPhase};
 pub use event_ref::{EventRef, NvtxContext};
 pub use kind_filter::KindFilter;
 pub use row_id::{EventKind, RowId};
@@ -38,13 +41,10 @@ pub use row_id::{EventKind, RowId};
 /// hand-build a request with `limit: 0`, which silently zeroes
 /// `total_matched` (the count comes off SQL rows that LIMIT 0
 /// suppressed). Call this at the top of every `run()`.
-pub fn check_limit(limit: usize) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        limit > 0,
-        "limit must be at least 1 (limit=0 suppresses every row including the \
-         total_matched / scope totals carried on them)"
-    );
-    Ok(())
+pub fn check_limit(limit: usize) -> NsysQueryResult<()> {
+    veloq_core::LimitRef::new(limit)
+        .map(|_| ())
+        .map_err(|_| NsysQueryError::LimitTooSmall { limit })
 }
 
 /// Shared verb preamble: validate the limit, open the trace, and resolve
@@ -58,10 +58,12 @@ pub fn open_scoped(
     path: &std::path::Path,
     limit: usize,
     window: Option<veloq_core::time::TimeWindow>,
-) -> anyhow::Result<(veloq_nsys_data::Trace, Option<(i64, i64)>)> {
+) -> NsysQueryResult<(veloq_nsys_data::Trace, Option<(i64, i64)>)> {
     check_limit(limit)?;
-    let trace = veloq_nsys_data::Trace::open(path)?;
-    let abs_window = trace.resolve_window(window)?;
+    let trace = veloq_nsys_data::Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    let abs_window = trace
+        .resolve_window(window)
+        .map_err(NsysQueryError::time_window_resolve)?;
     Ok((trace, abs_window))
 }
 
@@ -102,143 +104,82 @@ pub fn decode_global_tid(global_tid: i64) -> (i64, i64) {
 /// Parse a CLI duration flag (`100us` / `1.2s` / `42ns` / …) into ns,
 /// rejecting non-positive results. Wraps
 /// [`veloq_core::time::parse_duration_ns`] with a flag-name aware
-/// context message and a "must be positive" guard. Used by every
+/// typed error and a "must be positive" guard. Used by every
 /// command that accepts a bucket/interval-like duration flag.
 ///
 /// `gaps::parse_min_duration` intentionally does *not* go through
 /// this — `--min-duration 0ns` (the default) means "no minimum",
 /// which is a meaningful filter even though it isn't positive.
-pub fn parse_positive_duration(s: &str, flag: &str) -> anyhow::Result<i64> {
-    use anyhow::Context;
-    let ns =
-        veloq_core::time::parse_duration_ns(s).with_context(|| format!("invalid {flag} `{s}`"))?;
-    anyhow::ensure!(ns > 0, "{flag} must be positive (got {ns} ns)");
+pub fn parse_positive_duration(s: &str, flag: &str) -> NsysQueryResult<i64> {
+    let ns = veloq_core::time::parse_duration_ns(s).map_err(|source| {
+        NsysQueryError::PositiveDurationInvalid {
+            flag: flag.to_string(),
+            value: s.to_string(),
+            source,
+        }
+    })?;
+    if ns <= 0 {
+        return Err(NsysQueryError::PositiveDurationTooSmall {
+            flag: flag.to_string(),
+            ns,
+        });
+    }
     Ok(ns)
-}
-
-/// Coerce a slice of `duckdb::types::Value` into the slice-of-trait-objects
-/// shape that `duckdb::Statement::query` requires for positional binding.
-///
-/// The result must outlive the `query` call (the returned `Rows` holds the
-/// `&dyn ToSql` references), so bind it to a local rather than passing it
-/// inline as a temporary.
-pub fn bind(params: &[duckdb::types::Value]) -> Vec<&dyn duckdb::ToSql> {
-    params.iter().map(|v| v as &dyn duckdb::ToSql).collect()
-}
-
-/// Convert shell-style `*`/`?` wildcards to SQL `LIKE` patterns, escaping
-/// the SQL-special `%`/`_`/`\` chars in the input so they're literal.
-/// Used by every command that takes a `--name` / `--pattern` glob.
-///
-/// Pairs with [`sql_like_match`] for the same pattern grammar applied
-/// in Rust — the two MUST agree, so they live side-by-side here.
-pub fn search_glob_to_like(glob: &str) -> String {
-    let mut out = String::with_capacity(glob.len());
-    for ch in glob.chars() {
-        match ch {
-            '*' => out.push('%'),
-            '?' => out.push('_'),
-            '%' | '_' | '\\' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// Apply the same `%` / `_` / `\<lit>` LIKE pattern grammar in Rust.
-/// Used by commands that need to post-filter rows in memory (e.g.
-/// when SQL-side filtering would force per-axis SQL divergence in
-/// `metrics --type cpu-sampling`). Input pattern comes from
-/// [`search_glob_to_like`] so the grammar matches 1:1.
-///
-/// Supports `%` (zero-or-more), `_` (exactly-one), and `\` as a
-/// literal-next escape. Anything not listed is matched as a literal.
-pub fn sql_like_match(s: &str, pattern: &str) -> bool {
-    let s_bytes: Vec<char> = s.chars().collect();
-    let p_bytes: Vec<char> = pattern.chars().collect();
-    fn rec(s: &[char], p: &[char]) -> bool {
-        if p.is_empty() {
-            return s.is_empty();
-        }
-        let (head, tail) = match p.split_first() {
-            Some((h, t)) => (*h, t),
-            None => return s.is_empty(),
-        };
-        match head {
-            '%' => {
-                // empty match here…
-                if rec(s, tail) {
-                    return true;
-                }
-                // …or consume one char and try again.
-                match s.split_first() {
-                    Some((_, srest)) => rec(srest, p),
-                    None => false,
-                }
-            }
-            '_' => match s.split_first() {
-                Some((_, srest)) => rec(srest, tail),
-                None => false,
-            },
-            '\\' => match (tail.split_first(), s.split_first()) {
-                (Some((lit, prest)), Some((sc, srest))) if *lit == *sc => rec(srest, prest),
-                _ => false,
-            },
-            other => match s.split_first() {
-                Some((sc, srest)) if *sc == other => rec(srest, tail),
-                _ => false,
-            },
-        }
-    }
-    rec(&s_bytes, &p_bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veloq_core::VeloqDiagnostic;
 
-    /// Round-trip the glob through [`search_glob_to_like`] and assert
-    /// the Rust matcher agrees with the expected result. Catches drift
-    /// between the two halves of the LIKE pipeline: a future edit to
-    /// either function that changes the `*`/`?`/`%`/`_`/`\` grammar
-    /// will fail here before it can quietly produce wrong filter
-    /// results in `metrics --type cpu-sampling`'s post-query path.
     #[test]
-    fn glob_to_like_round_trips_through_sql_like_match() {
-        // (glob, candidate, expected). Cover: literal, `*`, `?`,
-        // anchored start/end, LIKE-special chars (`%`/`_`) escaped
-        // through the conversion, and the `\<lit>` escape branch.
-        let cases: &[(&str, &str, bool)] = &[
-            ("foo", "foo", true),
-            ("foo", "foox", false),
-            ("foo*", "foo", true),
-            ("foo*", "foobar", true),
-            ("foo*", "bar", false),
-            ("*foo", "barfoo", true),
-            ("*foo*", "abarfooz", true),
-            ("f?o", "foo", true),
-            ("f?o", "fxxo", false),
-            // `*` / `?` are *only* meaningful as wildcards; embedded
-            // SQL-special `%` / `_` from the user input must round-trip
-            // as literals.
-            ("100%", "100%", true),
-            ("100%", "100x", false),
-            ("a_b", "a_b", true),
-            ("a_b", "axb", false),
-            // Backslash in the user input becomes an escaped backslash
-            // in the LIKE pattern; the matcher must consume it the same way.
-            ("a\\b", "a\\b", true),
-        ];
-        for (glob, candidate, expected) in cases {
-            let like = search_glob_to_like(glob);
-            assert_eq!(
-                sql_like_match(candidate, &like),
-                *expected,
-                "glob=`{glob}` -> like=`{like}` vs candidate=`{candidate}`"
-            );
+    fn check_limit_zero_returns_typed_error() -> anyhow::Result<()> {
+        let err = match check_limit(0) {
+            Ok(()) => anyhow::bail!("expected check_limit(0) to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.limit-too-small");
+        assert!(matches!(err, NsysQueryError::LimitTooSmall { limit: 0 }));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_positive_duration_invalid_literal_returns_typed_error() -> anyhow::Result<()> {
+        let err = match parse_positive_duration("bogus", "--bucket") {
+            Ok(ns) => anyhow::bail!("expected invalid duration to fail, got {ns} ns"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.invalid-positive-duration");
+        match err {
+            NsysQueryError::PositiveDurationInvalid { flag, value, .. } => {
+                assert_eq!(flag, "--bucket");
+                assert_eq!(value, "bogus");
+            }
+            other => anyhow::bail!("expected PositiveDurationInvalid, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_positive_duration_zero_returns_typed_error() -> anyhow::Result<()> {
+        let err = match parse_positive_duration("0ns", "--interval") {
+            Ok(ns) => anyhow::bail!("expected zero duration to fail, got {ns} ns"),
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.query.positive-duration-too-small"
+        );
+        assert!(matches!(
+            err,
+            NsysQueryError::PositiveDurationTooSmall {
+                flag,
+                ns: 0
+            } if flag == "--interval"
+        ));
+        Ok(())
     }
 }

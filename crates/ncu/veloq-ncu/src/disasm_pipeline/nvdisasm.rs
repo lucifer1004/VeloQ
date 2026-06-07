@@ -11,8 +11,9 @@
 //! Both passes run once per cubin during disasm acquisition; the
 //! join lands in [`super::types::SassInstruction::source`].
 
-use anyhow::{Context, Result};
 use std::collections::HashMap;
+
+use crate::error::{NcuSourceError, NcuSourceResult};
 
 use super::types::{KernelDisasm, SassInstruction, SourceLineRef, clone_source_ref};
 
@@ -23,7 +24,7 @@ pub fn parse_emit_json(
     stdout: &str,
     line_map: &HashMap<u64, SourceLineRef>,
     instruction_stride: u64,
-) -> Result<Vec<KernelDisasm>> {
+) -> NcuSourceResult<Vec<KernelDisasm>> {
     let json_start = match stdout.find('[') {
         Some(i) => i,
         None => return Ok(Vec::new()),
@@ -33,38 +34,36 @@ pub fn parse_emit_json(
         None => return Ok(Vec::new()),
     };
     let v: serde_json::Value =
-        serde_json::from_str(payload).context("decoding nvdisasm --emit-json output")?;
+        serde_json::from_str(payload).map_err(NcuSourceError::nvdisasm_json_decode)?;
     let arr = v
         .as_array()
-        .context("nvdisasm JSON top-level was not an array")?;
+        .ok_or(NcuSourceError::NvdisasmTopLevelNotArray)?;
     let kernel_list = arr
         .get(1)
         .and_then(|x| x.as_array())
-        .context("nvdisasm JSON has no kernel array at index 1")?;
+        .ok_or(NcuSourceError::NvdisasmKernelArrayMissing)?;
     let mut kernels = Vec::with_capacity(kernel_list.len());
     for (i, k) in kernel_list.iter().enumerate() {
-        kernels.push(
-            parse_kernel(k, line_map, instruction_stride)
-                .with_context(|| format!("kernel[{i}]"))?,
-        );
+        kernels.push(parse_kernel(k, i, line_map, instruction_stride)?);
     }
     Ok(kernels)
 }
 
 fn parse_kernel(
     v: &serde_json::Value,
+    index: usize,
     line_map: &HashMap<u64, SourceLineRef>,
     instruction_stride: u64,
-) -> Result<KernelDisasm> {
+) -> NcuSourceResult<KernelDisasm> {
     let function_name = v
         .get("function-name")
         .and_then(|x| x.as_str())
-        .context("kernel missing function-name")?
+        .ok_or_else(|| NcuSourceError::nvdisasm_kernel_function_name_missing(index))?
         .to_string();
     let start = v
         .get("start")
         .and_then(|x| x.as_u64())
-        .context("kernel missing start")?;
+        .ok_or_else(|| NcuSourceError::nvdisasm_kernel_start_missing(index))?;
     let length = v.get("length").and_then(|x| x.as_u64()).unwrap_or(0);
     let empty: Vec<serde_json::Value> = Vec::new();
     let raw = v

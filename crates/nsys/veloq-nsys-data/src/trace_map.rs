@@ -22,9 +22,8 @@
 //! `.nsys-rep` callers do not reach this module (`info` keeps the
 //! basics-only payload).
 
-use crate::Trace;
 use crate::nvtx_tree::NvtxTree;
-use anyhow::{Context, Result};
+use crate::{NsysDataResult, Trace};
 use std::collections::{BTreeMap, HashMap};
 
 /// Top-K cutoff for `nvtx.top_paths`. Surfacing the long tail would
@@ -114,10 +113,10 @@ pub struct NvtxTopPath {
 /// `nvtx`) are independent — none of them errors out on missing tables;
 /// each returns an empty inventory instead so an agent sees the honest
 /// "this trace doesn't have it" shape rather than an opaque failure.
-pub fn build(trace: &Trace, nvtx_top_k: usize) -> Result<TraceMap> {
-    let devices = build_devices(trace).context("building device inventory")?;
-    let processes = build_processes(trace).context("building process inventory")?;
-    let nvtx = build_nvtx(trace, nvtx_top_k).context("building NVTX summary")?;
+pub fn build(trace: &Trace, nvtx_top_k: usize) -> NsysDataResult<TraceMap> {
+    let devices = build_devices(trace)?;
+    let processes = build_processes(trace)?;
+    let nvtx = build_nvtx(trace, nvtx_top_k)?;
     Ok(TraceMap {
         devices,
         processes,
@@ -125,7 +124,7 @@ pub fn build(trace: &Trace, nvtx_top_k: usize) -> Result<TraceMap> {
     })
 }
 
-fn build_devices(trace: &Trace) -> Result<DeviceInventory> {
+fn build_devices(trace: &Trace) -> NsysDataResult<DeviceInventory> {
     let mut ids = collect_device_ids(trace)?;
     ids.sort_unstable();
     ids.dedup();
@@ -135,16 +134,28 @@ fn build_devices(trace: &Trace) -> Result<DeviceInventory> {
     })
 }
 
-fn collect_device_ids(trace: &Trace) -> Result<Vec<i32>> {
+fn collect_device_ids(trace: &Trace) -> NsysDataResult<Vec<i32>> {
     if trace.has_table("TARGET_INFO_GPU") {
         let mut stmt = trace
             .conn()
             .prepare("SELECT CAST(cuDevice AS INTEGER) FROM nsight.TARGET_INFO_GPU")
-            .context("preparing TARGET_INFO_GPU device probe")?;
-        let mut rows = stmt.query([])?;
+            .map_err(|source| {
+                crate::NsysDataError::trace_map_probe_column_missing(
+                    "TARGET_INFO_GPU",
+                    "cuDevice",
+                    source,
+                )
+            })?;
+        let mut rows = stmt.query([]).map_err(|source| {
+            crate::NsysDataError::trace_map_rows_query("TARGET_INFO_GPU", source)
+        })?;
         let mut out = Vec::new();
-        while let Some(r) = rows.next()? {
-            let id: Option<i32> = r.get(0)?;
+        while let Some(r) = rows.next().map_err(|source| {
+            crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source)
+        })? {
+            let id: Option<i32> = r.get(0).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source)
+            })?;
             if let Some(id) = id {
                 out.push(id);
             }
@@ -163,16 +174,28 @@ fn collect_device_ids(trace: &Trace) -> Result<Vec<i32>> {
              FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL \
              WHERE deviceId IS NOT NULL",
         )
-        .context("preparing DISTINCT deviceId fallback")?;
-    let mut rows = stmt.query([])?;
+        .map_err(|source| {
+            crate::NsysDataError::trace_map_probe_column_missing(
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                "deviceId",
+                source,
+            )
+        })?;
+    let mut rows = stmt.query([]).map_err(|source| {
+        crate::NsysDataError::trace_map_rows_query("CUPTI_ACTIVITY_KIND_KERNEL", source)
+    })?;
     let mut out = Vec::new();
-    while let Some(r) = rows.next()? {
-        out.push(r.get::<_, i32>(0)?);
+    while let Some(r) = rows.next().map_err(|source| {
+        crate::NsysDataError::trace_map_rows_read("CUPTI_ACTIVITY_KIND_KERNEL", source)
+    })? {
+        out.push(r.get::<_, i32>(0).map_err(|source| {
+            crate::NsysDataError::trace_map_rows_read("CUPTI_ACTIVITY_KIND_KERNEL", source)
+        })?);
     }
     Ok(out)
 }
 
-fn build_processes(trace: &Trace) -> Result<ProcessInventory> {
+fn build_processes(trace: &Trace) -> NsysDataResult<ProcessInventory> {
     let mut native_pids = collect_native_pids(trace)?;
     native_pids.sort_unstable();
     native_pids.dedup();
@@ -184,18 +207,27 @@ fn build_processes(trace: &Trace) -> Result<ProcessInventory> {
     })
 }
 
-fn collect_native_pids(trace: &Trace) -> Result<Vec<i64>> {
+fn collect_native_pids(trace: &Trace) -> NsysDataResult<Vec<i64>> {
     if trace.has_table("PROCESSES") {
         let mut stmt = trace
             .conn()
             .prepare(
                 "SELECT DISTINCT CAST(pid AS BIGINT) FROM nsight.PROCESSES WHERE pid IS NOT NULL",
             )
-            .context("preparing PROCESSES pid probe")?;
-        let mut rows = stmt.query([])?;
+            .map_err(|source| {
+                crate::NsysDataError::trace_map_probe_column_missing("PROCESSES", "pid", source)
+            })?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|source| crate::NsysDataError::trace_map_rows_query("PROCESSES", source))?;
         let mut out = Vec::new();
-        while let Some(r) = rows.next()? {
-            out.push(r.get::<_, i64>(0)?);
+        while let Some(r) = rows
+            .next()
+            .map_err(|source| crate::NsysDataError::trace_map_rows_read("PROCESSES", source))?
+        {
+            out.push(r.get::<_, i64>(0).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("PROCESSES", source)
+            })?);
         }
         if !out.is_empty() {
             return Ok(out);
@@ -209,11 +241,23 @@ fn collect_native_pids(trace: &Trace) -> Result<Vec<i64>> {
                  FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO \
                  WHERE processId IS NOT NULL",
             )
-            .context("preparing TARGET_INFO_CUDA_CONTEXT_INFO pid probe")?;
-        let mut rows = stmt.query([])?;
+            .map_err(|source| {
+                crate::NsysDataError::trace_map_probe_column_missing(
+                    "TARGET_INFO_CUDA_CONTEXT_INFO",
+                    "processId",
+                    source,
+                )
+            })?;
+        let mut rows = stmt.query([]).map_err(|source| {
+            crate::NsysDataError::trace_map_rows_query("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+        })?;
         let mut out = Vec::new();
-        while let Some(r) = rows.next()? {
-            out.push(r.get::<_, i64>(0)?);
+        while let Some(r) = rows.next().map_err(|source| {
+            crate::NsysDataError::trace_map_rows_read("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+        })? {
+            out.push(r.get::<_, i64>(0).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+            })?);
         }
         return Ok(out);
     }
@@ -231,7 +275,7 @@ const RANK_ENV_KEYS: &[&str] = &[
     "PMI_RANK",
 ];
 
-fn collect_launches(trace: &Trace) -> Result<Vec<ProcessLaunch>> {
+fn collect_launches(trace: &Trace) -> NsysDataResult<Vec<ProcessLaunch>> {
     if !trace.has_table("META_DATA_CAPTURE") {
         return Ok(Vec::new());
     }
@@ -241,14 +285,29 @@ fn collect_launches(trace: &Trace) -> Result<Vec<ProcessLaunch>> {
             "SELECT name, value FROM nsight.META_DATA_CAPTURE \
              WHERE name LIKE 'PROCESS\\_%:%' ESCAPE '\\'",
         )
-        .context("preparing META_DATA_CAPTURE scan")?;
-    let mut rows = stmt.query([])?;
+        .map_err(|source| {
+            crate::NsysDataError::trace_map_probe_column_missing(
+                "META_DATA_CAPTURE",
+                "name/value",
+                source,
+            )
+        })?;
+    let mut rows = stmt.query([]).map_err(|source| {
+        crate::NsysDataError::trace_map_rows_query("META_DATA_CAPTURE", source)
+    })?;
     // Aggregate every PROCESS_N:FIELD row into a per-index builder so we
     // can render labels independent of insertion order.
     let mut builders: BTreeMap<u32, LaunchBuilder> = BTreeMap::new();
-    while let Some(r) = rows.next()? {
-        let key: String = r.get(0)?;
-        let value: String = r.get(1)?;
+    while let Some(r) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::trace_map_rows_read("META_DATA_CAPTURE", source))?
+    {
+        let key: String = r.get(0).map_err(|source| {
+            crate::NsysDataError::trace_map_rows_read("META_DATA_CAPTURE", source)
+        })?;
+        let value: String = r.get(1).map_err(|source| {
+            crate::NsysDataError::trace_map_rows_read("META_DATA_CAPTURE", source)
+        })?;
         let Some((idx, field)) = split_process_key(&key) else {
             continue;
         };
@@ -328,7 +387,7 @@ fn parse_env_assignment(raw: &str) -> Option<(String, String)> {
     Some((k.to_string(), v.to_string()))
 }
 
-fn build_nvtx(trace: &Trace, top_k: usize) -> Result<Option<NvtxSummary>> {
+fn build_nvtx(trace: &Trace, top_k: usize) -> NsysDataResult<Option<NvtxSummary>> {
     if !trace.has_table("NVTX_EVENTS") {
         return Ok(None);
     }
@@ -355,7 +414,7 @@ fn pid_of(global_tid: i64) -> i64 {
     (global_tid >> 24) & 0xFFFFFF
 }
 
-fn collect_domains(trace: &Trace, tree: &NvtxTree) -> Result<Vec<NvtxDomain>> {
+fn collect_domains(trace: &Trace, tree: &NvtxTree) -> NsysDataResult<Vec<NvtxDomain>> {
     // Domain identity is (pid, domainId): `domainId` is a process-local
     // handle, so the same id in two processes is two distinct domains.
     // Collect the distinct pairs actually present in the
@@ -385,7 +444,7 @@ fn collect_domains(trace: &Trace, tree: &NvtxTree) -> Result<Vec<NvtxDomain>> {
 /// Public so the query crate can domain-qualify `stats --group-by
 /// nvtx-path` rows with the resolved domain name. Names are best-effort: a domain with no
 /// `NvtxDomainCreate` row simply has no entry here.
-pub fn nvtx_domain_names(trace: &Trace) -> Result<HashMap<(i64, i64), String>> {
+pub fn nvtx_domain_names(trace: &Trace) -> NsysDataResult<HashMap<(i64, i64), String>> {
     let mut names = HashMap::new();
     let create_ids = crate::nvtx_tree::nvtx_event_type_ids(trace, &["NvtxDomainCreate"], &[75]);
     let create_list = create_ids
@@ -403,11 +462,22 @@ pub fn nvtx_domain_names(trace: &Trace) -> Result<HashMap<(i64, i64), String>> {
            AND COALESCE(n.text, s.value) IS NOT NULL"
     );
     if let Ok(mut stmt) = trace.conn().prepare(&sql) {
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            let gtid: i64 = r.get(0)?;
-            let id: i64 = r.get(1)?;
-            let name: String = r.get(2)?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|source| crate::NsysDataError::trace_map_rows_query("NVTX_EVENTS", source))?;
+        while let Some(r) = rows
+            .next()
+            .map_err(|source| crate::NsysDataError::trace_map_rows_read("NVTX_EVENTS", source))?
+        {
+            let gtid: i64 = r.get(0).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("NVTX_EVENTS", source)
+            })?;
+            let id: i64 = r.get(1).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("NVTX_EVENTS", source)
+            })?;
+            let name: String = r.get(2).map_err(|source| {
+                crate::NsysDataError::trace_map_rows_read("NVTX_EVENTS", source)
+            })?;
             if !name.is_empty() {
                 names.insert((pid_of(gtid), id), name);
             }
@@ -463,6 +533,83 @@ fn top_paths_from_tree(tree: &NvtxTree, top_k: usize) -> Vec<NvtxTopPath> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: &[(&str, &str)]) -> Result<(TempDir, PathBuf)> {
+        let tables_with_rows = tables
+            .iter()
+            .map(|(table, ddl)| (*table, *ddl, Vec::new()))
+            .collect::<Vec<_>>();
+        parquet_fixture_with_rows(&tables_with_rows)
+    }
+
+    fn parquet_fixture_with_rows(tables: &[(&str, &str, Vec<&str>)]) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn malformed_trace(extra_tables: &[(&str, &str)]) -> Result<(TempDir, PathBuf)> {
+        let mut tables = vec![(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+        )];
+        tables.extend_from_slice(extra_tables);
+        parquet_fixture(&tables)
+    }
+
+    fn assert_trace_map_column_error(
+        err: crate::NsysDataError,
+        expected_table: &str,
+        expected_column: &str,
+    ) -> Result<()> {
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.trace-map-probe-column-missing"
+        );
+        match err {
+            crate::NsysDataError::TraceMapProbeColumnMissing { table, column, .. } => {
+                assert_eq!(table, expected_table);
+                assert_eq!(column, expected_column);
+            }
+            other => anyhow::bail!("expected TraceMapProbeColumnMissing, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    fn assert_trace_map_rows_query_error(
+        err: crate::NsysDataError,
+        expected_table: &str,
+    ) -> Result<()> {
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-query");
+        let Some((area, phase, label)) = err.duckdb_parts() else {
+            anyhow::bail!("expected trace map DuckDB error, got {err:?}");
+        };
+        assert_eq!(area, "trace map");
+        assert_eq!(phase, crate::DuckdbPhase::Query);
+        assert_eq!(label, expected_table);
+        Ok(())
+    }
 
     /// Domain identity is `(pid, domainId)`. The same
     /// `domainId` registered in two processes must stay two distinct
@@ -523,6 +670,153 @@ mod tests {
         let gtid = i64::from_ne_bytes(bits.to_ne_bytes());
         assert!(gtid < 0, "test value must be a negative i64");
         assert_eq!(pid_of(gtid), 14530);
+    }
+
+    #[test]
+    fn device_probe_missing_target_info_gpu_cudevice_has_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = malformed_trace(&[(
+            "TARGET_INFO_GPU",
+            "CREATE TABLE TARGET_INFO_GPU (id BIGINT)",
+        )])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_device_ids(&trace) {
+            Ok(ids) => anyhow::bail!("malformed TARGET_INFO_GPU should fail: {ids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_column_error(err, "TARGET_INFO_GPU", "cuDevice")
+    }
+
+    #[test]
+    fn device_probe_bad_target_info_gpu_cudevice_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice TEXT)",
+                vec!["INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES ('bad')"],
+            ),
+        ])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_device_ids(&trace) {
+            Ok(ids) => anyhow::bail!("invalid TARGET_INFO_GPU should fail: {ids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_rows_query_error(err, "TARGET_INFO_GPU")
+    }
+
+    #[test]
+    fn device_probe_missing_kernel_deviceid_has_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = malformed_trace(&[])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_device_ids(&trace) {
+            Ok(ids) => anyhow::bail!("malformed kernel table should fail: {ids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_column_error(err, "CUPTI_ACTIVITY_KIND_KERNEL", "deviceId")
+    }
+
+    #[test]
+    fn process_probe_missing_processes_pid_has_typed_error() -> Result<()> {
+        let (_dir, pqtdir) =
+            malformed_trace(&[("PROCESSES", "CREATE TABLE PROCESSES (name TEXT)")])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_native_pids(&trace) {
+            Ok(pids) => anyhow::bail!("malformed PROCESSES should fail: {pids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_column_error(err, "PROCESSES", "pid")
+    }
+
+    #[test]
+    fn process_probe_bad_processes_pid_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "PROCESSES",
+                "CREATE TABLE PROCESSES (pid TEXT)",
+                vec!["INSERT INTO PROCESSES (pid) VALUES ('bad')"],
+            ),
+        ])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_native_pids(&trace) {
+            Ok(pids) => anyhow::bail!("invalid PROCESSES should fail: {pids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_rows_query_error(err, "PROCESSES")
+    }
+
+    #[test]
+    fn process_probe_missing_context_processid_has_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = malformed_trace(&[(
+            "TARGET_INFO_CUDA_CONTEXT_INFO",
+            "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (deviceId BIGINT)",
+        )])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_native_pids(&trace) {
+            Ok(pids) => anyhow::bail!("malformed context table should fail: {pids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_column_error(err, "TARGET_INFO_CUDA_CONTEXT_INFO", "processId")
+    }
+
+    #[test]
+    fn launch_probe_missing_value_has_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = malformed_trace(&[(
+            "META_DATA_CAPTURE",
+            "CREATE TABLE META_DATA_CAPTURE (name TEXT)",
+        )])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_launches(&trace) {
+            Ok(launches) => anyhow::bail!("malformed capture table should fail: {launches:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_column_error(err, "META_DATA_CAPTURE", "name/value")
+    }
+
+    #[test]
+    fn context_probe_bad_processid_has_typed_query_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (processId TEXT)",
+                vec!["INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO (processId) VALUES ('bad')"],
+            ),
+        ])?;
+        let trace = crate::Trace::open(&pqtdir)?;
+
+        let err = match collect_native_pids(&trace) {
+            Ok(pids) => anyhow::bail!("invalid context table should fail: {pids:?}"),
+            Err(err) => err,
+        };
+
+        assert_trace_map_rows_query_error(err, "TARGET_INFO_CUDA_CONTEXT_INFO")
     }
 
     #[test]

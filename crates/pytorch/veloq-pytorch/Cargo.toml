@@ -6,18 +6,21 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
+description = "PyTorch/Kineto profile source (CLI surface + dispatch) for VeloQ."
+include = ["src/**/*.rs"]
 
 [dependencies]
-anyhow.workspace = true
 clap.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 veloq-core.workspace = true
 veloq-pytorch-data.workspace = true
 veloq-pytorch-query.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 tempfile.workspace = true
 
 [lints]

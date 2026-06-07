@@ -1,4 +1,4 @@
-use anyhow::Result;
+use crate::{PytorchCommandError, PytorchCommandResult};
 use veloq_pytorch_query::{
     CollectivesResponse, CorrelateResponse, InspectResponse, PrepResponse, SearchResponse,
     SlicesResponse, StatsResponse, SummaryResponse, TimelineResponse,
@@ -10,20 +10,19 @@ pub struct SchemaPayload {
     pub schema: serde_json::Value,
 }
 
-pub fn schema_value_for(target: &str) -> Result<serde_json::Value> {
-    let value = match target {
-        "summary" => serde_json::to_value(schemars::schema_for!(SummaryResponse))?,
-        "search" => serde_json::to_value(schemars::schema_for!(SearchResponse))?,
-        "inspect" => serde_json::to_value(schemars::schema_for!(InspectResponse))?,
-        "stats" => serde_json::to_value(schemars::schema_for!(StatsResponse))?,
-        "correlate" => serde_json::to_value(schemars::schema_for!(CorrelateResponse))?,
-        "timeline" => serde_json::to_value(schemars::schema_for!(TimelineResponse))?,
-        "slices" => serde_json::to_value(schemars::schema_for!(SlicesResponse))?,
-        "collectives" => serde_json::to_value(schemars::schema_for!(CollectivesResponse))?,
-        "prep" => serde_json::to_value(schemars::schema_for!(PrepResponse))?,
-        other => anyhow::bail!(
-            "unknown pytorch schema target `{other}`; expected one of: summary, search, inspect, stats, correlate, timeline, slices, collectives, prep"
-        ),
+pub fn schema_value_for(target: &str) -> PytorchCommandResult<serde_json::Value> {
+    let schema = match target {
+        "summary" => schemars::schema_for!(SummaryResponse),
+        "search" => schemars::schema_for!(SearchResponse),
+        "inspect" => schemars::schema_for!(InspectResponse),
+        "stats" => schemars::schema_for!(StatsResponse),
+        "correlate" => schemars::schema_for!(CorrelateResponse),
+        "timeline" => schemars::schema_for!(TimelineResponse),
+        "slices" => schemars::schema_for!(SlicesResponse),
+        "collectives" => schemars::schema_for!(CollectivesResponse),
+        "prep" => schemars::schema_for!(PrepResponse),
+        other => return Err(PytorchCommandError::unknown_schema_target(other)),
     };
-    Ok(value)
+    serde_json::to_value(schema)
+        .map_err(|source| PytorchCommandError::serialize_schema(target, source))
 }

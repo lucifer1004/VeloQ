@@ -45,8 +45,7 @@
 //! reuses an already-loaded or valid on-disk sidecar and falls back to
 //! this direct computation only when the sidecar is absent.
 
-use crate::Trace;
-use anyhow::{Context, Result};
+use crate::{NsysDataResult, Trace};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -110,13 +109,13 @@ impl crate::nvtx_stack::NvtxScanRow for NvtxRow {
 /// agents reading the response should treat "depth absent" as "depth
 /// 0" and "iter_index absent" as "0", same as if the trace had a
 /// single non-overlapping unnamed range per thread.
-pub fn compute(trace: &Trace) -> Result<NvtxNesting> {
+pub fn compute(trace: &Trace) -> NsysDataResult<NvtxNesting> {
     if !trace_has_nvtx(trace)? {
         log::debug!("nvtx_nesting: NVTX_EVENTS table absent — empty result");
         return Ok(HashMap::new());
     }
 
-    let rows = collect_rows(trace).context("collecting NVTX rows for nesting computation")?;
+    let rows = collect_rows(trace)?;
     if rows.is_empty() {
         return Ok(HashMap::new());
     }
@@ -124,13 +123,13 @@ pub fn compute(trace: &Trace) -> Result<NvtxNesting> {
     Ok(compute_from_rows(rows))
 }
 
-fn trace_has_nvtx(trace: &Trace) -> Result<bool> {
+fn trace_has_nvtx(trace: &Trace) -> NsysDataResult<bool> {
     // Cheap probe — same pattern correlation.rs uses for optional tables.
     let probe_sql = "SELECT 1 FROM nsight.NVTX_EVENTS LIMIT 0";
     Ok(trace.conn().execute(probe_sql, []).is_ok())
 }
 
-fn collect_rows(trace: &Trace) -> Result<Vec<NvtxRow>> {
+fn collect_rows(trace: &Trace) -> NsysDataResult<Vec<NvtxRow>> {
     // `domainId` is nullable on older schemas — coerce NULL to 0 so the
     // default-domain ranges still share a stack the way NSys's GUI
     // groups them.
@@ -158,17 +157,37 @@ fn collect_rows(trace: &Trace) -> Result<Vec<NvtxRow>> {
            LEFT JOIN nsight.StringIds s ON n.textId = s.id
            WHERE n.start IS NOT NULL"#
     );
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let mut rows = stmt.query([])?;
+    let mut stmt = trace
+        .conn()
+        .prepare(&sql)
+        .map_err(crate::NsysDataError::nvtx_nesting_rows_prepare)?;
+    let mut rows = stmt
+        .query([])
+        .map_err(crate::NsysDataError::nvtx_nesting_rows_query)?;
     let mut out: Vec<NvtxRow> = Vec::new();
-    while let Some(r) = rows.next()? {
+    while let Some(r) = rows
+        .next()
+        .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?
+    {
         out.push(NvtxRow {
-            rowid: r.get(0)?,
-            start: r.get(1)?,
-            end: r.get(2)?,
-            global_tid: r.get(3)?,
-            domain_id: r.get(4)?,
-            name: r.get(5)?,
+            rowid: r
+                .get(0)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
+            start: r
+                .get(1)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
+            end: r
+                .get(2)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
+            global_tid: r
+                .get(3)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
+            domain_id: r
+                .get(4)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
+            name: r
+                .get(5)
+                .map_err(crate::NsysDataError::nvtx_nesting_rows_read)?,
         });
     }
     Ok(out)
@@ -241,6 +260,48 @@ fn compute_from_rows(rows: Vec<NvtxRow>) -> NvtxNesting {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn parquet_fixture(tables: Vec<(&str, &str, Vec<&str>)>) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = duckdb::Connection::open_in_memory()?;
+        for (_, ddl, inserts) in &tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in &tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn valid_empty_kernel() -> (&'static str, &'static str, Vec<&'static str>) {
+        (
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            Vec::new(),
+        )
+    }
+
+    fn valid_string_ids() -> (&'static str, &'static str, Vec<&'static str>) {
+        (
+            "StringIds",
+            "CREATE TABLE StringIds (id BIGINT PRIMARY KEY, value TEXT)",
+            Vec::new(),
+        )
+    }
 
     fn r(rowid: i64, start: i64, end: Option<i64>, tid: i64, domain: i64, name: &str) -> NvtxRow {
         NvtxRow {
@@ -251,6 +312,77 @@ mod tests {
             domain_id: domain,
             name: name.to_string(),
         }
+    }
+
+    #[test]
+    fn collect_rows_missing_stringids_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            (
+                "NVTX_EVENTS",
+                r#"CREATE TABLE NVTX_EVENTS (
+                    rowid BIGINT,
+                    start BIGINT,
+                    "end" BIGINT,
+                    globalTid BIGINT,
+                    domainId BIGINT,
+                    text TEXT,
+                    textId BIGINT
+                )"#,
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match collect_rows(&trace) {
+            Ok(rows) => anyhow::bail!("missing StringIds should not collect rows: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("nvtx nesting", crate::DuckdbPhase::Prepare, "rows"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn collect_rows_bad_start_type_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            valid_empty_kernel(),
+            valid_string_ids(),
+            (
+                "NVTX_EVENTS",
+                r#"CREATE TABLE NVTX_EVENTS (
+                    rowid BIGINT,
+                    start TEXT,
+                    "end" BIGINT,
+                    globalTid BIGINT,
+                    domainId BIGINT,
+                    text TEXT,
+                    textId BIGINT
+                )"#,
+                vec![
+                    r#"INSERT INTO NVTX_EVENTS
+                       (rowid, start, "end", globalTid, domainId, text, textId)
+                       VALUES (1, 'bad', 10, 7, 0, 'outer', NULL)"#,
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match collect_rows(&trace) {
+            Ok(rows) => anyhow::bail!("text start should not collect rows: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-read");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("nvtx nesting", crate::DuckdbPhase::Read, "rows"))
+        );
+        Ok(())
     }
 
     /// Two independent groups, ranges, and one instant marker exercise

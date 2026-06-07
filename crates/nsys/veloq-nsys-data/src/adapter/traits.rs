@@ -15,7 +15,7 @@
 //!
 //! [`probe`]: SchemaAdapter::probe
 
-use anyhow::Result;
+use crate::NsysDataResult;
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -143,7 +143,7 @@ pub fn table_exists(pqtdir: &Path, table: &str) -> bool {
 /// `product_version` / `product_date` are best-effort: a present
 /// schema-version triple with absent product-version is still
 /// returned. Adapters consult this during version-first dispatch.
-pub fn get_schema_version(conn: &Connection) -> Result<Option<SchemaVersion>> {
+pub fn get_schema_version(conn: &Connection) -> NsysDataResult<Option<SchemaVersion>> {
     // META_DATA_EXPORT resolves under the `nsight` schema once
     // `Trace::open` returns. An absent table (older or partial
     // export) is treated as no schema info rather than an error.
@@ -158,7 +158,10 @@ pub fn get_schema_version(conn: &Connection) -> Result<Option<SchemaVersion>> {
         Ok(stmt) => stmt,
         Err(_) => return Ok(None),
     };
-    let mut rows = stmt.query([])?;
+    const TABLE: &str = "META_DATA_EXPORT";
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::export_metadata_query(TABLE, source))?;
 
     let mut major: Option<u32> = None;
     let mut minor: Option<u32> = None;
@@ -166,12 +169,19 @@ pub fn get_schema_version(conn: &Connection) -> Result<Option<SchemaVersion>> {
     let mut product_version: Option<String> = None;
     let mut product_date: Option<String> = None;
 
-    while let Some(r) = rows.next()? {
-        let key: String = r.get(0)?;
+    while let Some(r) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::export_metadata_read(TABLE, source))?
+    {
+        let key: String = r
+            .get(0)
+            .map_err(|source| crate::NsysDataError::export_metadata_read(TABLE, source))?;
         // META_DATA_EXPORT.value alternates between TEXT and BIGINT
         // depending on which NSys subsystem wrote it; route through
         // duckdb's polymorphic Value rather than guessing.
-        let raw: duckdb::types::Value = r.get(1)?;
+        let raw: duckdb::types::Value = r
+            .get(1)
+            .map_err(|source| crate::NsysDataError::export_metadata_read(TABLE, source))?;
         let value = value_to_string(&raw);
         match key.as_str() {
             "EXPORT_SCHEMA_VERSION_MAJOR" => major = value.parse().ok(),
@@ -217,6 +227,7 @@ fn value_to_string(v: &duckdb::types::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veloq_core::VeloqDiagnostic;
 
     #[test]
     fn schema_version_display_includes_product_when_present() {
@@ -263,5 +274,34 @@ mod tests {
         // Tokens used by log lines — keep them lowercase + stable.
         assert_eq!(AdapterStatus::Stable.as_str(), "stable");
         assert_eq!(AdapterStatus::Beta.as_str(), "beta");
+    }
+
+    #[test]
+    fn schema_version_query_error_is_typed() -> anyhow::Result<()> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE SCHEMA nsight; \
+             CREATE TABLE nsight.META_DATA_EXPORT_RAW (name TEXT, value TEXT); \
+             INSERT INTO nsight.META_DATA_EXPORT_RAW (name, value) \
+             VALUES ('EXPORT_SCHEMA_VERSION_MAJOR', 'bad'); \
+             CREATE VIEW nsight.META_DATA_EXPORT AS \
+             SELECT name, CAST(value AS BIGINT) AS value FROM nsight.META_DATA_EXPORT_RAW",
+        )?;
+
+        let err = match get_schema_version(&conn) {
+            Ok(version) => anyhow::bail!("wrong-typed schema metadata should fail: {version:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-query");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some((
+                "export metadata",
+                crate::DuckdbPhase::Query,
+                "META_DATA_EXPORT"
+            ))
+        );
+        Ok(())
     }
 }

@@ -43,13 +43,14 @@
 //! in this mode (there's nothing to hash); a genuinely missing trace
 //! with no sidecar still errors.
 
-use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::error::{NcuSourceError, NcuSourceResult};
 
 use super::{NATIVE_SCHEMA, NativeSidecar};
 
@@ -91,22 +92,22 @@ fn lock_path_for(report: &Path) -> PathBuf {
 
 /// Build or load the native sidecar. Content-hash fast path; otherwise
 /// runs the helper under an export lock (requires NCU). See module docs.
-pub fn build_or_load(report: &Path) -> Result<NativeSidecar> {
+pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
     let cache = cache_path_for(report);
     if !report.exists() {
         // Committed-sidecar mode: see module docs.
         if cache.is_file() {
             let sc = read_gz_sidecar(&cache)?;
             if sc.schema != NATIVE_SCHEMA {
-                bail!(
-                    "committed native sidecar {} has schema {:?}, expected {NATIVE_SCHEMA}",
-                    cache.display(),
-                    sc.schema
-                );
+                return Err(NcuSourceError::native_sidecar_schema_mismatch(
+                    &cache,
+                    sc.schema,
+                    NATIVE_SCHEMA,
+                ));
             }
             return Ok(sc);
         }
-        bail!("ncu report not found: {}", report.display());
+        return Err(NcuSourceError::trace_not_found(report));
     }
     let want = file_sha256(report)?;
     let marker = marker_path_for(report);
@@ -118,8 +119,9 @@ pub fn build_or_load(report: &Path) -> Result<NativeSidecar> {
     // Serialize concurrent (re)builds.
     let lock_path = lock_path_for(report);
     if let Some(parent) = lock_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating artifact directory {}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|source| {
+            NcuSourceError::native_artifact_dir_create(parent.display(), source)
+        })?;
     }
     let lock_file = fs::OpenOptions::new()
         .read(true)
@@ -127,10 +129,12 @@ pub fn build_or_load(report: &Path) -> Result<NativeSidecar> {
         .create(true)
         .truncate(false)
         .open(&lock_path)
-        .with_context(|| format!("opening native export lockfile {}", lock_path.display()))?;
-    lock_file
-        .lock()
-        .with_context(|| format!("flock {}", lock_path.display()))?;
+        .map_err(|source| {
+            NcuSourceError::native_export_lockfile_open(lock_path.display(), source)
+        })?;
+    lock_file.lock().map_err(|source| {
+        NcuSourceError::native_export_lock_acquire(lock_path.display(), source)
+    })?;
 
     // A concurrent process may have built it while we waited.
     if let Some(sc) = load_if_fresh(&cache, &marker, &want)? {
@@ -139,24 +143,17 @@ pub fn build_or_load(report: &Path) -> Result<NativeSidecar> {
 
     // (Re)build requires NCU. Absent → structured error (don't serve a
     // stale cache for a changed report).
-    let pythonpath = locate_ncu_report().map_err(|e| {
-        anyhow::anyhow!(
-            "cannot ingest {} without Nsight Compute: {e}\n\
-             A matching native sidecar would have been used, but none is fresh. \
-             Install NCU (provides the ncu_report Python module) or run `veloq ncu prep` \
-             on a machine with NCU, then commit/copy the <report>.veloq/ sidecar.",
-            report.display()
-        )
-    })?;
+    let pythonpath = locate_ncu_report()
+        .map_err(|source| NcuSourceError::native_ingest_unavailable(report, source))?;
 
     let payload = run_helper(report, &pythonpath)?;
-    let sidecar: NativeSidecar = serde_json::from_str(&payload)
-        .context("helper output is not a valid ncu-native sidecar")?;
+    let sidecar: NativeSidecar =
+        serde_json::from_str(&payload).map_err(NcuSourceError::native_helper_output_deserialize)?;
     if sidecar.schema != NATIVE_SCHEMA {
-        bail!(
-            "helper emitted schema {:?}, expected {NATIVE_SCHEMA}",
-            sidecar.schema
-        );
+        return Err(NcuSourceError::native_helper_schema_mismatch(
+            sidecar.schema,
+            NATIVE_SCHEMA,
+        ));
     }
     write_cache(&cache, &marker, &payload, &want)?;
     Ok(sidecar)
@@ -164,12 +161,16 @@ pub fn build_or_load(report: &Path) -> Result<NativeSidecar> {
 
 /// Load + validate the cache against the wanted content hash. `Ok(None)`
 /// when the cache or marker is missing or the hash differs.
-fn load_if_fresh(cache: &Path, marker: &Path, want: &str) -> Result<Option<NativeSidecar>> {
+fn load_if_fresh(
+    cache: &Path,
+    marker: &Path,
+    want: &str,
+) -> NcuSourceResult<Option<NativeSidecar>> {
     if !cache.is_file() || !marker.is_file() {
         return Ok(None);
     }
     let got = fs::read_to_string(marker)
-        .with_context(|| format!("reading native cache marker {}", marker.display()))?;
+        .map_err(|source| NcuSourceError::native_cache_marker_read(marker.display(), source))?;
     if got.trim() != want {
         log::info!("ncu report changed since native sidecar was written; needs rebuild");
         return Ok(None);
@@ -187,27 +188,35 @@ fn load_if_fresh(cache: &Path, marker: &Path, want: &str) -> Result<Option<Nativ
 
 /// Read + gunzip + deserialize a committed/cached native sidecar. Public
 /// so tests and NCU-free callers can load a known-good golden directly.
-pub fn read_gz_sidecar(path: &Path) -> Result<NativeSidecar> {
-    let bytes =
-        fs::read(path).with_context(|| format!("reading native sidecar {}", path.display()))?;
+pub fn read_gz_sidecar(path: &Path) -> NcuSourceResult<NativeSidecar> {
+    let bytes = fs::read(path)
+        .map_err(|source| NcuSourceError::native_sidecar_read(path.display(), source))?;
     let mut s = String::new();
     flate2::read::GzDecoder::new(bytes.as_slice())
         .read_to_string(&mut s)
-        .with_context(|| format!("gunzip native sidecar {}", path.display()))?;
+        .map_err(|source| NcuSourceError::native_sidecar_gunzip(path.display(), source))?;
     serde_json::from_str(&s)
-        .with_context(|| format!("deserialize native sidecar {}", path.display()))
+        .map_err(|source| NcuSourceError::native_sidecar_deserialize(path.display(), source))
 }
 
-fn write_cache(cache: &Path, marker: &Path, payload_json: &str, sha_hex: &str) -> Result<()> {
+fn write_cache(
+    cache: &Path,
+    marker: &Path,
+    payload_json: &str,
+    sha_hex: &str,
+) -> NcuSourceResult<()> {
     if let Some(parent) = cache.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating artifact directory {}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|source| {
+            NcuSourceError::native_artifact_dir_create(parent.display(), source)
+        })?;
     }
     // gzip the payload (mtime 0 → byte-reproducible, matching `gzip -n`).
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
     enc.write_all(payload_json.as_bytes())
-        .context("gzip native sidecar payload")?;
-    let gz = enc.finish().context("finish gzip native sidecar")?;
+        .map_err(NcuSourceError::native_sidecar_gzip_write)?;
+    let gz = enc
+        .finish()
+        .map_err(NcuSourceError::native_sidecar_gzip_finish)?;
     write_atomic(cache, &gz)?;
     write_atomic(marker, format!("{sha_hex}\n").as_bytes())?;
     log::info!(
@@ -218,21 +227,23 @@ fn write_cache(cache: &Path, marker: &Path, payload_json: &str, sha_hex: &str) -
     Ok(())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+fn write_atomic(path: &Path, bytes: &[u8]) -> NcuSourceResult<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp_path = PathBuf::from(tmp);
     fs::write(&tmp_path, bytes)
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    fs::rename(&tmp_path, path)
-        .with_context(|| format!("renaming into place {}", path.display()))?;
+        .map_err(|source| NcuSourceError::native_atomic_write(tmp_path.display(), source))?;
+    fs::rename(&tmp_path, path).map_err(|source| {
+        NcuSourceError::native_atomic_rename(tmp_path.display(), path.display(), source)
+    })?;
     Ok(())
 }
 
-fn file_sha256(path: &Path) -> Result<String> {
+fn file_sha256(path: &Path) -> NcuSourceResult<String> {
     // `.ncu-rep` fixtures are a few MB; read whole rather than a buffered
     // loop so we avoid a slice index (clippy::indexing_slicing is denied).
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let bytes = fs::read(path)
+        .map_err(|source| NcuSourceError::native_report_read(path.display(), source))?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
@@ -250,7 +261,7 @@ impl Drop for TempScript {
 /// Run the bundled helper against `report` with `PYTHONPATH` pointed at
 /// the located `extras/python`. Returns the helper's stdout (the native
 /// sidecar JSON). A non-zero exit surfaces the helper's stderr.
-fn run_helper(report: &Path, pythonpath: &Path) -> Result<String> {
+fn run_helper(report: &Path, pythonpath: &Path) -> NcuSourceResult<String> {
     // Unique per call (pid + process-global counter) so concurrent
     // in-process callers can't clobber each other's script; RAII removes
     // it even when `?` returns early.
@@ -260,7 +271,7 @@ fn run_helper(report: &Path, pythonpath: &Path) -> Result<String> {
         std::env::temp_dir().join(format!("veloq-ncu-export-{}-{seq}.py", std::process::id())),
     );
     fs::write(&tmp.0, HELPER_PY)
-        .with_context(|| format!("materializing export helper at {}", tmp.0.display()))?;
+        .map_err(|source| NcuSourceError::native_helper_materialize(tmp.0.display(), source))?;
 
     // Try interpreter candidates in order. Advance to the next ONLY when
     // the interpreter binary itself is not found (spawn `NotFound`); a
@@ -276,28 +287,25 @@ fn run_helper(report: &Path, pythonpath: &Path) -> Result<String> {
             .output();
         match out {
             Ok(out) if out.status.success() => {
-                return String::from_utf8(out.stdout).context("helper stdout was not valid UTF-8");
+                return String::from_utf8(out.stdout)
+                    .map_err(NcuSourceError::native_helper_stdout_utf8);
             }
-            Ok(out) => bail!(
-                "ncu_report export helper failed under `{prog}` ({}):\n{}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
+            Ok(out) => {
+                return Err(NcuSourceError::native_helper_failed(
+                    prog,
+                    out.status.to_string(),
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                ));
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 not_found.push(prog.clone());
             }
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("spawning `{prog}` for the ncu_report export helper")
-                });
+                return Err(NcuSourceError::native_helper_spawn(prog.clone(), e));
             }
         }
     }
-    bail!(
-        "no usable Python interpreter found (tried: {}). Set {ENV_PYTHON} to a python3 that can \
-         `import ncu_report`.",
-        not_found.join(", ")
-    )
+    Err(NcuSourceError::native_python_missing(not_found.join(", ")))
 }
 
 /// Interpreter candidates in priority order: `(program, prefix_args)`.
@@ -328,22 +336,19 @@ fn python_candidates(override_py: Option<OsString>) -> Vec<(String, Vec<String>)
 /// separately in [`run_helper`]). Precedence:
 /// `VELOQ_NCU_REPORT_DIR` override → per-platform install roots → `ncu` on
 /// `PATH`. Extends pre-deletion gate 4 to macOS/Windows.
-pub fn locate_ncu_report() -> Result<PathBuf> {
+pub fn locate_ncu_report() -> NcuSourceResult<PathBuf> {
     locate_ncu_report_impl(std::env::var_os(ENV_NCU_REPORT_DIR))
 }
 
 /// Discovery core, split out so the override path is unit-testable without
 /// mutating process env.
-fn locate_ncu_report_impl(override_dir: Option<OsString>) -> Result<PathBuf> {
+fn locate_ncu_report_impl(override_dir: Option<OsString>) -> NcuSourceResult<PathBuf> {
     if let Some(dir) = override_dir {
         let p = PathBuf::from(dir);
         if p.join("ncu_report.py").is_file() {
             return Ok(p);
         }
-        bail!(
-            "{ENV_NCU_REPORT_DIR}={} does not contain ncu_report.py",
-            p.display()
-        );
+        return Err(NcuSourceError::native_ncu_report_override_invalid(&p));
     }
     for (base, pattern) in platform_search_roots() {
         if let Some(p) = newest_glob_with_module(&base, &pattern) {
@@ -353,7 +358,9 @@ fn locate_ncu_report_impl(override_dir: Option<OsString>) -> Result<PathBuf> {
     if let Some(p) = ncu_on_path_module_dir() {
         return Ok(p);
     }
-    bail!("{}", discovery_failure_message())
+    Err(NcuSourceError::native_ncu_report_module_missing(
+        discovery_failure_message(),
+    ))
 }
 
 /// `(base, glob-pattern)` pairs to search, per host OS. The
@@ -538,9 +545,37 @@ fn ncu_on_path_module_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
 
     fn fixture() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/source_metric_basic.ncu-rep")
+    }
+
+    fn unique_temp_path(label: &str) -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("veloq-ncu-{label}-{}-{seq}", std::process::id()))
+    }
+
+    fn write_test_sidecar(cache: &Path, schema: &str) -> Result<()> {
+        use std::io::Write;
+        let parent = cache
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        let payload = format!(
+            r#"{{"schema":"{schema}","ncu_version":"test","session":{{"versions":[]}},"launches":[]}}"#
+        );
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(payload.as_bytes())?;
+        let gz = enc.finish()?;
+        fs::write(cache, &gz)?;
+        Ok(())
+    }
+
+    fn ncu_error_code(err: &NcuSourceError) -> &'static str {
+        err.code().as_str()
     }
 
     /// Committed-sidecar mode:
@@ -551,23 +586,13 @@ mod tests {
     /// depending on the committed tree's layout.
     #[test]
     fn build_or_load_serves_committed_sidecar_when_report_absent() -> Result<()> {
-        use std::io::Write;
-        let tmp = std::env::temp_dir().join(format!(
-            "veloq-ncu-absent-report-{}.ncu-rep",
-            std::process::id()
-        ));
+        let tmp = unique_temp_path("absent-report").with_extension("ncu-rep");
         let cache = cache_path_for(&tmp);
         let parent = cache
             .parent()
             .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
-        fs::create_dir_all(parent)?;
-        let payload = format!(
-            r#"{{"schema":"{NATIVE_SCHEMA}","ncu_version":"test","session":{{"versions":[]}},"launches":[]}}"#
-        );
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(payload.as_bytes())?;
-        let gz = enc.finish()?;
-        fs::write(&cache, &gz)?;
+        let _ = fs::remove_dir_all(parent);
+        write_test_sidecar(&cache, NATIVE_SCHEMA)?;
 
         assert!(
             !tmp.exists(),
@@ -575,6 +600,32 @@ mod tests {
         );
         let sc = build_or_load(&tmp)?;
         assert_eq!(sc.schema, NATIVE_SCHEMA);
+
+        fs::remove_dir_all(parent).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn committed_sidecar_schema_mismatch_is_typed() -> Result<()> {
+        let tmp = unique_temp_path("schema-mismatch").with_extension("ncu-rep");
+        let cache = cache_path_for(&tmp);
+        let parent = cache
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
+        let _ = fs::remove_dir_all(parent);
+        write_test_sidecar(&cache, "older-schema")?;
+
+        assert!(
+            !tmp.exists(),
+            "the source report must be absent for committed-sidecar validation"
+        );
+        let err = build_or_load(&tmp)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("schema mismatch should error"))?;
+        assert_eq!(
+            ncu_error_code(&err),
+            "ncu.input.native-sidecar-schema-mismatch"
+        );
 
         fs::remove_dir_all(parent).ok();
         Ok(())
@@ -633,6 +684,21 @@ mod tests {
 
         let _ = fs::remove_dir_all(&good);
         let _ = fs::remove_dir_all(&empty);
+        Ok(())
+    }
+
+    #[test]
+    fn env_override_error_is_typed() -> Result<()> {
+        let empty = unique_temp_path("ncu-report-empty");
+        let _ = fs::remove_dir_all(&empty);
+        fs::create_dir_all(&empty)?;
+
+        let err = locate_ncu_report_impl(Some(empty.clone().into_os_string()))
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("invalid override dir should error"))?;
+        assert_eq!(err.code().as_str(), "ncu.input.ncu-report-override-invalid");
+
+        fs::remove_dir_all(&empty).ok();
         Ok(())
     }
 

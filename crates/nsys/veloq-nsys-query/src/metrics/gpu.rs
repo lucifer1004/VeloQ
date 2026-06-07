@@ -7,13 +7,18 @@
 //! suffix (`[Cycles Active]` / `[Requests]` roll up by sum, every
 //! other unit by mean).
 
-use anyhow::{Context, Result};
+use crate::{NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
 use veloq_nsys_data::Trace;
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{name, total_matched_bigint_expr, window};
 
-use super::{Coverage, GpuMetricsBody, GpuMetricsRequest, MetricsCommon};
+use super::{Coverage, GpuMetricsBody, GpuMetricsRequest, MetricsCommon, query_rows};
+
+const GPU_COUNTERS_SQL: &str = "gpu counters";
+const GPU_BUCKETS_SQL: &str = "gpu buckets";
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct CounterSummary {
@@ -68,18 +73,12 @@ pub(super) fn run_gpu(
     abs_window: Option<(i64, i64)>,
     trace_origin_ns: i64,
     trace_span_ns: (i64, i64),
-) -> Result<GpuMetricsBody> {
+) -> NsysQueryResult<GpuMetricsBody> {
     if !trace.table_exists("GPU_METRICS") {
-        anyhow::bail!(
-            "metrics --type gpu requires `GPU_METRICS`, which is absent from this trace; \
-             re-capture with `nsys profile --gpu-metrics-devices=…`"
-        );
+        return Err(NsysQueryError::MetricsGpuTableMissing);
     }
     if !trace.table_exists("TARGET_INFO_GPU_METRICS") {
-        anyhow::bail!(
-            "metrics --type gpu requires `TARGET_INFO_GPU_METRICS` (counter dictionary); \
-             likely a partial or corrupted nsys export"
-        );
+        return Err(NsysQueryError::MetricsGpuDictionaryMissing);
     }
 
     let counters = query_gpu_counters(trace, req, abs_window)?;
@@ -170,25 +169,27 @@ fn query_gpu_counters(
     trace: &Trace,
     req: &GpuMetricsRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<CounterWithSpan>> {
+) -> NsysQueryResult<Vec<CounterWithSpan>> {
     let mut params: Vec<Value> = Vec::new();
 
     // Counter dictionary: optionally filtered by glob via LIKE. We keep
     // the LIKE in SQL (instead of dict-then-filter in Rust) so the
     // GPU_METRICS join only walks rows for matching counters.
-    let dict_pred = if req.counter_glob.is_some() {
-        params.push(Value::Text(crate::search_glob_to_like(
-            req.counter_glob.as_deref().unwrap_or(""),
-        )));
-        r#"WHERE metricName LIKE ? ESCAPE '\'"#
+    let dict_pred = if let Some(counter_glob) = req.counter_glob.as_deref() {
+        let fragment = name::glob_like("metricName", counter_glob);
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
     } else {
-        ""
+        String::new()
     };
 
-    // Time window — overlap-semantics here is just an inclusive
-    // half-open interval on `timestamp` since samples are points.
-    let (window_pred, window_params) = build_window_pred(abs_window);
-    params.extend(window_params);
+    // Point samples use half-open time-window semantics.
+    let window_pred = if let Some(fragment) = window::point_filter("m.timestamp", abs_window) {
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
+    } else {
+        String::new()
+    };
 
     let sql = format!(
         r#"
@@ -255,59 +256,52 @@ fn query_gpu_counters(
         "#
     );
 
-    let conn = trace.conn();
-    let mut stmt = conn.prepare(&sql).context("preparing GPU metrics SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-
-    let mut out: Vec<CounterWithSpan> = Vec::new();
-    while let Some(r) = rows.next()? {
-        let name: String = r.get("metric_name")?;
-        let unit = parse_unit(&name);
-        let agg = infer_agg(unit.as_deref());
-        let samples: i64 = r.get("samples")?;
-        let type_id: i64 = r.get("type_id")?;
-        let metric_id: i64 = r.get("metric_id")?;
-        out.push(CounterWithSpan {
-            summary: CounterSummary {
-                key: format!("counter|type:{type_id}|metric:{metric_id}"),
-                type_id,
-                metric_id,
-                name,
-                unit,
-                agg,
-                samples,
-                min: r.get("min_v")?,
-                max: r.get("max_v")?,
-                mean: r.get("mean_v")?,
-                p50: r.get("p50_v")?,
-                p95: r.get("p95_v")?,
-                p99: r.get("p99_v")?,
-            },
-            span_lo: if samples > 0 {
-                r.get("span_lo")?
-            } else {
-                i64::MAX
-            },
-            span_hi: if samples > 0 {
-                r.get("span_hi")?
-            } else {
-                i64::MIN
-            },
-            max_gap_ns: r.get("max_gap_ns")?,
-        });
-    }
+    let out = query_rows(trace, &sql, &params, GPU_COUNTERS_SQL, gpu_counter_row)?;
     // A glob with no matching counter in the dictionary is a user
     // error worth surfacing — silently empty data hides typos.
     if out.is_empty()
         && let Some(g) = &req.counter_glob
     {
-        anyhow::bail!(
-            "no GPU counters match `--counter {g}`; \
-                 run `veloq metrics <trace> --type gpu` (no --counter) to list available names"
-        );
+        return Err(NsysQueryError::metrics_gpu_counter_no_match(g));
     }
     Ok(out)
+}
+
+fn gpu_counter_row(row: &duckdb::Row<'_>) -> Result<CounterWithSpan, duckdb::Error> {
+    let name: String = row.get("metric_name")?;
+    let unit = parse_unit(&name);
+    let agg = infer_agg(unit.as_deref());
+    let samples: i64 = row.get("samples")?;
+    let type_id: i64 = row.get("type_id")?;
+    let metric_id: i64 = row.get("metric_id")?;
+    Ok(CounterWithSpan {
+        summary: CounterSummary {
+            key: format!("counter|type:{type_id}|metric:{metric_id}"),
+            type_id,
+            metric_id,
+            name,
+            unit,
+            agg,
+            samples,
+            min: row.get("min_v")?,
+            max: row.get("max_v")?,
+            mean: row.get("mean_v")?,
+            p50: row.get("p50_v")?,
+            p95: row.get("p95_v")?,
+            p99: row.get("p99_v")?,
+        },
+        span_lo: if samples > 0 {
+            row.get("span_lo")?
+        } else {
+            i64::MAX
+        },
+        span_hi: if samples > 0 {
+            row.get("span_hi")?
+        } else {
+            i64::MIN
+        },
+        max_gap_ns: row.get("max_gap_ns")?,
+    })
 }
 
 fn query_gpu_buckets(
@@ -317,7 +311,7 @@ fn query_gpu_buckets(
     bucket_ns: i64,
     counters: &[CounterWithSpan],
     primary_origin_ns: i64,
-) -> Result<(Vec<BucketSample>, i64)> {
+) -> NsysQueryResult<(Vec<BucketSample>, i64)> {
     // Anchor buckets so user-typed offsets line up: window start if
     // given, primary origin otherwise. `primary_origin_ns` is plumbed
     // through from `run()` so we don't pay a second `read_origins()`
@@ -326,13 +320,12 @@ fn query_gpu_buckets(
     let anchor = abs_window.map(|(s, _)| s).unwrap_or(primary_origin_ns);
 
     let mut params: Vec<Value> = Vec::new();
-    let dict_pred = if req.counter_glob.is_some() {
-        params.push(Value::Text(crate::search_glob_to_like(
-            req.counter_glob.as_deref().unwrap_or(""),
-        )));
-        r#"WHERE metricName LIKE ? ESCAPE '\'"#
+    let dict_pred = if let Some(counter_glob) = req.counter_glob.as_deref() {
+        let fragment = name::glob_like("metricName", counter_glob);
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
     } else {
-        ""
+        String::new()
     };
 
     // Per-counter aggregator: build a CASE expression keyed by
@@ -359,8 +352,12 @@ fn query_gpu_buckets(
         format!("CASE WHEN metricId IN ({ids}) THEN SUM(value) ELSE AVG(value) END")
     };
 
-    let (window_pred, window_params) = build_window_pred(abs_window);
-    params.extend(window_params);
+    let window_pred = if let Some(fragment) = window::point_filter("m.timestamp", abs_window) {
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
+    } else {
+        String::new()
+    };
 
     let sql = format!(
         r#"
@@ -405,21 +402,15 @@ fn query_gpu_buckets(
             GROUP BY typeId, metricId, t_start
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM agg
         ORDER BY t_start ASC, typeId ASC, metricId ASC
         LIMIT ?
         "#,
         bucket = bucket_ns,
+        total_matched = total_matched_bigint_expr(),
     );
     params.push(Value::BigInt(req.common.limit as i64));
-
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing GPU metrics bucket SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
 
     // Build a metric_id → agg label map so each row carries the
     // aggregator that produced it. Matches what `--counter` summary
@@ -430,36 +421,44 @@ fn query_gpu_buckets(
         .map(|c| (c.summary.metric_id, c.summary.agg))
         .collect();
 
-    let mut out: Vec<BucketSample> = Vec::new();
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        let type_id: i64 = r.get("typeId")?;
-        let metric_id: i64 = r.get("metricId")?;
-        let agg = agg_by_id.get(&metric_id).copied().unwrap_or("mean");
-        let t_start_ns: i64 = r.get("t_start")?;
-        out.push(BucketSample {
+    let rows = query_rows(trace, &sql, &params, GPU_BUCKETS_SQL, |row| {
+        gpu_bucket_row(row, &agg_by_id)
+    })?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::Last,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok(row.bucket),
+    )
+}
+
+struct GpuBucketRow {
+    bucket: BucketSample,
+    total_matched: i64,
+}
+
+fn gpu_bucket_row(
+    row: &duckdb::Row<'_>,
+    agg_by_id: &std::collections::HashMap<i64, &'static str>,
+) -> Result<GpuBucketRow, duckdb::Error> {
+    let type_id: i64 = row.get("typeId")?;
+    let metric_id: i64 = row.get("metricId")?;
+    let agg = agg_by_id.get(&metric_id).copied().unwrap_or("mean");
+    let t_start_ns: i64 = row.get("t_start")?;
+    Ok(GpuBucketRow {
+        bucket: BucketSample {
             key: format!("bucket|{t_start_ns}|type:{type_id}|metric:{metric_id}"),
             t_start_ns,
-            t_end_ns: r.get("t_end")?,
+            t_end_ns: row.get("t_end")?,
             type_id,
             metric_id,
             agg,
-            value: r.get("value")?,
-            samples: r.get("samples")?,
-        });
-        total_matched = r.get("total_matched")?;
-    }
-    Ok((out, total_matched))
-}
-
-fn build_window_pred(abs_window: Option<(i64, i64)>) -> (String, Vec<Value>) {
-    match abs_window {
-        Some((start, end)) => (
-            "WHERE m.timestamp >= ? AND m.timestamp < ?".to_string(),
-            vec![Value::BigInt(start), Value::BigInt(end)],
-        ),
-        None => (String::new(), Vec::new()),
-    }
+            value: row.get("value")?,
+            samples: row.get("samples")?,
+        },
+        total_matched: row.get("total_matched")?,
+    })
 }
 
 /// Parse the trailing `[X]` suffix in a counter name (`"SMs Active
@@ -583,12 +582,12 @@ impl SortKeyDef for CounterSortKey {
 /// Sort the counter-summary list per the user's `--sort` spec. Keys
 /// match what the JSON exposes — `name`, `metric_id`, `samples`,
 /// `mean`, `min`, `max`, `p50`, `p95`, `p99`.
-fn sort_counters(out: &mut [CounterSummary], spec: &SortSpec) -> Result<()> {
+fn sort_counters(out: &mut [CounterSummary], spec: &SortSpec) -> NsysQueryResult<()> {
     let resolved: Vec<(CounterSortKey, Direction)> = spec
         .fields()
         .iter()
-        .map(|f| CounterSortKey::from_field(f).map_err(Into::into))
-        .collect::<Result<_>>()?;
+        .map(|f| CounterSortKey::from_field(f).map_err(NsysQueryError::metrics_sort_invalid))
+        .collect::<NsysQueryResult<_>>()?;
     // f64 comparison: total_cmp() is total-ordering and ignores NaN
     // surprises — safer than partial_cmp for sort closures. Stable
     // tiebreak on metric_id ASC.

@@ -6,13 +6,15 @@
 //! row. Kernels carry grid/block geometry and shared-memory sizing;
 //! memcpy/memset add `bytes` plus a copy/value field.
 
-use crate::{NvtxContext, RowId};
-use anyhow::{Context, Result};
+use crate::{NsysQueryResult, NvtxContext, RowId};
 use duckdb::Connection;
-use duckdb::types::Value;
 use serde::Serialize;
 
-use super::{ColumnMap, EventDetails, maybe_col, opt_string};
+use super::{ColumnMap, EventDetails, maybe_col, opt_string, query_inspect_row};
+
+const INSPECT_KERNEL_SQL: &str = "kernel";
+const INSPECT_MEMCPY_SQL: &str = "memcpy";
+const INSPECT_MEMSET_SQL: &str = "memset";
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct KernelDetails {
@@ -105,7 +107,7 @@ pub(super) fn query_kernel(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_KERNEL";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -145,42 +147,55 @@ pub(super) fn query_kernel(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare kernel inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    Ok(Some(EventDetails::Kernel(KernelDetails {
-        key: id.to_string(),
-        row_id: id,
-        short_name: opt_string(r, 16)?,
-        demangled_name: opt_string(r, 17)?,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        device_id: r.get(2)?,
-        context_id: r.get(3)?,
-        stream_id: r.get(4)?,
-        grid: [r.get(5)?, r.get(6)?, r.get(7)?],
-        block: [r.get(8)?, r.get(9)?, r.get(10)?],
-        registers_per_thread: r.get(11)?,
-        static_shared_memory: r.get(12)?,
-        dynamic_shared_memory: r.get(13)?,
-        correlation_id: r.get(14)?,
-        global_pid: r.get(15)?,
-        graph_id: r.get(18)?,
-        graph_node_id: r.get(19)?,
-        nvtx_context: None,
-    })))
+    query_kernel_with_sql(conn, id, &sql)
+}
+
+fn query_kernel_with_sql(
+    conn: &Connection,
+    id: RowId,
+    sql: &str,
+) -> NsysQueryResult<Option<EventDetails>> {
+    query_inspect_row(conn, INSPECT_KERNEL_SQL, sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_KERNEL_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_KERNEL_SQL, r.get(1))?;
+        Ok(EventDetails::Kernel(KernelDetails {
+            key: id.to_string(),
+            row_id: id,
+            short_name: map_inspect_read(INSPECT_KERNEL_SQL, opt_string(r, 16))?,
+            demangled_name: map_inspect_read(INSPECT_KERNEL_SQL, opt_string(r, 17))?,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            device_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(2))?,
+            context_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(3))?,
+            stream_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(4))?,
+            grid: [
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(5))?,
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(6))?,
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(7))?,
+            ],
+            block: [
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(8))?,
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(9))?,
+                map_inspect_read(INSPECT_KERNEL_SQL, r.get(10))?,
+            ],
+            registers_per_thread: map_inspect_read(INSPECT_KERNEL_SQL, r.get(11))?,
+            static_shared_memory: map_inspect_read(INSPECT_KERNEL_SQL, r.get(12))?,
+            dynamic_shared_memory: map_inspect_read(INSPECT_KERNEL_SQL, r.get(13))?,
+            correlation_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(14))?,
+            global_pid: map_inspect_read(INSPECT_KERNEL_SQL, r.get(15))?,
+            graph_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(18))?,
+            graph_node_id: map_inspect_read(INSPECT_KERNEL_SQL, r.get(19))?,
+            nvtx_context: None,
+        }))
+    })
 }
 
 pub(super) fn query_memcpy(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_MEMCPY";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -205,37 +220,42 @@ pub(super) fn query_memcpy(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare memcpy inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    let copy_kind: i64 = r.get(6)?;
-    Ok(Some(EventDetails::Memcpy(MemcpyDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        device_id: r.get(2)?,
-        context_id: r.get(3)?,
-        stream_id: r.get(4)?,
-        bytes: r.get(5)?,
-        copy_kind,
-        copy_kind_name: crate::kind_sql::copy_kind_label(copy_kind),
-        correlation_id: r.get(7)?,
-        graph_node_id: r.get(8)?,
-        nvtx_context: None,
-    })))
+    query_memcpy_with_sql(conn, id, &sql)
+}
+
+fn query_memcpy_with_sql(
+    conn: &Connection,
+    id: RowId,
+    sql: &str,
+) -> NsysQueryResult<Option<EventDetails>> {
+    query_inspect_row(conn, INSPECT_MEMCPY_SQL, sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_MEMCPY_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_MEMCPY_SQL, r.get(1))?;
+        let copy_kind: i64 = map_inspect_read(INSPECT_MEMCPY_SQL, r.get(6))?;
+        Ok(EventDetails::Memcpy(MemcpyDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            device_id: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(2))?,
+            context_id: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(3))?,
+            stream_id: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(4))?,
+            bytes: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(5))?,
+            copy_kind,
+            copy_kind_name: crate::kind_sql::copy_kind_label(copy_kind),
+            correlation_id: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(7))?,
+            graph_node_id: map_inspect_read(INSPECT_MEMCPY_SQL, r.get(8))?,
+            nvtx_context: None,
+        }))
+    })
 }
 
 pub(super) fn query_memset(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_MEMSET";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -261,26 +281,253 @@ pub(super) fn query_memset(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare memset inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    Ok(Some(EventDetails::Memset(MemsetDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        device_id: r.get(2)?,
-        context_id: r.get(3)?,
-        stream_id: r.get(4)?,
-        bytes: r.get(5)?,
-        value: r.get(6)?,
-        correlation_id: r.get(7)?,
-        graph_node_id: r.get(8)?,
-        nvtx_context: None,
-    })))
+    query_memset_with_sql(conn, id, &sql)
+}
+
+fn query_memset_with_sql(
+    conn: &Connection,
+    id: RowId,
+    sql: &str,
+) -> NsysQueryResult<Option<EventDetails>> {
+    query_inspect_row(conn, INSPECT_MEMSET_SQL, sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_MEMSET_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_MEMSET_SQL, r.get(1))?;
+        Ok(EventDetails::Memset(MemsetDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            device_id: map_inspect_read(INSPECT_MEMSET_SQL, r.get(2))?,
+            context_id: map_inspect_read(INSPECT_MEMSET_SQL, r.get(3))?,
+            stream_id: map_inspect_read(INSPECT_MEMSET_SQL, r.get(4))?,
+            bytes: map_inspect_read(INSPECT_MEMSET_SQL, r.get(5))?,
+            value: map_inspect_read(INSPECT_MEMSET_SQL, r.get(6))?,
+            correlation_id: map_inspect_read(INSPECT_MEMSET_SQL, r.get(7))?,
+            graph_node_id: map_inspect_read(INSPECT_MEMSET_SQL, r.get(8))?,
+            nvtx_context: None,
+        }))
+    })
+}
+
+fn map_inspect_read<T>(
+    kind: &'static str,
+    result: std::result::Result<T, duckdb::Error>,
+) -> NsysQueryResult<T> {
+    result.map_err(|source| crate::NsysQueryError::sql_read("inspect", kind, source))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn id(kind: crate::EventKind) -> RowId {
+        RowId::new(kind, 1)
+    }
+
+    fn assert_error(
+        result: NsysQueryResult<Option<EventDetails>>,
+        expected_code: &str,
+        expected_kind: &'static str,
+    ) -> Result<crate::NsysQueryError> {
+        let err = match result {
+            Ok(_) => anyhow::bail!("malformed inspect SQL should not succeed"),
+            Err(err) => err,
+        };
+        assert_eq!(err.code().as_str(), expected_code);
+        let Some((area, _, label)) = err.sql_parts() else {
+            anyhow::bail!("expected inspect SQL error, got {err:?}");
+        };
+        assert_eq!(area, "inspect");
+        assert_eq!(label, expected_kind);
+        Ok(err)
+    }
+
+    #[test]
+    fn query_kernel_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = assert_error(
+            query_kernel_with_sql(&conn, id(crate::EventKind::Kernel), "SELECT * FROM"),
+            "nsys.query.sql-prepare",
+            INSPECT_KERNEL_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_kernel_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_kernel_with_sql(&conn, id(crate::EventKind::Kernel), sql),
+            "nsys.query.sql-query",
+            INSPECT_KERNEL_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_kernel_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'not-a-start' AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_kernel_with_sql(&conn, id(crate::EventKind::Kernel), sql),
+            "nsys.query.sql-read",
+            INSPECT_KERNEL_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memcpy_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = assert_error(
+            query_memcpy_with_sql(&conn, id(crate::EventKind::Memcpy), "SELECT * FROM"),
+            "nsys.query.sql-prepare",
+            INSPECT_MEMCPY_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memcpy_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_memcpy_with_sql(&conn, id(crate::EventKind::Memcpy), sql),
+            "nsys.query.sql-query",
+            INSPECT_MEMCPY_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memcpy_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'not-a-start' AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_memcpy_with_sql(&conn, id(crate::EventKind::Memcpy), sql),
+            "nsys.query.sql-read",
+            INSPECT_MEMCPY_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memset_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = assert_error(
+            query_memset_with_sql(&conn, id(crate::EventKind::Memset), "SELECT * FROM"),
+            "nsys.query.sql-prepare",
+            INSPECT_MEMSET_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memset_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_memset_with_sql(&conn, id(crate::EventKind::Memset), sql),
+            "nsys.query.sql-query",
+            INSPECT_MEMSET_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_memset_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'not-a-start' AS start_ns WHERE ? IS NOT NULL";
+
+        let err = assert_error(
+            query_memset_with_sql(&conn, id(crate::EventKind::Memset), sql),
+            "nsys.query.sql-read",
+            INSPECT_MEMSET_SQL,
+        )?;
+
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
 }

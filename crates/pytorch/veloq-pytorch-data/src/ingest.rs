@@ -11,11 +11,12 @@ use crate::metadata::{
 use crate::model::{
     Capabilities, Event, EventType, FlowMarker, InputFingerprint, TraceFile, TraceSet,
 };
+use crate::survey::TraceSchemaSurveyBuilder;
 use crate::value::{
     args_map, int_from_args, string_field, string_from_args, top_value_string, value_to_i64,
     value_to_ns, value_to_string,
 };
-use anyhow::{Context, Result};
+use crate::{PytorchDataError, PytorchDataResult};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -23,35 +24,41 @@ pub(crate) fn parse_trace_set(
     input: &Path,
     files: &[PathBuf],
     fingerprint: InputFingerprint,
-) -> Result<TraceSet> {
+) -> PytorchDataResult<TraceSet> {
     let mut trace_files = Vec::with_capacity(files.len());
     let mut events = Vec::new();
     let mut markers = Vec::new();
+    let mut survey = TraceSchemaSurveyBuilder::default();
 
     for (trace_index_usize, file) in files.iter().enumerate() {
         let trace_index = u32::try_from(trace_index_usize)
-            .with_context(|| format!("too many trace files in {}", input.display()))?;
+            .map_err(|source| PytorchDataError::too_many_trace_files(input, source))?;
         let text = read_trace_text(file)?;
-        let root: Value =
-            serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+        let root: Value = serde_json::from_str(&text)
+            .map_err(|source| PytorchDataError::parse_json(file, source))?;
         let top = root
             .as_object()
-            .ok_or_else(|| anyhow::anyhow!("pytorch trace root must be a JSON object"))?;
+            .ok_or(PytorchDataError::TraceRootNotObject)?;
         let trace_events = top
             .get("traceEvents")
             .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("pytorch trace missing `traceEvents` array"))?;
+            .ok_or(PytorchDataError::MissingTraceEvents)?;
+        survey.record_file_header(trace_index, top);
         let file_rank = rank_from_top(top).or_else(|| infer_rank_from_path(file));
         let file_worker = worker_from_top(top).or_else(|| infer_worker_from_path(file));
         let mut file_event_count = 0usize;
 
         for (original_index_usize, raw) in trace_events.iter().enumerate() {
-            let Some(raw_obj) = raw.as_object() else {
+            let raw_obj = raw.as_object();
+            survey.record_raw_trace_event(trace_index, raw_obj);
+            let Some(raw_obj) = raw_obj else {
+                survey.record_skipped_event(trace_index);
                 continue;
             };
             let original_index = u64::try_from(original_index_usize)
-                .context("trace event index does not fit in u64")?;
+                .map_err(PytorchDataError::trace_event_index_overflow)?;
             if let Some(marker) = parse_flow_marker(trace_index, raw_obj) {
+                survey.record_flow_marker(trace_index);
                 markers.push(marker);
                 continue;
             }
@@ -62,11 +69,13 @@ pub(crate) fn parse_trace_set(
                 raw_obj,
                 file_rank,
                 file_worker.clone(),
-                u64::try_from(events.len()).context("event count does not fit in u64")?,
+                u64::try_from(events.len()).map_err(PytorchDataError::event_count_overflow)?,
             )?
             else {
+                survey.record_skipped_event(trace_index);
                 continue;
             };
+            survey.record_parsed_event(&event);
             file_event_count += 1;
             events.push(event);
         }
@@ -97,6 +106,7 @@ pub(crate) fn parse_trace_set(
         links: Vec::new(),
         collectives: Vec::new(),
         capabilities: Capabilities::default(),
+        schema_survey: survey.finish(),
     })
 }
 
@@ -108,7 +118,7 @@ fn parse_event(
     file_rank: Option<i64>,
     file_worker: Option<String>,
     stable_index: u64,
-) -> Result<Option<Event>> {
+) -> PytorchDataResult<Option<Event>> {
     let Some(start_ns) = obj.get("ts").and_then(value_to_ns) else {
         return Ok(None);
     };
@@ -165,6 +175,11 @@ fn parse_event(
     } else {
         int_from_args(&args, &["step", "Profiler Step", "profiler_step"])
     };
+    let python_id = int_from_args(&args, &["Python id", "Python ID", "python_id"]);
+    let python_parent_id = int_from_args(
+        &args,
+        &["Python parent id", "Python Parent ID", "python_parent_id"],
+    );
     let bytes = int_from_args(&args, &["bytes", "Bytes", "Num Bytes", "num_bytes"]);
     let shape = string_from_args(
         &args,
@@ -202,6 +217,11 @@ fn parse_event(
         correlation_id,
         step,
         step_row_id: None,
+        python_id,
+        python_parent_id,
+        python_context_row_id: None,
+        python_context_name: None,
+        python_context_path: None,
         is_comm,
         comm_kind: if is_comm {
             Some(collective_kind_from_name(

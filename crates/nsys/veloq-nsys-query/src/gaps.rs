@@ -32,7 +32,7 @@
 //! stream (rare in real captures) produces a non-positive gap that
 //! the threshold filter drops.
 
-use anyhow::{Context, Result};
+use crate::query_sql::exec;
 use duckdb::types::Value;
 use serde::Serialize;
 use std::path::Path;
@@ -41,8 +41,10 @@ use veloq_core::{
     time::{TimeWindow, parse_duration_ns},
 };
 use veloq_nsys_data::Trace;
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::total_matched_bigint_expr;
 
-use crate::{EventKind, RowId};
+use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 
 /// Aggregation scope for the gap computation. See the module doc
 /// for the per-scope semantics; the request's other filters
@@ -64,12 +66,12 @@ pub enum GapScope {
 }
 
 impl GapScope {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.to_ascii_lowercase().as_str() {
             "device" => Ok(Self::Device),
             "stream" => Ok(Self::Stream),
             "trace" => Ok(Self::Trace),
-            other => anyhow::bail!("invalid --scope `{other}`; expected device / stream / trace"),
+            other => Err(NsysQueryError::gaps_invalid_scope(other)),
         }
     }
 
@@ -171,10 +173,10 @@ impl SortKey {
     }
 }
 
-fn gaps_sort_sql(spec: &SortSpec) -> anyhow::Result<String> {
+fn gaps_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
     let mut resolved = Vec::new();
     for f in spec.fields() {
-        let (k, d) = SortKey::from_field(f)?;
+        let (k, d) = SortKey::from_field(f).map_err(NsysQueryError::gaps_sort_invalid)?;
         resolved.push((k.column(), d));
     }
     // gap_start_ns as tiebreaker — guarantees deterministic order for
@@ -185,8 +187,11 @@ fn gaps_sort_sql(spec: &SortSpec) -> anyhow::Result<String> {
 impl GapsRequest {
     /// Parse the `--min-duration` CLI string ("1ms", "100us", "1.2s",
     /// "42ns") into ns.
-    pub fn parse_min_duration(s: &str) -> Result<i64> {
-        parse_duration_ns(s).with_context(|| format!("invalid --min-duration `{s}`"))
+    pub fn parse_min_duration(s: &str) -> NsysQueryResult<i64> {
+        parse_duration_ns(s).map_err(|source| NsysQueryError::GapsMinDurationInvalid {
+            value: s.to_string(),
+            source,
+        })
     }
 }
 
@@ -285,54 +290,50 @@ pub struct GapNeighbor {
     pub stream_id: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> Result<GapsResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsResponse> {
     crate::check_limit(req.limit)?;
     if req.min_ns <= 0 {
-        anyhow::bail!("--min must be positive (got {} ns)", req.min_ns);
+        return Err(NsysQueryError::GapsMinTooSmall { min_ns: req.min_ns });
     }
     // --stream filter only makes sense under per-stream scope.
     // Under unified scopes (device / trace) we'd silently drop
     // gaps bracketed by events on other streams — confusing rather
     // than useful.
     if req.stream.is_some() && req.scope != GapScope::Stream {
-        anyhow::bail!(
-            "--stream <id> requires `--scope stream`; under \
-             `--scope {scope}` events from every stream contribute to \
-             the gap computation. Drop --stream or switch scope.",
-            scope = req.scope.as_str()
-        );
+        return Err(NsysQueryError::GapsStreamRequiresStreamScope {
+            scope: req.scope.as_str(),
+        });
     }
     // --device under --scope trace: the row-level device_id is
     // projected NULL (a trace-scope gap spans every device), so a
     // `device_id = ?` filter would silently drop every row. Reject
     // upfront instead. Use `--scope device --device N` for per-device.
     if let (Some(dev), GapScope::Trace) = (req.device, req.scope) {
-        anyhow::bail!(
-            "--device {dev} is incompatible with `--scope trace` \
-             (trace-scope gaps span every device); use \
-             `--scope device --device {dev}` for per-device gaps."
-        );
+        return Err(NsysQueryError::GapsDeviceInTraceScope { device: dev });
     }
     // Sort by `stream` requires per-stream scope. Sort by `device`
     // is meaningless under `trace` (single all-device partition).
     if let Some(s) = &req.sort {
         for f in s.fields() {
-            let (k, _) = SortKey::from_field(f)?;
+            let (k, _) = SortKey::from_field(f).map_err(NsysQueryError::gaps_sort_invalid)?;
             match (k, req.scope) {
-                (SortKey::Stream, scope) if scope != GapScope::Stream => anyhow::bail!(
-                    "--sort stream requires `--scope stream`; under `--scope {}` rows have no stream axis",
-                    scope.as_str()
-                ),
-                (SortKey::Device, GapScope::Trace) => anyhow::bail!(
-                    "--sort device is meaningless under `--scope trace` (gaps are not partitioned by device)"
-                ),
+                (SortKey::Stream, scope) if scope != GapScope::Stream => {
+                    return Err(NsysQueryError::GapsSortStreamRequiresStreamScope {
+                        scope: scope.as_str(),
+                    });
+                }
+                (SortKey::Device, GapScope::Trace) => {
+                    return Err(NsysQueryError::GapsSortDeviceInTraceScope);
+                }
                 _ => {}
             }
         }
     }
 
-    let trace = Trace::open(path)?;
-    let abs_window = trace.resolve_window(req.time_window)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
     // Kernel / memcpy / memset are the GPU work that keeps the device
     // busy. Runtime API calls (cudaLaunchKernel, cudaMemcpyAsync) are
@@ -369,73 +370,13 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> Result<GapsResponse> {
         }
     };
 
-    let conn = trace.conn();
-    let mut stmt = conn.prepare(&sql).context("preparing gaps SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-
-    let mut gaps: Vec<Gap> = Vec::with_capacity(req.limit);
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        // Column layout is the same across all three SQL paths:
-        //   0 device_id (i32, NULLABLE under scope=trace)
-        //   1 stream_id (i64, NULLABLE under scope=device|trace)
-        //   2 start_ns  3 end_ns  4 duration_ns
-        //   5 prev_kind 6 prev_row 7 prev_name 8 prev_stream_id
-        //   9 next_kind 10 next_row 11 next_name 12 next_stream_id
-        //   13 total_matched
-        let device_id: Option<i32> = r.get(0)?;
-        let stream_id: Option<i64> = r.get(1)?;
-        let start_ns: i64 = r.get(2)?;
-        let end_ns: i64 = r.get(3)?;
-        let duration_ns: i64 = r.get(4)?;
-        let prev_kind: String = r.get(5)?;
-        let prev_row_num: i64 = r.get(6)?;
-        let prev_name: String = r.get(7)?;
-        let prev_stream_id: i64 = r.get(8)?;
-        let next_kind: String = r.get(9)?;
-        let next_row_num: i64 = r.get(10)?;
-        let next_name: String = r.get(11)?;
-        let next_stream_id: i64 = r.get(12)?;
-        total_matched = r.get(13)?;
-
-        let key = match (req.scope, device_id, stream_id) {
-            (GapScope::Stream, Some(d), Some(s)) => format!("gap|dev:{d}|stream:{s}|@{start_ns}"),
-            (GapScope::Device, Some(d), _) => format!("gap|dev:{d}|@{start_ns}"),
-            (GapScope::Trace, _, _) => format!("gap|@{start_ns}"),
-            // Shouldn't happen under correct SQL — scope-stream
-            // implies both device + stream are populated, scope-device
-            // implies device is populated. Fall back rather than bail
-            // so a SQL quirk doesn't kill the whole response.
-            _ => format!("gap|@{start_ns}"),
-        };
-
-        gaps.push(Gap {
-            key,
-            device_id,
-            stream_id,
-            start_ns,
-            end_ns,
-            duration_ns,
-            prev: GapNeighbor {
-                row_id: RowId::new(parse_kind(&prev_kind)?, prev_row_num),
-                name: prev_name,
-                timestamp_ns: start_ns,
-                stream_id: prev_stream_id,
-            },
-            next: GapNeighbor {
-                row_id: RowId::new(parse_kind(&next_kind)?, next_row_num),
-                name: next_name,
-                timestamp_ns: end_ns,
-                stream_id: next_stream_id,
-            },
-        });
-    }
+    let (gaps, total_matched) =
+        hydrate_gap_rows(trace.conn(), &sql, &params, req.scope, req.limit)?;
 
     let span_ns = match abs_window {
         Some((s, e)) => (e - s).max(0),
         None => {
-            let (origins, _) = trace.read_origins()?;
+            let (origins, _) = trace.read_origins().map_err(NsysQueryError::data)?;
             origins.primary.duration_ns().max(0)
         }
     };
@@ -452,6 +393,102 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> Result<GapsResponse> {
     })
 }
 
+fn hydrate_gap_rows(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    scope: GapScope,
+    _limit: usize,
+) -> NsysQueryResult<(Vec<Gap>, i64)> {
+    let rows = exec::query_rows(conn, sql, params, exec::GAPS_GAP, gap_sql_row)?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::First,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| gap_from_sql_row(scope, row),
+    )
+}
+
+struct GapSqlRow {
+    device_id: Option<i32>,
+    stream_id: Option<i64>,
+    start_ns: i64,
+    end_ns: i64,
+    duration_ns: i64,
+    prev_kind: String,
+    prev_row_num: i64,
+    prev_name: String,
+    prev_stream_id: i64,
+    next_kind: String,
+    next_row_num: i64,
+    next_name: String,
+    next_stream_id: i64,
+    total_matched: i64,
+}
+
+fn gap_sql_row(row: &duckdb::Row<'_>) -> Result<GapSqlRow, duckdb::Error> {
+    // Column layout is the same across all three SQL paths:
+    //   0 device_id (i32, NULLABLE under scope=trace)
+    //   1 stream_id (i64, NULLABLE under scope=device|trace)
+    //   2 start_ns  3 end_ns  4 duration_ns
+    //   5 prev_kind 6 prev_row 7 prev_name 8 prev_stream_id
+    //   9 next_kind 10 next_row 11 next_name 12 next_stream_id
+    //   13 total_matched
+    Ok(GapSqlRow {
+        device_id: row.get(0)?,
+        stream_id: row.get(1)?,
+        start_ns: row.get(2)?,
+        end_ns: row.get(3)?,
+        duration_ns: row.get(4)?,
+        prev_kind: row.get(5)?,
+        prev_row_num: row.get(6)?,
+        prev_name: row.get(7)?,
+        prev_stream_id: row.get(8)?,
+        next_kind: row.get(9)?,
+        next_row_num: row.get(10)?,
+        next_name: row.get(11)?,
+        next_stream_id: row.get(12)?,
+        total_matched: row.get(13)?,
+    })
+}
+
+fn gap_from_sql_row(scope: GapScope, row: GapSqlRow) -> NsysQueryResult<Gap> {
+    let key = match (scope, row.device_id, row.stream_id) {
+        (GapScope::Stream, Some(d), Some(s)) => {
+            format!("gap|dev:{d}|stream:{s}|@{}", row.start_ns)
+        }
+        (GapScope::Device, Some(d), _) => format!("gap|dev:{d}|@{}", row.start_ns),
+        (GapScope::Trace, _, _) => format!("gap|@{}", row.start_ns),
+        // Shouldn't happen under correct SQL — scope-stream implies both
+        // device + stream are populated, scope-device implies device is
+        // populated. Fall back rather than bail so a SQL quirk doesn't kill
+        // the whole response.
+        _ => format!("gap|@{}", row.start_ns),
+    };
+
+    Ok(Gap {
+        key,
+        device_id: row.device_id,
+        stream_id: row.stream_id,
+        start_ns: row.start_ns,
+        end_ns: row.end_ns,
+        duration_ns: row.duration_ns,
+        prev: GapNeighbor {
+            row_id: RowId::new(parse_kind(&row.prev_kind)?, row.prev_row_num),
+            name: row.prev_name,
+            timestamp_ns: row.start_ns,
+            stream_id: row.prev_stream_id,
+        },
+        next: GapNeighbor {
+            row_id: RowId::new(parse_kind(&row.next_kind)?, row.next_row_num),
+            name: row.next_name,
+            timestamp_ns: row.end_ns,
+            stream_id: row.next_stream_id,
+        },
+    })
+}
+
 /// Per-(device, stream) busy time. Same `(device, stream, time-window)`
 /// filters as the gap query — keeps the auxiliary scope consistent
 /// with `rows` so a `--stream 7` request returns one stream's
@@ -462,7 +499,7 @@ fn compute_stream_activity(
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
     span_ns: i64,
-) -> Result<Vec<StreamActivity>> {
+) -> NsysQueryResult<Vec<StreamActivity>> {
     // Window-clip the durations the same way `stats` does so events
     // straddling the boundary don't over-count: an event 0..200ms
     // inside a 50..150ms window contributes 100ms, not 200ms. The
@@ -511,27 +548,35 @@ fn compute_stream_activity(
         "#
     );
 
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing stream-activity SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+    hydrate_stream_activity_rows(trace.conn(), &sql, &params, span_ns)
+}
 
-    let mut out = Vec::new();
-    while let Some(r) = rows.next()? {
-        let device_id: i32 = r.get(0)?;
-        let stream_id: i64 = r.get(1)?;
-        let busy_ns: i64 = r.get::<_, Option<i64>>(2)?.unwrap_or(0);
+fn hydrate_stream_activity_rows(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    span_ns: i64,
+) -> NsysQueryResult<Vec<StreamActivity>> {
+    let rows = exec::query_rows(
+        conn,
+        sql,
+        params,
+        exec::GAPS_STREAM_ACTIVITY,
+        stream_activity_sql_row,
+    )?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let busy_ns = row.busy_ns.unwrap_or(0);
         let busy_ratio = if span_ns > 0 {
             (busy_ns as f64) / (span_ns as f64)
         } else {
             f64::NAN
         };
         out.push(StreamActivity {
-            key: format!("stream|dev:{device_id}|stream:{stream_id}"),
-            device_id,
-            stream_id,
+            key: format!("stream|dev:{}|stream:{}", row.device_id, row.stream_id),
+            device_id: row.device_id,
+            stream_id: row.stream_id,
             busy_ns,
             span_ns,
             busy_ratio,
@@ -540,8 +585,25 @@ fn compute_stream_activity(
     Ok(out)
 }
 
-fn parse_kind(s: &str) -> Result<EventKind> {
-    EventKind::parse(s).with_context(|| format!("unrecognised kind tag `{s}` from SQL"))
+struct StreamActivitySqlRow {
+    device_id: i32,
+    stream_id: i64,
+    busy_ns: Option<i64>,
+}
+
+fn stream_activity_sql_row(row: &duckdb::Row<'_>) -> Result<StreamActivitySqlRow, duckdb::Error> {
+    Ok(StreamActivitySqlRow {
+        device_id: row.get(0)?,
+        stream_id: row.get(1)?,
+        busy_ns: row.get(2)?,
+    })
+}
+
+fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {
+    match EventKind::parse(s) {
+        Some(kind) => Ok(kind),
+        None => Err(NsysQueryError::internal_sql_kind_tag_invalid("gaps", s)),
+    }
 }
 
 /// SQL fragment emitting (kind, row_id, device_id, stream_id, name,
@@ -556,7 +618,7 @@ fn build_stream_sql(
     union: &str,
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<(String, Vec<Value>)> {
+) -> NsysQueryResult<(String, Vec<Value>)> {
     let mut where_parts: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -614,11 +676,12 @@ fn build_stream_sql(
             device_id, stream_id, gap_start_ns, gap_end_ns, gap_ns,
             prev_kind, prev_row_id, prev_name, prev_stream_id,
             next_kind, next_row_id, next_name, next_stream_id,
-            CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+            {total_matched}
         FROM clipped
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
     Ok((sql, params))
 }
@@ -640,7 +703,7 @@ fn build_unified_sql(
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
     partition_device: bool,
-) -> Result<(String, Vec<Value>)> {
+) -> NsysQueryResult<(String, Vec<Value>)> {
     let partition = if partition_device {
         "PARTITION BY device_id ORDER BY start_ns, row_id"
     } else {
@@ -721,11 +784,12 @@ fn build_unified_sql(
             device_id, stream_id, gap_start_ns, gap_end_ns, gap_ns,
             prev_kind, prev_row_id, prev_name, prev_stream_id,
             next_kind, next_row_id, next_name, next_stream_id,
-            CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+            {total_matched}
         FROM clipped
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
     Ok((sql, params))
 }
@@ -733,12 +797,12 @@ fn build_unified_sql(
 /// Returns an error when called with a non-GPU kind. Upstream filters
 /// to kernel/memcpy/memset, but the workspace's no-panic policy
 /// routes the precondition through `Result` instead of `unreachable!`.
-fn per_kind_select(kind: EventKind) -> Result<String> {
+fn per_kind_select(kind: EventKind) -> NsysQueryResult<String> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
-        anyhow::bail!(
-            "internal: gaps only inspects GPU stream events; got `{}`",
-            kind.as_str()
-        );
+        return Err(NsysQueryError::internal_unsupported_kind(
+            "gaps",
+            kind.as_str(),
+        ));
     }
     let table = kind.table();
     let label = kind.as_str();
@@ -759,4 +823,255 @@ fn per_kind_select(kind: EventKind) -> Result<String> {
         FROM nsight.{table} t {joins}
         "#
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn gap_hydration_sql(duration_expr: &str, prev_kind_expr: &str) -> String {
+        format!(
+            "SELECT \
+             0::INTEGER AS device_id, \
+             CAST(NULL AS BIGINT) AS stream_id, \
+             10::BIGINT AS gap_start_ns, \
+             20::BIGINT AS gap_end_ns, \
+             {duration_expr} AS gap_ns, \
+             {prev_kind_expr} AS prev_kind, \
+             1::BIGINT AS prev_row_id, \
+             'prev' AS prev_name, \
+             7::BIGINT AS prev_stream_id, \
+             'kernel' AS next_kind, \
+             2::BIGINT AS next_row_id, \
+             'next' AS next_name, \
+             8::BIGINT AS next_stream_id, \
+             1::BIGINT AS total_matched"
+        )
+    }
+
+    fn stream_activity_hydration_sql(busy_expr: &str) -> String {
+        format!(
+            "SELECT \
+             0::INTEGER AS device_id, \
+             7::BIGINT AS stream_id, \
+             {busy_expr} AS busy_ns"
+        )
+    }
+
+    #[test]
+    fn parse_min_duration_invalid_literal_returns_typed_error() -> anyhow::Result<()> {
+        let err = match GapsRequest::parse_min_duration("bogus") {
+            Ok(ns) => anyhow::bail!("expected invalid min duration to fail, got {ns} ns"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.gaps-min-duration-invalid");
+        match err {
+            crate::NsysQueryError::GapsMinDurationInvalid { value, .. } => {
+                assert_eq!(value, "bogus");
+            }
+            other => anyhow::bail!("expected GapsMinDurationInvalid, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn parse_kind_unknown_tag_is_typed() -> Result<()> {
+        let err = match parse_kind("bogus") {
+            Ok(kind) => anyhow::bail!("expected unknown kind tag to fail, got {kind}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.internal.sql-kind-tag-invalid");
+        match err {
+            crate::NsysQueryError::InternalSqlKindTagInvalid { verb, kind } => {
+                assert_eq!(verb, "gaps");
+                assert_eq!(kind, "bogus");
+            }
+            other => anyhow::bail!("expected InternalSqlKindTagInvalid, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_gap_rows_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_gap_rows(&conn, "SELECT * FROM", &[], GapScope::Device, 100) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed gaps SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_gap_rows_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   ? AS device_id, \
+                   CAST(NULL AS BIGINT) AS stream_id, \
+                   10::BIGINT AS gap_start_ns, \
+                   20::BIGINT AS gap_end_ns, \
+                   10::BIGINT AS gap_ns, \
+                   'kernel' AS prev_kind, \
+                   1::BIGINT AS prev_row_id, \
+                   'prev' AS prev_name, \
+                   7::BIGINT AS prev_stream_id, \
+                   'kernel' AS next_kind, \
+                   2::BIGINT AS next_row_id, \
+                   'next' AS next_name, \
+                   8::BIGINT AS next_stream_id, \
+                   1::BIGINT AS total_matched";
+
+        let err = match hydrate_gap_rows(&conn, sql, &[], GapScope::Device, 100) {
+            Ok((rows, _)) => anyhow::bail!(
+                "unbound gaps SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_gap_rows_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = gap_hydration_sql("'not-duration'", "'kernel'");
+
+        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device, 100) {
+            Ok((rows, _)) => anyhow::bail!(
+                "malformed gaps row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_gap_rows_kind_tag_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = gap_hydration_sql("10::BIGINT", "'bogus'");
+
+        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device, 100) {
+            Ok((rows, _)) => anyhow::bail!(
+                "unknown gaps kind tag should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.internal.sql-kind-tag-invalid");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::InternalSqlKindTagInvalid { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_stream_activity_rows_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_stream_activity_rows(&conn, "SELECT * FROM", &[], 100) {
+            Ok(rows) => anyhow::bail!(
+                "malformed stream-activity SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Prepare,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_stream_activity_rows_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   ? AS device_id, \
+                   7::BIGINT AS stream_id, \
+                   10::BIGINT AS busy_ns";
+
+        let err = match hydrate_stream_activity_rows(&conn, sql, &[], 100) {
+            Ok(rows) => anyhow::bail!(
+                "unbound stream-activity SQL parameter should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_stream_activity_rows_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = stream_activity_hydration_sql("'not-busy'");
+
+        let err = match hydrate_stream_activity_rows(&conn, &sql, &[], 100) {
+            Ok(rows) => anyhow::bail!(
+                "malformed stream-activity row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
 }

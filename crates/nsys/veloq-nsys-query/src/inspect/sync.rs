@@ -5,13 +5,14 @@
 //! `CUPTI_ACTIVITY_KIND_CUDA_EVENT` via `eventSyncId`. Grouping the
 //! two kinds keeps that join-key contract visible in one file.
 
-use crate::{NvtxContext, RowId};
-use anyhow::{Context, Result};
+use crate::{NsysQueryResult, NvtxContext, RowId};
 use duckdb::Connection;
-use duckdb::types::Value;
 use serde::Serialize;
 
-use super::{ColumnMap, EventDetails, maybe_col};
+use super::{ColumnMap, EventDetails, map_inspect_read, maybe_col, query_inspect_row};
+
+const INSPECT_SYNC_SQL: &str = "sync";
+const INSPECT_CUDA_EVENT_SQL: &str = "cuda_event";
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SyncDetails {
@@ -78,7 +79,7 @@ pub(super) fn query_sync(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_SYNCHRONIZATION";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -102,36 +103,33 @@ pub(super) fn query_sync(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare sync inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    let sync_type: i64 = r.get(5)?;
-    Ok(Some(EventDetails::Sync(SyncDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        device_id: r.get(2)?,
-        context_id: r.get(3)?,
-        stream_id: r.get(4)?,
-        sync_type,
-        sync_type_name: crate::kind_sql::sync_type_label(sync_type),
-        correlation_id: r.get(6)?,
-        event_sync_id: r.get(7)?,
-        nvtx_context: None,
-    })))
+    query_inspect_row(conn, INSPECT_SYNC_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_SYNC_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_SYNC_SQL, r.get(1))?;
+        let sync_type: i64 = map_inspect_read(INSPECT_SYNC_SQL, r.get(5))?;
+        Ok(EventDetails::Sync(SyncDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            device_id: map_inspect_read(INSPECT_SYNC_SQL, r.get(2))?,
+            context_id: map_inspect_read(INSPECT_SYNC_SQL, r.get(3))?,
+            stream_id: map_inspect_read(INSPECT_SYNC_SQL, r.get(4))?,
+            sync_type,
+            sync_type_name: crate::kind_sql::sync_type_label(sync_type),
+            correlation_id: map_inspect_read(INSPECT_SYNC_SQL, r.get(6))?,
+            event_sync_id: map_inspect_read(INSPECT_SYNC_SQL, r.get(7))?,
+            nvtx_context: None,
+        }))
+    })
 }
 
 pub(super) fn query_cuda_event(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_CUDA_EVENT";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -155,20 +153,17 @@ pub(super) fn query_cuda_event(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare cuda_event inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    Ok(Some(EventDetails::CudaEvent(CudaEventDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns: r.get(0)?,
-        device_id: r.get(1)?,
-        context_id: r.get(2)?,
-        stream_id: r.get(3)?,
-        event_id: r.get(4)?,
-        event_sync_id: r.get(5)?,
-        correlation_id: r.get(6)?,
-    })))
+    query_inspect_row(conn, INSPECT_CUDA_EVENT_SQL, &sql, id, |r| {
+        Ok(EventDetails::CudaEvent(CudaEventDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(0))?,
+            device_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(1))?,
+            context_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(2))?,
+            stream_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(3))?,
+            event_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(4))?,
+            event_sync_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(5))?,
+            correlation_id: map_inspect_read(INSPECT_CUDA_EVENT_SQL, r.get(6))?,
+        }))
+    })
 }

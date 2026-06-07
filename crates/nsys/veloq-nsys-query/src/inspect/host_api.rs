@@ -8,14 +8,16 @@
 //! per call into `Trace::nvtx_nesting()` and passed in by the
 //! dispatcher.
 
-use crate::RowId;
-use anyhow::{Context, Result};
+use crate::{NsysQueryResult, RowId};
 use duckdb::Connection;
-use duckdb::types::Value;
 use serde::Serialize;
 
-use super::{ColumnMap, EventDetails};
+use super::{ColumnMap, EventDetails, map_inspect_read, query_inspect_row};
 use crate::event_ref::NvtxContext;
+
+const INSPECT_RUNTIME_SQL: &str = "runtime";
+const INSPECT_OSRT_SQL: &str = "osrt";
+const INSPECT_NVTX_SQL: &str = "nvtx";
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct RuntimeDetails {
@@ -80,7 +82,7 @@ pub(super) fn query_runtime(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_RUNTIME";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -98,33 +100,30 @@ pub(super) fn query_runtime(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare runtime inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    Ok(Some(EventDetails::Runtime(RuntimeDetails {
-        key: id.to_string(),
-        row_id: id,
-        name: r.get(4)?,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        global_tid: r.get(2)?,
-        correlation_id: r.get(3)?,
-        // Populated by the inspect dispatcher's `attach_nvtx_context`
-        // pass when nesting was computed for the request.
-        nvtx_context: None,
-    })))
+    query_inspect_row(conn, INSPECT_RUNTIME_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_RUNTIME_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_RUNTIME_SQL, r.get(1))?;
+        Ok(EventDetails::Runtime(RuntimeDetails {
+            key: id.to_string(),
+            row_id: id,
+            name: map_inspect_read(INSPECT_RUNTIME_SQL, r.get(4))?,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            global_tid: map_inspect_read(INSPECT_RUNTIME_SQL, r.get(2))?,
+            correlation_id: map_inspect_read(INSPECT_RUNTIME_SQL, r.get(3))?,
+            // Populated by the inspect dispatcher's `attach_nvtx_context`
+            // pass when nesting was computed for the request.
+            nvtx_context: None,
+        }))
+    })
 }
 
 pub(super) fn query_osrt(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "OSRT_API";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -141,22 +140,19 @@ pub(super) fn query_osrt(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare osrt inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    Ok(Some(EventDetails::Osrt(OsrtDetails {
-        key: id.to_string(),
-        row_id: id,
-        name: r.get(3)?,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        global_tid: r.get(2)?,
-    })))
+    query_inspect_row(conn, INSPECT_OSRT_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_OSRT_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_OSRT_SQL, r.get(1))?;
+        Ok(EventDetails::Osrt(OsrtDetails {
+            key: id.to_string(),
+            row_id: id,
+            name: map_inspect_read(INSPECT_OSRT_SQL, r.get(3))?,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            global_tid: map_inspect_read(INSPECT_OSRT_SQL, r.get(2))?,
+        }))
+    })
 }
 
 pub(super) fn query_nvtx(
@@ -165,7 +161,7 @@ pub(super) fn query_nvtx(
     id: RowId,
     nesting: Option<&veloq_nsys_data::NvtxNesting>,
     tree: Option<&veloq_nsys_data::nvtx_tree::NvtxTree>,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "NVTX_EVENTS";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -184,37 +180,34 @@ pub(super) fn query_nvtx(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare nvtx inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: Option<i64> = r.get(1)?;
-    let depth = nesting.and_then(|m| m.get(&id.rowid).map(|e| e.depth));
-    let tree_record = tree.and_then(|t| t.get(id.rowid));
-    let path = tree_record.map(|rec| rec.path.clone());
-    let parent_row_id = tree_record.and_then(|rec| {
-        rec.parent_range_id
-            .map(|rid| RowId::new(crate::EventKind::Nvtx, rid))
-    });
-    let parent_name = tree_record
-        .and_then(|rec| rec.parent_range_id)
-        .and_then(|rid| tree.and_then(|t| t.get(rid)))
-        .map(|rec| rec.name.clone());
-    Ok(Some(EventDetails::Nvtx(NvtxDetails {
-        key: id.to_string(),
-        row_id: id,
-        name: r.get(5)?,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns.map(|e| e - start_ns),
-        global_tid: r.get(2)?,
-        domain_id: r.get(3)?,
-        event_type: r.get(4)?,
-        depth,
-        path,
-        parent_row_id,
-        parent_name,
-    })))
+    query_inspect_row(conn, INSPECT_NVTX_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_NVTX_SQL, r.get(0))?;
+        let end_ns: Option<i64> = map_inspect_read(INSPECT_NVTX_SQL, r.get(1))?;
+        let depth = nesting.and_then(|m| m.get(&id.rowid).map(|e| e.depth));
+        let tree_record = tree.and_then(|t| t.get(id.rowid));
+        let path = tree_record.map(|rec| rec.path.clone());
+        let parent_row_id = tree_record.and_then(|rec| {
+            rec.parent_range_id
+                .map(|rid| RowId::new(crate::EventKind::Nvtx, rid))
+        });
+        let parent_name = tree_record
+            .and_then(|rec| rec.parent_range_id)
+            .and_then(|rid| tree.and_then(|t| t.get(rid)))
+            .map(|rec| rec.name.clone());
+        Ok(EventDetails::Nvtx(NvtxDetails {
+            key: id.to_string(),
+            row_id: id,
+            name: map_inspect_read(INSPECT_NVTX_SQL, r.get(5))?,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns.map(|e| e - start_ns),
+            global_tid: map_inspect_read(INSPECT_NVTX_SQL, r.get(2))?,
+            domain_id: map_inspect_read(INSPECT_NVTX_SQL, r.get(3))?,
+            event_type: map_inspect_read(INSPECT_NVTX_SQL, r.get(4))?,
+            depth,
+            path,
+            parent_row_id,
+            parent_name,
+        }))
+    })
 }

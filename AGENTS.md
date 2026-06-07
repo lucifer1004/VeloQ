@@ -31,9 +31,11 @@ version).
 1. **Envelope shape**: `veloq_core::Envelope<T>` is the only success
    payload VeloQ writes on stdout, and `veloq_core::EnvelopeError`
    is the only error payload. Both carry `schema` / `source` /
-   `command` / `trace?` / `trace_span?` / `data | error`. Bump
-   `ENVELOPE_VERSION` only on a breaking shape change; additive
-   fields keep the same version.
+   `command` / `trace?` / `trace_span?` / `data | error`. Error
+   details always carry `message` and `chain`; typed diagnostics may
+   additionally populate `code` and `hint`. Bump `ENVELOPE_VERSION`
+   only on a breaking shape change; additive fields keep the same
+   version.
 2. **Canonical list contract**: every list-shaped response uses
    `data: { count, total_matched, rows: Vec<Row>, auxiliary? }`.
    Each `Row` carries a `pub key: String` composed from the row's
@@ -86,7 +88,7 @@ version).
    | `pytorch timeline`          | `bucket\|<start_ns>..<end_ns>`                                                                                                                                                                                |
    | `pytorch slices` instance   | `slice\|<name>\|@<start_ns>`                                                                                                                                                                                  |
    | `pytorch slices` aggregate  | `scope\|<name-or-step>`                                                                                                                                                                                       |
-   | `pytorch collectives`       | `collective\|<kind>\|step:<n-or-none>\|ordinal:<n>`                                                                                                                                                           |
+   | `pytorch collectives`       | `collective\|<kind>\|rank:<n-or-none>\|step:<n-or-none>\|ordinal:<n>`                                                                                                                                          |
    | `pytorch prep`              | `sidecar\|<sidecar_name>`                                                                                                                                                                                     |
 
    Two traces of the same workload produce matching keys at
@@ -149,6 +151,7 @@ veloq/
 └── crates/
     ├── veloq-core/             # Envelope, SourceRef, ProfileSource trait,
     │                             OutputFormat, sort + time helpers
+    ├── veloq-data/             # Source-neutral file/parquet cache helpers
     ├── veloq/                  # The `veloq` binary — thin registry+dispatch
     │                             shell; meta verbs (`info`, `sources`, `clean`)
     ├── nsys/
@@ -220,8 +223,8 @@ Not shipped yet:
 
 ## Code conventions
 
-- **Error-message style** (`anyhow::bail!`, structured errors,
-  parse diagnostics): one short sentence stating the offender +
+- **Error-message style** (structured errors, parse diagnostics):
+  one short sentence stating the offender +
   the why, optionally followed by one short suggestion. Examples:
 
   ```text
@@ -278,8 +281,8 @@ Not shipped yet:
       SASS/PTX/source-line index from nvdisasm + cuobjdump.
   - PyTorch:
     - `<input>.veloq/pytorch/meta.bin` — bincode cache for the typed
-      trace-set model; freshness is keyed on sorted trace-file path,
-      mtime, and size.
+      single-trace model; freshness is keyed on trace-file path, mtime,
+      and size.
     - `<input>.veloq/pytorch/events.parquet` — typed event rows.
     - `<input>.veloq/pytorch/args.parquet` — event arg key/value rows.
     - `<input>.veloq/pytorch/flows.parquet` — resolved flow edges.
@@ -349,7 +352,7 @@ and implements [`veloq_core::ProfileSource`]. Five concrete obligations:
    source is registered as the configured default (today: NSys),
    its verbs are also hoisted to the top level.
 
-4. **The `run -> Result<i32>` tri-state.** Three outcomes, each
+4. **The `run -> SourceRunResult<i32>` tri-state.** Three outcomes, each
    with a precise stdout contract:
 
    | Return   | Meaning                                    | What's on stdout                                                                              |
@@ -360,19 +363,21 @@ and implements [`veloq_core::ProfileSource`]. Five concrete obligations:
 
    Splitting `Ok(1)` from `Err` lets the source keep `verb` and
    `trace` on the envelope — drop them and the agent loses
-   dispatch context. In practice: every fallible inner call should
-   bubble up as `Err(anyhow)`, the source's top-level `run()`
-   catches with a `match`, writes the envelope, and returns
-   `Ok(1)`. Use [`veloq_core::write_error_envelope`] for that
-   write — it centralises the `eprintln!("veloq: {err:#}")` +
-   JSON-on-stdout pairing so all sources stay consistent.
+   dispatch context. In practice: user-facing failures should be
+   caught at the source boundary, written as an `EnvelopeError`, and
+   returned as `Ok(1)`; only top-level/unhandled failures should
+   bubble as `Err(_)`. Prefer
+   [`veloq_core::write_diagnostic_error_envelope`] for the handled
+   write — it centralises the JSON-on-stdout envelope and the
+   format-dependent stderr mirror so all sources stay consistent.
 
 5. **stdout / stderr split.** stdout is reserved for the JSON
-   envelope (success or error). stderr is for the human mirror
+   envelope (success or error). In JSON mode, handled errors keep
+   stderr quiet so agents do not have to dedupe a human mirror.
+   In CSV/table mode, stderr carries the human mirror
    (`veloq: <message>`) plus any progress logs (`log::info!`-routed
    lines like Parquet build progress). Agents read stdout; humans
-   read stderr. CSV/table outputs replace the JSON envelope on
-   stdout but stderr behaviour is identical.
+   read stderr. CSV/table outputs replace the JSON envelope on stdout.
 
 Registration:
 
@@ -390,9 +395,9 @@ one line plus the source crate.
 
 ## Pre-commit checklist
 
-- [ ] `cargo check --release --workspace --all-targets`
-- [ ] `cargo clippy --release --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --release --workspace`
+- [ ] `cargo check --profile ci --workspace --all-targets`
+- [ ] `cargo clippy --profile ci --workspace --all-targets -- -D warnings`
+- [ ] `cargo test --profile ci --workspace`
 - [ ] `cargo fmt --all -- --check`
 - [ ] No `unwrap()` / `expect()` / `[i]` indexing in lib **or**
       tests — the workspace's `clippy::unwrap_used` / `expect_used`

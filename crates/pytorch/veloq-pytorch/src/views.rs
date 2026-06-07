@@ -1,6 +1,5 @@
-use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet};
-use veloq_core::tabular::TabularView;
+use veloq_core::tabular::{TabularResult, TabularView, push_count_meta};
 
 pub fn generic_rows_view<T: serde::Serialize>(response: &T) -> TabularView {
     let value = serde_json::to_value(response).unwrap_or(serde_json::Value::Null);
@@ -33,8 +32,7 @@ pub fn generic_rows_view<T: serde::Serialize>(response: &T) -> TabularView {
     }
     let columns_vec = columns.into_iter().collect::<Vec<_>>();
     let mut view = TabularView::new(columns_vec.clone());
-    view.push_meta("count", count.to_string());
-    view.push_meta("total_matched", total.to_string());
+    push_count_meta(&mut view, count, total);
     for row in flattened {
         let cells = columns_vec
             .iter()
@@ -88,7 +86,7 @@ pub fn emit_tabular<T: serde::Serialize>(
     command: &str,
     trace: &str,
     fmt: veloq_core::OutputFormat,
-) -> Result<()> {
+) -> TabularResult<()> {
     let view = generic_rows_view(response);
     match fmt {
         veloq_core::OutputFormat::Json => {}

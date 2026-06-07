@@ -261,6 +261,8 @@ veloq metrics T --type cpu-sampling | jq '{
 }'
 veloq metrics T --type cpu-sampling --limit 20
 veloq metrics T --type cpu-sampling --group-by tid --limit 10
+veloq metrics T --type cpu-sampling --group-by stack --limit 10
+veloq inspect T "$(veloq metrics T --type cpu-sampling --limit 1 | jq -r '.data.rows[0].sample_row_id')"
 
 veloq metrics T --type cpu-sched | jq '{
   coverage: .data.auxiliary.common.coverage,

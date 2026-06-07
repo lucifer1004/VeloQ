@@ -10,17 +10,20 @@
 //!   flag and tucks the per-command [`TabularView`] flattener in via
 //!   a closure.
 //! - [`emit_error`] — called by the source on command failure or
-//!   format-flag failure with the in-flight `anyhow::Error`.
+//!   format-flag failure with a typed diagnostic.
 //! - [`emit_parse_error`] — called by the binary on clap parse
 //!   failure. Special-cases `--help` / `--version` and otherwise
 //!   emits the envelope without `command` / `trace` (parsing didn't
 //!   get that far).
 
-use anyhow::Result;
 use std::path::Path;
-use veloq_core::{EnvelopeError, EnvelopeTraceRef, ResponseMeta, SourceRef, TraceSpan};
+use veloq_core::{
+    EnvelopeError, EnvelopeTraceRef, OutputFormat, ResponseMeta, SourceRef, TraceSpan,
+    VeloqDiagnostic,
+    tabular::{TabularView, emit_csv, emit_table},
+};
 
-use crate::format::{Format, TabularView, emit_csv, emit_table};
+use crate::error::{NsysSourceError, NsysSourceResult};
 use crate::source::NsysSource;
 
 /// Build the `EnvelopeTraceRef` every NSys verb emits. `path` is
@@ -53,7 +56,7 @@ pub fn emit<T: serde::Serialize>(
     trace_span: Option<TraceSpan>,
     verb: &str,
     data: T,
-) -> Result<()> {
+) -> NsysSourceResult<()> {
     emit_with_meta(trace, trace_span, verb, None, data)
 }
 
@@ -66,7 +69,7 @@ pub fn emit_with_meta<T: serde::Serialize>(
     verb: &str,
     meta: Option<ResponseMeta>,
     data: T,
-) -> Result<()> {
+) -> NsysSourceResult<()> {
     // `compute_trace_span` ran pre-dispatch and only consulted an
     // existing `<trace>.veloq/meta.bin`. Verbs that build the cache (summary,
     // stats, search, …) populate it during their work; re-read here
@@ -81,7 +84,8 @@ pub fn emit_with_meta<T: serde::Serialize>(
         trace_span,
         meta,
         data,
-    )?;
+    )
+    .map_err(NsysSourceError::serialize_envelope)?;
     Ok(())
 }
 
@@ -89,7 +93,7 @@ pub fn emit_with_meta<T: serde::Serialize>(
 /// `schema` that don't read a trace. The envelope's `trace` and
 /// `trace_span` fields are omitted entirely (rather than emitted with
 /// an empty path / zero span).
-pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> Result<()> {
+pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> NsysSourceResult<()> {
     veloq_core::emit_envelope(
         nsys_source_ref(),
         format!("{}.{verb}", NsysSource::KIND),
@@ -97,7 +101,8 @@ pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> Result<()> {
         None,
         None,
         data,
-    )?;
+    )
+    .map_err(NsysSourceError::serialize_envelope)?;
     Ok(())
 }
 
@@ -110,13 +115,13 @@ pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> Result<()> {
 /// Verbs that resolve scope should call [`render_with_meta`] so the
 /// envelope's `meta.applied_scope` is populated.
 pub fn render<T, F>(
-    fmt: Format,
+    fmt: OutputFormat,
     trace: &Path,
     trace_span: Option<TraceSpan>,
     verb: &str,
     data: T,
     view_fn: F,
-) -> Result<()>
+) -> NsysSourceResult<()>
 where
     T: serde::Serialize,
     F: FnOnce(&T) -> TabularView,
@@ -129,14 +134,14 @@ where
 /// `data` directly via `view_fn` and the meta block has no tabular
 /// equivalent.
 pub fn render_with_meta<T, F>(
-    fmt: Format,
+    fmt: OutputFormat,
     trace: &Path,
     trace_span: Option<TraceSpan>,
     verb: &str,
     meta: Option<ResponseMeta>,
     data: T,
     view_fn: F,
-) -> Result<()>
+) -> NsysSourceResult<()>
 where
     T: serde::Serialize,
     F: FnOnce(&T) -> TabularView,
@@ -144,9 +149,15 @@ where
     let qualified = format!("{}.{verb}", NsysSource::KIND);
     let trace_str = trace.display().to_string();
     match fmt {
-        Format::Json => emit_with_meta(trace, trace_span, verb, meta, data),
-        Format::Csv => emit_csv(&view_fn(&data), &qualified, &trace_str),
-        Format::Table => emit_table(&view_fn(&data), &qualified, &trace_str),
+        OutputFormat::Json => emit_with_meta(trace, trace_span, verb, meta, data),
+        OutputFormat::Csv => {
+            emit_csv(&view_fn(&data), &qualified, &trace_str)?;
+            Ok(())
+        }
+        OutputFormat::Table => {
+            emit_table(&view_fn(&data), &qualified, &trace_str)?;
+            Ok(())
+        }
     }
 }
 
@@ -159,7 +170,7 @@ pub fn emit_ambiguity_error(
     trace: &Path,
     trace_span: Option<TraceSpan>,
     err: &veloq_nsys_data::scope::AmbiguityError,
-    fmt: Format,
+    fmt: OutputFormat,
 ) {
     let qualified = format!("{}.{verb}", NsysSource::KIND);
     let trace_ref = Some(nsys_trace_ref(trace));
@@ -176,7 +187,7 @@ pub fn emit_ambiguity_error(
         err.message.clone(),
         Vec::new(),
     );
-    if !matches!(fmt, Format::Json) {
+    if !matches!(fmt, OutputFormat::Json) {
         eprintln!("veloq: {}", err.message);
     }
     if let Ok(s) = env.to_json_pretty() {
@@ -184,7 +195,7 @@ pub fn emit_ambiguity_error(
     }
 }
 
-/// Shim around [`veloq_core::write_error_envelope`] that takes the
+/// Shim around [`veloq_core::write_diagnostic_error_envelope`] that takes the
 /// NSys-typed trace path. Centralizes the
 /// `Option<&Path> -> Option<EnvelopeTraceRef>` projection so the
 /// `commands::run` arms stay terse.
@@ -193,14 +204,16 @@ pub fn emit_ambiguity_error(
 /// `trace` field is then omitted entirely rather than fabricated with
 /// an empty path. `trace_span` follows the same Some-iff-trace-was-read
 /// contract: a verb that failed before opening the trace gets `None`.
-pub fn emit_error(
+pub fn emit_error<E>(
     verb: &str,
     trace: Option<&Path>,
     trace_span: Option<TraceSpan>,
-    err: &anyhow::Error,
-    fmt: Format,
-) {
-    veloq_core::write_error_envelope(
+    err: &E,
+    fmt: OutputFormat,
+) where
+    E: VeloqDiagnostic,
+{
+    veloq_core::write_diagnostic_error_envelope(
         nsys_source_ref(),
         verb,
         trace.map(nsys_trace_ref),
@@ -220,7 +233,7 @@ pub fn emit_error(
 /// have one parsing contract. `source` / `command` / `trace` are
 /// omitted because parsing didn't get far enough to know which
 /// subcommand the user wanted.
-pub fn emit_parse_error(err: &clap::Error, fmt: Format) {
+pub fn emit_parse_error(err: &clap::Error, fmt: OutputFormat) {
     use clap::error::ErrorKind;
     if matches!(
         err.kind(),
@@ -239,7 +252,7 @@ pub fn emit_parse_error(err: &clap::Error, fmt: Format) {
         message.clone(),
         vec![format!("clap::ErrorKind::{:?}", err.kind())],
     );
-    if !matches!(fmt, Format::Json) {
+    if !matches!(fmt, OutputFormat::Json) {
         eprintln!("veloq: {message}");
     }
     if let Ok(s) = env.to_json_pretty() {

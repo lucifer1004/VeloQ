@@ -5,9 +5,10 @@
 //!
 //!   1. Every success emits a JSON envelope on stdout with the keys
 //!      `schema`, `command`, `trace`, `data`.
-//!   2. Every failure emits a non-zero exit, a human-readable line on
-//!      stderr, and a `{schema, command, trace, error}` envelope on
-//!      stdout.
+//!   2. Every handled failure emits a non-zero exit and a
+//!      `{schema, command, trace, error}` envelope on stdout. JSON mode
+//!      keeps stderr quiet; CSV/table mode also mirrors a human-readable
+//!      line to stderr.
 //!
 //! The CLI is the glue layer between clap, the query crate, and the
 //! JSON renderer — exactly where silent regressions hide. The lower
@@ -71,10 +72,26 @@ where
         .context("spawn veloq binary")
 }
 
-fn run_veloq_with_env<I, S, K, V>(args: I, envs: [(K, V); 2]) -> Result<Output>
+fn assert_error_code(out: &Output, expected: &str) -> Result<Value> {
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for {expected}"
+    );
+    let v: Value =
+        serde_json::from_slice(&out.stdout).context("error stdout must be valid JSON")?;
+    assert_eq!(
+        v.pointer("/error/code").and_then(Value::as_str),
+        Some(expected),
+        "unexpected error code for {expected}: {v}"
+    );
+    Ok(v)
+}
+
+fn run_veloq_with_env<I, S, E, K, V>(args: I, envs: E) -> Result<Output>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
+    E: IntoIterator<Item = (K, V)>,
     K: AsRef<std::ffi::OsStr>,
     V: AsRef<std::ffi::OsStr>,
 {
@@ -84,6 +101,18 @@ where
         cmd.env(key, value);
     }
     cmd.output().context("spawn veloq binary")
+}
+
+fn run_veloq_without_unstable<I, S>(args: I) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    Command::new(veloq_bin())
+        .args(args)
+        .env_remove("VELOQ_UNSTABLE")
+        .output()
+        .context("spawn veloq binary")
 }
 
 /// Build a minimal parquetdir trace that `summary` can open: one
@@ -641,8 +670,7 @@ fn nsys_ncu_command_rejects_table_format_without_print() -> Result<()> {
         !out.status.success(),
         "ncu-command table format should fail"
     );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("format error stdout must be JSON")?;
+    let v = assert_error_code(&out, "nsys.command.ncu-command-unsupported-format")?;
     assert_eq!(
         v.get("command").and_then(Value::as_str),
         Some("nsys.ncu-command"),
@@ -652,6 +680,163 @@ fn nsys_ncu_command_rejects_table_format_without_print() -> Result<()> {
             .and_then(Value::as_str)
             .is_some_and(|s| s.contains("--print")),
         "error should point users to --print: {v}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_ncu_command_unknown_env_has_specific_error_code() -> Result<()> {
+    let (_trace_dir, trace) = build_ncu_command_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "nsys",
+        "ncu-command",
+        trace.as_str(),
+        "kernel:2",
+        "--env",
+        "weird",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.ncu-command-unknown-env")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("weird") && message.contains("safe"),
+        "message should name rejected and expected env policies: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_ncu_command_row_id_kind_has_specific_error_code() -> Result<()> {
+    let (_trace_dir, trace) = build_ncu_command_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["nsys", "ncu-command", trace.as_str(), "runtime:1"])?;
+    let v = assert_error_code(&out, "nsys.query.ncu-command-row-id-kind")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("runtime:1") && message.contains("kernel"),
+        "message should point users at a kernel row id: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_ncu_command_kernel_table_missing_has_specific_error_code() -> Result<()> {
+    let (_trace_dir, trace) = build_graph_replay_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["nsys", "ncu-command", trace.as_str(), "kernel:1"])?;
+    let v = assert_error_code(&out, "nsys.query.ncu-command-kernel-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("CUPTI_ACTIVITY_KIND_KERNEL"),
+        "message should name the missing kernel table: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_ncu_command_metadata_missing_has_specific_error_code() -> Result<()> {
+    let (_trace_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["nsys", "ncu-command", trace.as_str(), "kernel:1"])?;
+    let v = assert_error_code(&out, "nsys.query.ncu-command-metadata-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("META_DATA_CAPTURE") && message.contains("command"),
+        "message should name the missing launch metadata table: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_ncu_command_kernel_not_found_has_specific_error_code() -> Result<()> {
+    let (_trace_dir, trace) = build_ncu_command_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["nsys", "ncu-command", trace.as_str(), "kernel:99"])?;
+    let v = assert_error_code(&out, "nsys.query.ncu-command-kernel-not-found")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("kernel:99") && message.contains("not found"),
+        "message should name the missing kernel row id: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_metrics_gpu_rejects_cpu_flags_with_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--name", "foo"])?;
+    let v = assert_error_code(&out, "nsys.command.metrics-cpu-flag-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--type gpu") && message.contains("--name"),
+        "message should name the rejected CPU flag set: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_metrics_cpu_sampling_rejects_counter_with_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "metrics",
+        trace.as_str(),
+        "--type",
+        "cpu-sampling",
+        "--counter",
+        "SM*",
+    ])?;
+    let v = assert_error_code(&out, "nsys.command.metrics-counter-flag-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--counter") && message.contains("--name"),
+        "message should point cpu-sampling users at --name: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_metrics_cpu_sched_rejects_name_with_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "metrics",
+        trace.as_str(),
+        "--type",
+        "cpu-sched",
+        "--name",
+        "foo",
+    ])?;
+    let v = assert_error_code(&out, "nsys.command.metrics-name-flag-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--name") && message.contains("cpu-sched"),
+        "message should explain cpu-sched has no name field: {message}"
     );
     Ok(())
 }
@@ -1265,8 +1450,7 @@ fn missing_trace_in_json_mode_emits_error_envelope_with_quiet_stderr() -> Result
         stderr.is_empty(),
         "JSON mode must keep stderr clean; got: {stderr}"
     );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("error stdout must be valid JSON")?;
+    let v = assert_error_code(&out, "nsys.data.sqlite-input-unsupported")?;
     let error = v
         .get("error")
         .ok_or_else(|| anyhow!("stdout envelope missing `error`: {v}"))?;
@@ -1285,6 +1469,889 @@ fn missing_trace_in_json_mode_emits_error_envelope_with_quiet_stderr() -> Result
     assert_eq!(
         v.get("command").and_then(Value::as_str),
         Some("nsys.summary"),
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_stats_by_size_requires_unstable_with_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq_without_unstable(["stats", trace.as_str(), "--by", "size"])?;
+    let v = assert_error_code(&out, "nsys.command.unstable-feature-disabled")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("VELOQ_UNSTABLE=1") && message.contains("--by size"),
+        "message should name the env gate and hidden flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_stats_by_size_hist_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq_with_env(
+        ["stats", trace.as_str(), "--by", "size", "--hist"],
+        [("VELOQ_UNSTABLE", "1")],
+    )?;
+    let v = assert_error_code(&out, "nsys.command.stats-by-size-hist-unsupported")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--by size") && message.contains("histograms"),
+        "message should explain the unsupported histogram combination: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_stats_by_size_nvtx_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq_with_env(
+        ["stats", trace.as_str(), "--by", "size", "--nvtx", "phase*"],
+        [("VELOQ_UNSTABLE", "1")],
+    )?;
+    let v = assert_error_code(&out, "nsys.command.stats-by-size-nvtx-unsupported")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--nvtx") && message.contains("--by size"),
+        "message should explain the unsupported NVTX combination: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_stats_by_size_group_by_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq_with_env(
+        [
+            "stats",
+            trace.as_str(),
+            "--by",
+            "size",
+            "--group-by",
+            "short,nvtx-path",
+        ],
+        [("VELOQ_UNSTABLE", "1")],
+    )?;
+    let v = assert_error_code(&out, "nsys.command.stats-by-size-group-by-unsupported")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("nvtx-path") && message.contains("--group-by"),
+        "message should name the unsupported group-by axis: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_slices_path_group_by_requires_aggregate_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["slices", trace.as_str(), "--group-by", "path"])?;
+    let v = assert_error_code(&out, "nsys.command.slices-group-by-requires-aggregate")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--group-by path") && message.contains("--aggregate"),
+        "message should point users to --aggregate: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_metrics_unknown_source_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--type", "cpu"])?;
+    let v = assert_error_code(&out, "nsys.command.metrics-unknown-source")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("cpu") && message.contains("cpu-sampling"),
+        "message should name rejected and supported metric sources: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_metrics_invalid_bucket_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--bucket", "nope"])?;
+    let v = assert_error_code(&out, "nsys.command.metrics-invalid-bucket")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--bucket") && message.contains("nope"),
+        "message should name invalid --bucket value: {message}"
+    );
+    let chain = v
+        .pointer("/error/chain")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        chain
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|entry| entry.contains("invalid --bucket")),
+        "chain should keep bucket parser detail: {chain:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_search_name_filter_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "search",
+        trace.as_str(),
+        "--name",
+        "foo",
+        "--name-regex",
+        "foo",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.name-filter-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--name") && message.contains("--name-regex"),
+        "message should name both conflicting filters: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_kind_location_filter_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["search", trace.as_str(), "--type", "nvtx", "--stream", "7"])?;
+    let v = assert_error_code(&out, "nsys.query.kind-location-filter-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--stream") && message.contains("nvtx"),
+        "message should name the conflicting location filter and kind: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_kind_nvtx_attribution_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "stats",
+        trace.as_str(),
+        "--type",
+        "nvtx",
+        "--all-devices",
+        "--nvtx",
+        "*",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.kind-nvtx-attribution-unsupported")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--nvtx") && message.contains("experimental"),
+        "message should explain the unsupported NVTX attribution request: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_group_by_unknown_token_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--group-by", "mystery"])?;
+    let v = assert_error_code(&out, "nsys.query.stats-group-by-unknown-token")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("mystery") && message.contains("short"),
+        "message should name rejected and expected stats group-by axes: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_group_by_name_axis_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--group-by", "short,demangled"])?;
+    let v = assert_error_code(&out, "nsys.query.stats-group-by-name-axis-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("short") && message.contains("demangled"),
+        "message should name both name axes: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_group_by_location_axis_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "stats",
+        trace.as_str(),
+        "--type",
+        "runtime",
+        "--all-devices",
+        "--group-by",
+        "device",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.stats-group-by-location-axis-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--type runtime") && message.contains("device"),
+        "message should explain the CPU-side location-axis conflict: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_grid_block_kind_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "stats",
+        trace.as_str(),
+        "--type",
+        "kernel,memcpy",
+        "--group-by",
+        "grid_block",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.stats-grid-block-kind-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("grid_block") && message.contains("memcpy"),
+        "message should name the non-kernel kind in the grid_block request: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_nvtx_hierarchy_axes_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "stats",
+        trace.as_str(),
+        "--group-by",
+        "nvtx-parent,nvtx-path",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.stats-nvtx-hierarchy-axis-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("nvtx-parent") && message.contains("nvtx-path"),
+        "message should name the mutually exclusive NVTX hierarchy axes: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_nvtx_hierarchy_graph_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--group-by", "nvtx-parent,graph"])?;
+    let v = assert_error_code(&out, "nsys.query.stats-nvtx-hierarchy-graph-axis-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("nvtx-parent") && message.contains("graph"),
+        "message should explain the graph/NVTX hierarchy conflict: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_nvtx_hierarchy_self_attribute_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "stats",
+        trace.as_str(),
+        "--type",
+        "nvtx",
+        "--all-devices",
+        "--group-by",
+        "nvtx-parent",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.stats-nvtx-hierarchy-self-attribute")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--type nvtx") && message.contains("self-attribute"),
+        "message should explain the NVTX self-attribute request: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_stats_nvtx_hierarchy_prereq_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--group-by", "nvtx-parent"])?;
+    let v = assert_error_code(&out, "nsys.query.stats-nvtx-hierarchy-prereq-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("nvtx-parent") && message.contains("NVTX_EVENTS"),
+        "message should name the missing NVTX hierarchy prerequisite: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_timeline_interval_too_small_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["timeline", trace.as_str(), "--interval", "0ns"])?;
+    let v = assert_error_code(&out, "nsys.query.timeline-interval-too-small")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--interval") && message.contains("positive"),
+        "message should explain the minimum interval: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_timeline_invalid_interval_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["timeline", trace.as_str(), "--interval", "bogus"])?;
+    let v = assert_error_code(&out, "nsys.query.timeline-interval-invalid")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--interval") && message.contains("bogus"),
+        "message should name invalid --interval value: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_timeline_nvtx_prereq_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "timeline",
+        trace.as_str(),
+        "--interval",
+        "1ms",
+        "--nvtx",
+        "*",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.nvtx-attribution-prereq-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--nvtx") && message.contains("NVTX_EVENTS"),
+        "message should name the missing NVTX attribution table: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_slices_unknown_group_by_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "slices",
+        trace.as_str(),
+        "--aggregate",
+        "--group-by",
+        "bogus",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.slices-unknown-group-by")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("bogus") && message.contains("name"),
+        "message should name rejected and expected slices group-by axes: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_slices_missing_prereq_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["slices", trace.as_str()])?;
+    let v = assert_error_code(&out, "nsys.query.slices-prereq-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("NVTX_EVENTS") && message.contains("attribution"),
+        "message should name the missing slices prerequisite table: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_metrics_sort_bucket_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "metrics",
+        trace.as_str(),
+        "--bucket",
+        "1ms",
+        "--sort",
+        "count:desc",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.metrics-sort-bucket-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--sort") && message.contains("bucket"),
+        "message should explain the bucket/sort conflict: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_metrics_gpu_missing_table_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str()])?;
+    let v = assert_error_code(&out, "nsys.query.metrics-gpu-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("GPU_METRICS") && message.contains("--gpu-metrics-devices"),
+        "message should name the missing GPU metrics table and capture flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_metrics_nic_missing_table_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--type", "nic"])?;
+    let v = assert_error_code(&out, "nsys.query.metrics-nic-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("NET_NIC_METRIC") && message.contains("--nic-metrics"),
+        "message should name the missing NIC metrics table and capture flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_metrics_cpu_sampling_missing_table_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--type", "cpu-sampling"])?;
+    let v = assert_error_code(&out, "nsys.query.metrics-cpu-sampling-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("COMPOSITE_EVENTS") && message.contains("--sample"),
+        "message should name the missing CPU sampling table and capture flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_metrics_cpu_sched_missing_table_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["metrics", trace.as_str(), "--type", "cpu-sched"])?;
+    let v = assert_error_code(&out, "nsys.query.metrics-cpu-sched-table-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("SCHED_EVENTS") && message.contains("--cpuctxsw"),
+        "message should name the missing CPU sched table and capture flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_invalid_scope_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["gaps", trace.as_str(), "--scope", "whole-job"])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-invalid-scope")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("whole-job") && message.contains("device"),
+        "message should name rejected and expected scopes: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_invalid_min_duration_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["gaps", trace.as_str(), "--min-duration", "bogus"])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-min-duration-invalid")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--min-duration") && message.contains("bogus"),
+        "message should name invalid --min-duration value: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_stream_scope_required_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["gaps", trace.as_str(), "--stream", "7"])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-stream-scope-required")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--stream") && message.contains("--scope stream"),
+        "message should point stream filters at stream scope: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_device_trace_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["gaps", trace.as_str(), "--scope", "trace", "--device", "0"])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-device-scope-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--device 0") && message.contains("--scope trace"),
+        "message should explain device filters conflict with trace scope: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_sort_stream_scope_required_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["gaps", trace.as_str(), "--sort", "stream"])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-sort-stream-scope-required")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--sort stream") && message.contains("--scope stream"),
+        "message should point stream sort at stream scope: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_gaps_sort_device_trace_conflict_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "gaps",
+        trace.as_str(),
+        "--scope",
+        "trace",
+        "--all-devices",
+        "--sort",
+        "device",
+    ])?;
+    let v = assert_error_code(&out, "nsys.query.gaps-sort-device-scope-conflict")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--sort device") && message.contains("--scope trace"),
+        "message should explain device sort conflicts with trace scope: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_graph_replays_top_nodes_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_graph_replay_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["graph-replays", trace.as_str(), "--top-nodes", "0"])?;
+    let v = assert_error_code(&out, "nsys.query.graph-replays-top-nodes-too-small")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--top-nodes") && message.contains("1"),
+        "message should name the minimum top-nodes value: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_query_graph_replays_nvtx_prereq_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_graph_replay_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["graph-replays", trace.as_str(), "--nvtx", "*"])?;
+    let v = assert_error_code(&out, "nsys.query.graph-replays-nvtx-prereq-missing")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("graph-replays") && message.contains("NVTX_EVENTS"),
+        "message should name the missing graph-replays NVTX table: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_missing_time_bound_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--from", "1ms"])?;
+    let v = assert_error_code(&out, "nsys.command.missing-time-bound")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--from") && message.contains("--to"),
+        "message should name both time-bound flags: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_invalid_from_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--from", "nope", "--to", "1ms"])?;
+    let v = assert_error_code(&out, "nsys.command.invalid-from")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--from") && message.contains("nope"),
+        "message should name invalid --from value: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_zero_limit_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["search", trace.as_str(), "--limit", "0"])?;
+    let v = assert_error_code(&out, "nsys.command.limit-too-small")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--limit") && message.contains("0"),
+        "message should name rejected limit: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_unknown_event_kind_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--type", "bogus"])?;
+    let v = assert_error_code(&out, "nsys.command.unknown-event-kind")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("bogus"),
+        "message should name rejected event kind: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_event_kind_not_allowed_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq([
+        "timeline",
+        trace.as_str(),
+        "--interval",
+        "1ms",
+        "--type",
+        "sync",
+    ])?;
+    let v = assert_error_code(&out, "nsys.command.event-kind-not-allowed")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("sync") && message.contains("kernel"),
+        "message should name rejected and allowed event kinds: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_empty_event_kind_list_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--type", ","])?;
+    let v = assert_error_code(&out, "nsys.command.empty-event-kind-list")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--type"),
+        "message should name rejected flag: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_invalid_sort_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["stats", trace.as_str(), "--sort", "total:nope"])?;
+    let v = assert_error_code(&out, "nsys.command.invalid-sort")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--sort") && message.contains("total:nope"),
+        "message should name invalid --sort value: {message}"
+    );
+    let chain = v
+        .pointer("/error/chain")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        chain
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|entry| entry.contains("unknown sort direction")),
+        "chain should keep sort parser detail: {chain:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_invalid_duration_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["search", trace.as_str(), "--duration", "nope"])?;
+    let v = assert_error_code(&out, "nsys.command.invalid-duration")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("--duration") && message.contains("nope"),
+        "message should name invalid --duration value: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn nsys_invalid_row_id_has_specific_error_code() -> Result<()> {
+    let (_dir, trace) = build_minimal_trace()?;
+    let trace = trace.to_string_lossy().into_owned();
+    let out = run_veloq(["inspect", trace.as_str(), "no-colon"])?;
+    let v = assert_error_code(&out, "nsys.command.invalid-row-id")?;
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        message.contains("row_id") && message.contains("no-colon"),
+        "message should name invalid row_id: {message}"
     );
     Ok(())
 }
@@ -1343,6 +2410,33 @@ fn bogus_subcommand_routes_through_envelope() -> Result<()> {
     );
     let message = error
         .get("message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing error.message: {v}"))?;
+    assert!(
+        message.contains("definitely-not-a-command"),
+        "error.message should echo the unrecognized subcommand; got: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn table_mode_parse_error_mirrors_error_on_stderr() -> Result<()> {
+    let out = run_veloq(["--format", "table", "definitely-not-a-command"])?;
+    assert!(
+        !out.status.success(),
+        "bogus subcommand should yield non-zero exit"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with("veloq:"),
+        "table parse-error must mirror `veloq: ...` to stderr; got: {stderr}"
+    );
+
+    let v: Value =
+        serde_json::from_slice(&out.stdout).context("parse-error stdout must be valid JSON")?;
+    let message = v
+        .get("error")
+        .and_then(|e| e.get("message"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing error.message: {v}"))?;
     assert!(
@@ -1550,6 +2644,10 @@ fn schema_bad_target_omits_trace_field() -> Result<()> {
     assert!(
         v.get("trace").is_none(),
         "schema error envelope must omit `trace`: {v}"
+    );
+    assert_eq!(
+        v.pointer("/error/code").and_then(Value::as_str),
+        Some("nsys.command.unknown-schema-target")
     );
     // Sanity: the error chain actually mentions the bogus target.
     let message = v

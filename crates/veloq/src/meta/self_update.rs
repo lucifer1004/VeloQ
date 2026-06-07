@@ -21,13 +21,13 @@
 //! output and progress bar are suppressed and confirmation is disabled, so
 //! stdout carries only the envelope and the run never blocks on a prompt.
 
-use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use veloq_core::OutputFormat;
 
-use super::{emit_meta_error, emit_or_error};
+use super::{MetaError, MetaResult, emit_meta_error, emit_or_error};
 
 const VERB: &str = "self-update";
 const REPO_OWNER: &str = "lucifer1004";
@@ -92,7 +92,7 @@ pub fn cli() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches) -> Result<i32> {
+pub fn run(matches: &ArgMatches, fmt: OutputFormat) -> MetaResult<i32> {
     let current = env!("CARGO_PKG_VERSION");
     let skills_dir = matches.get_one::<String>("skills-dir").map(PathBuf::from);
     let outcome = self_update(
@@ -103,9 +103,9 @@ pub fn run(matches: &ArgMatches) -> Result<i32> {
         skills_dir,
     );
     match outcome {
-        Ok(payload) => Ok(emit_or_error(VERB, None, None, payload)),
+        Ok(payload) => Ok(emit_or_error(fmt, VERB, None, None, payload)),
         Err(err) => {
-            emit_meta_error(VERB, None, &err);
+            emit_meta_error(fmt, VERB, None, &err);
             Ok(1)
         }
     }
@@ -117,7 +117,7 @@ fn self_update(
     want_binary: bool,
     want_skills: bool,
     skills_dir_override: Option<PathBuf>,
-) -> Result<SelfUpdatePayload> {
+) -> MetaResult<SelfUpdatePayload> {
     // One release lookup powers the check, the skills download URL, and the
     // reported `latest_version`.
     let latest = latest_release()?;
@@ -163,24 +163,24 @@ fn self_update(
 }
 
 /// Latest release (the first entry GitHub returns, newest-first).
-fn latest_release() -> Result<self_update::update::Release> {
+fn latest_release() -> MetaResult<self_update::update::Release> {
     self_update::backends::github::ReleaseList::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .build()
-        .context("configuring the GitHub release lookup")?
+        .map_err(MetaError::self_update_release_lookup_config)?
         .fetch()
-        .context("fetching releases from GitHub")?
+        .map_err(MetaError::self_update_release_fetch)?
         .into_iter()
         .next()
-        .context("no releases found on GitHub")
+        .ok_or(MetaError::SelfUpdateReleaseMissing)
 }
 
 /// Download the matching release archive and atomically replace the running
 /// binary. Output is suppressed so the JSON envelope is the only thing on
 /// stdout; the run never prompts (`no_confirm`). Returns whether the binary
 /// actually changed.
-fn perform_binary_update(current: &str) -> Result<bool> {
+fn perform_binary_update(current: &str) -> MetaResult<bool> {
     let status = self_update::backends::github::Update::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
@@ -191,16 +191,16 @@ fn perform_binary_update(current: &str) -> Result<bool> {
         .show_download_progress(false)
         .no_confirm(true)
         .build()
-        .context("configuring the binary self-update")?
+        .map_err(MetaError::self_update_binary_config)?
         .update()
-        .context("downloading and installing the latest binary")?;
+        .map_err(MetaError::self_update_binary_install)?;
     Ok(!matches!(status, self_update::Status::UpToDate(_)))
 }
 
 /// Download `veloq-skills.tar.gz` for `version` and install the two skills
 /// under the Claude Code skills directory, overwriting any prior copy.
 /// Returns the skills directory.
-fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> Result<PathBuf> {
+fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> MetaResult<PathBuf> {
     let skills_dir = resolve_skills_dir(skills_dir_override)?;
     // Public release-download URL — a direct link (302 -> CDN) that needs no
     // auth header, unlike the API asset URL self_update stores.
@@ -208,19 +208,23 @@ fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> Result<Pa
         "https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/v{version}/{SKILLS_ASSET}"
     );
 
-    let tmp = self_update::TempDir::new().context("creating a temp dir for the skills archive")?;
+    let tmp = self_update::TempDir::new().map_err(MetaError::self_update_skills_temp_dir)?;
     let archive = tmp.path().join(SKILLS_ASSET);
     {
-        let mut file = fs::File::create(&archive).context("creating the temp skills archive")?;
+        let mut file = fs::File::create(&archive).map_err(|source| {
+            MetaError::self_update_skills_archive_create(archive.display(), source)
+        })?;
         self_update::Download::from_url(&url)
             .download_to(&mut file)
-            .with_context(|| format!("downloading {SKILLS_ASSET} from {url}"))?;
+            .map_err(|source| {
+                MetaError::self_update_skills_download(SKILLS_ASSET, url.clone(), source)
+            })?;
     }
 
     let extract_dir = tmp.path().join("extract");
     self_update::Extract::from_source(&archive)
         .extract_into(&extract_dir)
-        .context("extracting the skills archive")?;
+        .map_err(|source| MetaError::self_update_skills_extract(archive.display(), source))?;
 
     // Tarball entries are `.claude/skills/<name>/...`.
     let staged = extract_dir.join(".claude").join("skills");
@@ -234,7 +238,7 @@ fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> Result<Pa
 /// `scripts/install.sh`. The chosen base is normalized by
 /// [`with_skills_leaf`], so a caller may pass either the agent root
 /// (`.agents`, `~/.claude`) or the full skills dir (`.agents/skills`).
-fn resolve_skills_dir(override_dir: Option<&Path>) -> Result<PathBuf> {
+fn resolve_skills_dir(override_dir: Option<&Path>) -> MetaResult<PathBuf> {
     let base = if let Some(dir) = override_dir {
         dir.to_path_buf()
     } else if let Some(dir) = std::env::var_os("VELOQ_SKILLS_DIR") {
@@ -242,9 +246,7 @@ fn resolve_skills_dir(override_dir: Option<&Path>) -> Result<PathBuf> {
     } else {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
-            .context(
-                "cannot locate home directory (set HOME, VELOQ_SKILLS_DIR, or --skills-dir)",
-            )?;
+            .ok_or(MetaError::SelfUpdateHomeMissing)?;
         PathBuf::from(home).join(".claude")
     };
     Ok(with_skills_leaf(base))
@@ -264,24 +266,33 @@ fn with_skills_leaf(dir: PathBuf) -> PathBuf {
 
 /// Copy each `<name>/` skill from the extracted staging tree into
 /// `skills_dir`, replacing any existing copy so removed files don't linger.
-fn install_staged_skills(staged: &Path, skills_dir: &Path) -> Result<()> {
+fn install_staged_skills(staged: &Path, skills_dir: &Path) -> MetaResult<()> {
     if !staged.is_dir() {
-        anyhow::bail!(
-            "skills archive is missing the expected .claude/skills/ layout at {}",
-            staged.display()
-        );
+        return Err(MetaError::SelfUpdateSkillsLayoutMissing {
+            path: staged.display().to_string(),
+        });
     }
     fs::create_dir_all(skills_dir)
-        .with_context(|| format!("creating skills dir {}", skills_dir.display()))?;
-    for entry in fs::read_dir(staged).with_context(|| format!("reading {}", staged.display()))? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
+        .map_err(|source| MetaError::self_update_skills_dir_create(skills_dir.display(), source))?;
+    for entry in fs::read_dir(staged)
+        .map_err(|source| MetaError::self_update_skills_staging_read(staged.display(), source))?
+    {
+        let entry = entry
+            .map_err(|source| MetaError::self_update_skills_entry_read(staged.display(), source))?;
+        if !entry
+            .file_type()
+            .map_err(|source| {
+                MetaError::self_update_skills_entry_file_type(entry.path().display(), source)
+            })?
+            .is_dir()
+        {
             continue;
         }
         let dest = skills_dir.join(entry.file_name());
         if dest.exists() {
-            fs::remove_dir_all(&dest)
-                .with_context(|| format!("removing stale skill {}", dest.display()))?;
+            fs::remove_dir_all(&dest).map_err(|source| {
+                MetaError::self_update_skill_remove_stale(dest.display(), source)
+            })?;
         }
         copy_dir_all(&entry.path(), &dest)?;
     }
@@ -289,17 +300,28 @@ fn install_staged_skills(staged: &Path, skills_dir: &Path) -> Result<()> {
 }
 
 /// Recursively copy `src` into `dst` (std has no built-in for this).
-fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst).with_context(|| format!("creating {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
-        let entry = entry?;
+fn copy_dir_all(src: &Path, dst: &Path) -> MetaResult<()> {
+    fs::create_dir_all(dst)
+        .map_err(|source| MetaError::self_update_copy_dir_create(dst.display(), source))?;
+    for entry in fs::read_dir(src)
+        .map_err(|source| MetaError::self_update_copy_dir_read(src.display(), source))?
+    {
+        let entry = entry
+            .map_err(|source| MetaError::self_update_copy_dir_entry_read(src.display(), source))?;
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        if entry
+            .file_type()
+            .map_err(|source| {
+                MetaError::self_update_copy_dir_entry_file_type(from.display(), source)
+            })?
+            .is_dir()
+        {
             copy_dir_all(&from, &to)?;
         } else {
-            fs::copy(&from, &to)
-                .with_context(|| format!("copying {} -> {}", from.display(), to.display()))?;
+            fs::copy(&from, &to).map_err(|source| {
+                MetaError::self_update_copy_file(from.display(), to.display(), source)
+            })?;
         }
     }
     Ok(())
@@ -314,18 +336,20 @@ fn strip_v(version: &str) -> String {
 /// True when `latest` is a strictly newer semver than `current`. A
 /// `current` ahead of the newest release (local dev build) reports `false`
 /// rather than offering a downgrade.
-fn is_newer(current: &str, latest: &str) -> Result<bool> {
+fn is_newer(current: &str, latest: &str) -> MetaResult<bool> {
     let cur = semver::Version::parse(current.trim_start_matches('v'))
-        .with_context(|| format!("parsing current version `{current}`"))?;
+        .map_err(|source| MetaError::self_update_current_version_parse(current, source))?;
     let lat = semver::Version::parse(latest.trim_start_matches('v'))
-        .with_context(|| format!("parsing latest version `{latest}`"))?;
+        .map_err(|source| MetaError::self_update_latest_version_parse(latest, source))?;
     Ok(lat > cur)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Context, Result};
     use std::fs;
+    use veloq_core::VeloqDiagnostic;
 
     #[test]
     fn newer_release_is_an_update() -> Result<()> {
@@ -424,12 +448,20 @@ mod tests {
     }
 
     #[test]
-    fn missing_skills_layout_is_an_error() {
-        let tmp = match tempfile::tempdir() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
+    fn missing_skills_layout_is_an_error() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
         let staged = tmp.path().join("does-not-exist");
-        assert!(install_staged_skills(&staged, &tmp.path().join("skills")).is_err());
+        let err = install_staged_skills(&staged, &tmp.path().join("skills"))
+            .err()
+            .context("missing staged skills should error")?;
+        assert_eq!(
+            err.code().as_str(),
+            "meta.self-update.skills-layout-missing"
+        );
+        assert!(matches!(
+            err,
+            MetaError::SelfUpdateSkillsLayoutMissing { .. }
+        ));
+        Ok(())
     }
 }

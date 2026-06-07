@@ -168,7 +168,7 @@ fn read_sidecar(stem: &str) -> Result<veloq_ncu::native::NativeSidecar> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(format!("{stem}.ncu-native.json.gz"));
-    veloq_ncu::native::cache::read_gz_sidecar(&p)
+    Ok(veloq_ncu::native::cache::read_gz_sidecar(&p)?)
 }
 
 #[test]

@@ -361,13 +361,14 @@ pub enum Cmd {
         // ---- cpu-sampling + cpu-sched ----
         /// Aggregation axis. `--type cpu-sampling`: `symbol` (default,
         /// leaf-frame function — `perf top` ergonomics), `tid`, `cpu`,
-        /// `module`. `--type cpu-sched`: `tid` (default), `cpu`, `state`.
+        /// `module`, `stack`. `--type cpu-sched`: `tid` (default), `cpu`, `state`.
         #[arg(long = "group-by", value_name = "AXIS")]
         group_by: Option<String>,
 
         /// `--type cpu-sampling`: glob (`*`/`?`) over the leaf
-        /// frame's symbol name (with `--group-by symbol`) or module
-        /// basename (with `--group-by module`). cpu-sched has no name
+        /// frame's symbol name (with `--group-by symbol`), module
+        /// basename (with `--group-by module`), or any frame in a stack
+        /// (with `--group-by stack`). cpu-sched has no name
         /// field — this flag is rejected there.
         #[arg(long)]
         name: Option<String>,

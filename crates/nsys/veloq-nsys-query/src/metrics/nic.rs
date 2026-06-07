@@ -8,13 +8,18 @@
 //! NIC values as rates (`bytes/ms`, `packets/ms`, `ticks/ms`) or
 //! already-averaged sizes (`bytes`), so bucket rollups use `mean`.
 
-use anyhow::{Context, Result};
+use crate::{NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
 use veloq_nsys_data::Trace;
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{name, total_matched_bigint_expr, window};
 
-use super::{Coverage, MetricsCommon, NicMetricsBody, NicMetricsRequest};
+use super::{Coverage, MetricsCommon, NicMetricsBody, NicMetricsRequest, query_rows};
+
+const NIC_COUNTERS_SQL: &str = "nic counters";
+const NIC_BUCKETS_SQL: &str = "nic buckets";
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct NicCounterSummary {
@@ -72,7 +77,7 @@ pub(super) fn run_nic(
     abs_window: Option<(i64, i64)>,
     trace_origin_ns: i64,
     trace_span_ns: (i64, i64),
-) -> Result<NicMetricsBody> {
+) -> NsysQueryResult<NicMetricsBody> {
     require_nic_tables(trace)?;
 
     let counters = query_nic_counters(trace, req, abs_window)?;
@@ -141,31 +146,18 @@ pub(super) fn run_nic(
     })
 }
 
-fn require_nic_tables(trace: &Trace) -> Result<()> {
+fn require_nic_tables(trace: &Trace) -> NsysQueryResult<()> {
     if !trace.table_exists("NET_NIC_METRIC") {
-        anyhow::bail!(
-            "metrics --type nic requires `NET_NIC_METRIC`, which is absent from this trace; \
-             re-capture with `nsys profile --nic-metrics=lf` (or `hf`) and verify \
-             `nsys status --network` passes"
-        );
+        return Err(NsysQueryError::MetricsNicTableMissing);
     }
     if !trace.table_exists("TARGET_INFO_NETWORK_METRICS") {
-        anyhow::bail!(
-            "metrics --type nic requires `TARGET_INFO_NETWORK_METRICS` (counter dictionary); \
-             likely a partial or corrupted nsys export"
-        );
+        return Err(NsysQueryError::MetricsNicDictionaryMissing);
     }
     if !trace.table_exists("NIC_ID_MAP") {
-        anyhow::bail!(
-            "metrics --type nic requires `NIC_ID_MAP` (globalId to nicId mapping); \
-             likely a partial or corrupted nsys export"
-        );
+        return Err(NsysQueryError::MetricsNicIdMapMissing);
     }
     if !trace.table_exists("TARGET_INFO_NIC_INFO") {
-        anyhow::bail!(
-            "metrics --type nic requires `TARGET_INFO_NIC_INFO` (NIC identity); \
-             likely a partial or corrupted nsys export"
-        );
+        return Err(NsysQueryError::MetricsNicInfoMissing);
     }
     Ok(())
 }
@@ -181,18 +173,17 @@ fn query_nic_counters(
     trace: &Trace,
     req: &NicMetricsRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<CounterWithSpan>> {
+) -> NsysQueryResult<Vec<CounterWithSpan>> {
     let mut params: Vec<Value> = Vec::new();
-    let dict_pred = if req.counter_glob.is_some() {
-        params.push(Value::Text(crate::search_glob_to_like(
-            req.counter_glob.as_deref().unwrap_or(""),
-        )));
-        r#"WHERE name LIKE ? ESCAPE '\'"#
+    let dict_pred = if let Some(counter_glob) = req.counter_glob.as_deref() {
+        let fragment = name::glob_like("name", counter_glob);
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
     } else {
-        ""
+        String::new()
     };
 
-    let sample_scope = build_sample_scope(abs_window);
+    let sample_scope = window::positive_interval_sample_scope("m.start", r#"m."end""#, abs_window);
     params.extend(sample_scope.params);
 
     let sql = format!(
@@ -310,61 +301,54 @@ fn query_nic_counters(
         sample_pred = sample_scope.where_clause,
     );
 
-    let conn = trace.conn();
-    let mut stmt = conn.prepare(&sql).context("preparing NIC metrics SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-
-    let mut out: Vec<CounterWithSpan> = Vec::new();
-    while let Some(r) = rows.next()? {
-        let samples: i64 = r.get("samples")?;
-        let nic_id: i64 = r.get("nic_id")?;
-        let port_id: i64 = r.get("port_id")?;
-        let metrics_idx: i64 = r.get("metrics_idx")?;
-        out.push(CounterWithSpan {
-            summary: NicCounterSummary {
-                key: format!("nic_counter|nic:{nic_id}|port:{port_id}|metric:{metrics_idx}"),
-                nic_id,
-                guid: r.get("guid")?,
-                nic_name: r.get("nic_name")?,
-                global_id: r.get("global_id")?,
-                port_id,
-                metrics_list_id: r.get("metrics_list_id")?,
-                metrics_idx,
-                name: r.get("metric_name")?,
-                description: r.get("description")?,
-                unit: r.get("unit")?,
-                agg: "mean",
-                samples,
-                min: r.get("min_v")?,
-                max: r.get("max_v")?,
-                mean: r.get("mean_v")?,
-                p50: r.get("p50_v")?,
-                p95: r.get("p95_v")?,
-                p99: r.get("p99_v")?,
-            },
-            span_lo: if samples > 0 {
-                r.get("span_lo")?
-            } else {
-                i64::MAX
-            },
-            span_hi: if samples > 0 {
-                r.get("span_hi")?
-            } else {
-                i64::MIN
-            },
-            max_gap_ns: r.get("max_gap_ns")?,
-        });
-    }
+    let out = query_rows(trace, &sql, &params, NIC_COUNTERS_SQL, nic_counter_row)?;
     if out.is_empty()
         && let Some(g) = &req.counter_glob
     {
-        anyhow::bail!(
-            "no NIC counters match `--counter {g}`; \
-             run `veloq metrics <trace> --type nic` (no --counter) to list available names"
-        );
+        return Err(NsysQueryError::metrics_nic_counter_no_match(g));
     }
     Ok(out)
+}
+
+fn nic_counter_row(row: &duckdb::Row<'_>) -> Result<CounterWithSpan, duckdb::Error> {
+    let samples: i64 = row.get("samples")?;
+    let nic_id: i64 = row.get("nic_id")?;
+    let port_id: i64 = row.get("port_id")?;
+    let metrics_idx: i64 = row.get("metrics_idx")?;
+    Ok(CounterWithSpan {
+        summary: NicCounterSummary {
+            key: format!("nic_counter|nic:{nic_id}|port:{port_id}|metric:{metrics_idx}"),
+            nic_id,
+            guid: row.get("guid")?,
+            nic_name: row.get("nic_name")?,
+            global_id: row.get("global_id")?,
+            port_id,
+            metrics_list_id: row.get("metrics_list_id")?,
+            metrics_idx,
+            name: row.get("metric_name")?,
+            description: row.get("description")?,
+            unit: row.get("unit")?,
+            agg: "mean",
+            samples,
+            min: row.get("min_v")?,
+            max: row.get("max_v")?,
+            mean: row.get("mean_v")?,
+            p50: row.get("p50_v")?,
+            p95: row.get("p95_v")?,
+            p99: row.get("p99_v")?,
+        },
+        span_lo: if samples > 0 {
+            row.get("span_lo")?
+        } else {
+            i64::MAX
+        },
+        span_hi: if samples > 0 {
+            row.get("span_hi")?
+        } else {
+            i64::MIN
+        },
+        max_gap_ns: row.get("max_gap_ns")?,
+    })
 }
 
 fn query_nic_buckets(
@@ -373,20 +357,27 @@ fn query_nic_buckets(
     abs_window: Option<(i64, i64)>,
     bucket_ns: i64,
     primary_origin_ns: i64,
-) -> Result<(Vec<NicBucketSample>, i64)> {
+) -> NsysQueryResult<(Vec<NicBucketSample>, i64)> {
     let anchor = abs_window.map(|(s, _)| s).unwrap_or(primary_origin_ns);
 
     let mut params: Vec<Value> = Vec::new();
-    let dict_pred = if req.counter_glob.is_some() {
-        params.push(Value::Text(crate::search_glob_to_like(
-            req.counter_glob.as_deref().unwrap_or(""),
-        )));
-        r#"WHERE name LIKE ? ESCAPE '\'"#
+    let dict_pred = if let Some(counter_glob) = req.counter_glob.as_deref() {
+        let fragment = name::glob_like("name", counter_glob);
+        params.extend(fragment.params);
+        format!("WHERE {}", fragment.sql)
     } else {
-        ""
+        String::new()
     };
-    let sample_scope = build_sample_scope(abs_window);
+    let sample_scope = window::positive_interval_sample_scope("m.start", r#"m."end""#, abs_window);
     params.extend(sample_scope.params);
+    let bucket_start_expr = format!("bucket_idx * {bucket_ns} + {anchor}");
+    let bucket_end_expr = format!("bucket_idx * {bucket_ns} + {anchor} + {bucket_ns}");
+    let clipped_ns_expr = window::bucket_clipped_duration_expr(
+        "start_ns",
+        "end_ns",
+        &bucket_start_expr,
+        &bucket_end_expr,
+    );
 
     let sql = format!(
         r#"
@@ -449,10 +440,9 @@ fn query_nic_buckets(
                 metrics_idx,
                 metric_name,
                 unit,
-                bucket_idx * {bucket} + {anchor} AS t_start,
-                bucket_idx * {bucket} + {anchor} + {bucket} AS t_end,
-                LEAST(end_ns, bucket_idx * {bucket} + {anchor} + {bucket})
-                    - GREATEST(start_ns, bucket_idx * {bucket} + {anchor}) AS clipped_ns,
+                {bucket_start_expr} AS t_start,
+                {bucket_end_expr} AS t_end,
+                {clipped_ns_expr} AS clipped_ns,
                 value
             FROM spans
         ),
@@ -488,7 +478,7 @@ fn query_nic_buckets(
                 t_end
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM agg
         ORDER BY t_start ASC, nic_id ASC, port_id ASC, metrics_list_id ASC, metrics_idx ASC
         LIMIT ?
@@ -497,73 +487,52 @@ fn query_nic_buckets(
         sample_start_expr = sample_scope.start_expr,
         sample_end_expr = sample_scope.end_expr,
         sample_pred = sample_scope.where_clause,
+        total_matched = total_matched_bigint_expr(),
     );
     params.push(Value::BigInt(req.common.limit as i64));
 
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing NIC metrics bucket SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+    let rows = query_rows(trace, &sql, &params, NIC_BUCKETS_SQL, nic_bucket_row)?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::Last,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok(row.bucket),
+    )
+}
 
-    let mut out: Vec<NicBucketSample> = Vec::new();
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        let t_start_ns: i64 = r.get("t_start")?;
-        let nic_id: i64 = r.get("nic_id")?;
-        let port_id: i64 = r.get("port_id")?;
-        let metrics_idx: i64 = r.get("metrics_idx")?;
-        out.push(NicBucketSample {
+struct NicBucketRow {
+    bucket: NicBucketSample,
+    total_matched: i64,
+}
+
+fn nic_bucket_row(row: &duckdb::Row<'_>) -> Result<NicBucketRow, duckdb::Error> {
+    let t_start_ns: i64 = row.get("t_start")?;
+    let nic_id: i64 = row.get("nic_id")?;
+    let port_id: i64 = row.get("port_id")?;
+    let metrics_idx: i64 = row.get("metrics_idx")?;
+    Ok(NicBucketRow {
+        bucket: NicBucketSample {
             key: format!(
                 "nic_bucket|{t_start_ns}|nic:{nic_id}|port:{port_id}|metric:{metrics_idx}"
             ),
             t_start_ns,
-            t_end_ns: r.get("t_end")?,
+            t_end_ns: row.get("t_end")?,
             nic_id,
-            guid: r.get("guid")?,
-            nic_name: r.get("nic_name")?,
-            global_id: r.get("global_id")?,
+            guid: row.get("guid")?,
+            nic_name: row.get("nic_name")?,
+            global_id: row.get("global_id")?,
             port_id,
-            metrics_list_id: r.get("metrics_list_id")?,
+            metrics_list_id: row.get("metrics_list_id")?,
             metrics_idx,
-            name: r.get("metric_name")?,
-            unit: r.get("unit")?,
+            name: row.get("metric_name")?,
+            unit: row.get("unit")?,
             agg: "mean",
-            value: r.get("value")?,
-            samples: r.get("samples")?,
-        });
-        total_matched = r.get("total_matched")?;
-    }
-    Ok((out, total_matched))
-}
-
-struct SampleScope {
-    start_expr: &'static str,
-    end_expr: &'static str,
-    where_clause: String,
-    params: Vec<Value>,
-}
-
-fn build_sample_scope(abs_window: Option<(i64, i64)>) -> SampleScope {
-    let mut preds = vec![r#"m.start >= 0 AND m."end" > m.start"#.to_string()];
-    let mut params: Vec<Value> = Vec::new();
-    let (start_expr, end_expr) = if let Some((start, end)) = abs_window {
-        params.push(Value::BigInt(start));
-        params.push(Value::BigInt(end));
-        preds.push(r#"m."end" > ? AND m.start < ?"#.to_string());
-        params.push(Value::BigInt(start));
-        params.push(Value::BigInt(end));
-        ("GREATEST(m.start, ?)", r#"LEAST(m."end", ?)"#)
-    } else {
-        ("m.start", r#"m."end""#)
-    };
-    SampleScope {
-        start_expr,
-        end_expr,
-        where_clause: format!("WHERE {}", preds.join(" AND ")),
-        params,
-    }
+            value: row.get("value")?,
+            samples: row.get("samples")?,
+        },
+        total_matched: row.get("total_matched")?,
+    })
 }
 
 /// Sort axes the NIC counter-summary list supports.
@@ -662,12 +631,12 @@ impl SortKeyDef for NicCounterSortKey {
     }
 }
 
-fn sort_counters(out: &mut [NicCounterSummary], spec: &SortSpec) -> Result<()> {
+fn sort_counters(out: &mut [NicCounterSummary], spec: &SortSpec) -> NsysQueryResult<()> {
     let resolved: Vec<(NicCounterSortKey, Direction)> = spec
         .fields()
         .iter()
-        .map(|f| NicCounterSortKey::from_field(f).map_err(Into::into))
-        .collect::<Result<_>>()?;
+        .map(|f| NicCounterSortKey::from_field(f).map_err(NsysQueryError::metrics_sort_invalid))
+        .collect::<NsysQueryResult<_>>()?;
     veloq_core::sort_in_memory(
         out,
         &resolved,

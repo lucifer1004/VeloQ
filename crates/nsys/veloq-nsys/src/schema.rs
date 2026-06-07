@@ -16,14 +16,13 @@
 //! [`Envelope`]: veloq_core::Envelope
 //! [`SchemaPayload`]: crate::payloads::SchemaPayload
 
-use anyhow::Result;
-
+use crate::error::NsysSourceResult;
 use crate::schema_targets;
 
 /// Dispatch `target` to the matching response type and return its
 /// JSON Schema as a `serde_json::Value`. Adding a new subcommand
 /// means adding one entry in [`schema_targets::TARGETS`] — schemars +
 /// clap handle the rest of the wiring on their own.
-pub fn schema_value_for(target: &str) -> Result<serde_json::Value> {
+pub fn schema_value_for(target: &str) -> NsysSourceResult<serde_json::Value> {
     schema_targets::resolve(target)
 }

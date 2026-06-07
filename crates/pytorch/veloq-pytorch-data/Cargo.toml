@@ -6,19 +6,21 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
+description = "PyTorch/Kineto Chrome trace ingestion and sidecar data model for VeloQ."
+include = ["src/**/*.rs"]
 
 [dependencies]
-anyhow.workspace = true
 arrow.workspace = true
-bincode.workspace = true
-flate2.workspace = true
 log.workspace = true
 parquet.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 veloq-core.workspace = true
+veloq-data.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 tempfile.workspace = true
 
 [lints]

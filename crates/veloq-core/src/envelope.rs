@@ -11,8 +11,11 @@
 //! The envelope-level [`TraceSpan`] (`{origin_ns, span_ns}`) is the
 //! per-second normalisation denominator for cross-capture diffs.
 
+use crate::diagnostic::{ErrorCode, VeloqDiagnostic};
 use crate::meta::ResponseMeta;
 use serde::Serialize;
+use std::borrow::Cow;
+use std::error::Error;
 
 /// Wire-format version emitted on `Envelope.schema`. Bumps with the
 /// envelope itself (e.g. adding a top-level field). Source-specific
@@ -116,14 +119,15 @@ pub struct EnvelopeError {
 
 #[derive(Debug, Serialize)]
 pub struct EnvelopeErrorDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<ErrorCode>,
     /// User-facing summary — what an agent should surface first.
-    /// Mirrors `anyhow::Error`'s `to_string()`, i.e. the outermost
-    /// context line.
     pub message: String,
-    /// `anyhow::Error::chain()` from outermost wrapper inwards, with
-    /// the head (which equals `message`) elided. Empty when there are
-    /// no `context` layers.
+    /// Additional source entries, ordered from the immediate source
+    /// inward. Empty when the error has no source chain.
     pub chain: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 impl<T: Serialize> Envelope<T> {
@@ -204,25 +208,51 @@ impl EnvelopeError {
             trace_span,
             meta,
             error: EnvelopeErrorDetails {
+                code: None,
                 message: message.into(),
                 chain,
+                hint: None,
             },
         }
     }
 
-    /// Project an [`anyhow::Error`] into an error envelope. The error's
-    /// top-level rendering lands in `error.message`; every context
-    /// layer below it (i.e. `chain().skip(1)`) becomes a chain entry.
-    pub fn from_anyhow(
+    /// Project a standard error into an error envelope. The error's
+    /// top-level rendering lands in `error.message`; each source in
+    /// the chain becomes an `error.chain` entry.
+    pub fn from_error(
         source: Option<SourceRef>,
         command: Option<String>,
         trace: Option<EnvelopeTraceRef>,
         trace_span: Option<TraceSpan>,
-        err: &anyhow::Error,
+        err: &(dyn Error + 'static),
     ) -> Self {
         let message = err.to_string();
-        let chain: Vec<String> = err.chain().skip(1).map(|c| c.to_string()).collect();
+        let chain = std_error_chain(err);
         Self::new(source, command, trace, trace_span, None, message, chain)
+    }
+
+    pub fn from_diagnostic<E>(
+        source: Option<SourceRef>,
+        command: Option<String>,
+        trace: Option<EnvelopeTraceRef>,
+        trace_span: Option<TraceSpan>,
+        err: &E,
+    ) -> Self
+    where
+        E: VeloqDiagnostic,
+    {
+        let mut env = Self::new(
+            source,
+            command,
+            trace,
+            trace_span,
+            None,
+            err.message(),
+            std_error_chain(err),
+        );
+        env.error.code = Some(err.code());
+        env.error.hint = err.hint().map(Cow::into_owned);
+        env
     }
 
     pub fn to_json(&self) -> serde_json::Result<String> {
@@ -232,6 +262,16 @@ impl EnvelopeError {
     pub fn to_json_pretty(&self) -> serde_json::Result<String> {
         serde_json::to_string_pretty(self)
     }
+}
+
+fn std_error_chain(err: &(dyn Error + 'static)) -> Vec<String> {
+    let mut chain = Vec::new();
+    let mut current = err.source();
+    while let Some(source) = current {
+        chain.push(source.to_string());
+        current = source.source();
+    }
+    chain
 }
 
 /// Write a source-level error envelope.
@@ -258,10 +298,10 @@ pub fn write_error_envelope(
     verb: &str,
     trace: Option<EnvelopeTraceRef>,
     trace_span: Option<TraceSpan>,
-    err: &anyhow::Error,
+    err: &(dyn Error + 'static),
     fmt: crate::OutputFormat,
 ) {
-    let env = EnvelopeError::from_anyhow(
+    let env = EnvelopeError::from_error(
         Some(source),
         Some(format!("{}.{verb}", source.kind)),
         trace,
@@ -269,7 +309,32 @@ pub fn write_error_envelope(
         err,
     );
     if !matches!(fmt, crate::OutputFormat::Json) {
-        eprintln!("veloq: {err:#}");
+        eprintln!("veloq: {err}");
+    }
+    if let Ok(s) = env.to_json_pretty() {
+        println!("{s}");
+    }
+}
+
+pub fn write_diagnostic_error_envelope<E>(
+    source: SourceRef,
+    verb: &str,
+    trace: Option<EnvelopeTraceRef>,
+    trace_span: Option<TraceSpan>,
+    err: &E,
+    fmt: crate::OutputFormat,
+) where
+    E: VeloqDiagnostic,
+{
+    let env = EnvelopeError::from_diagnostic(
+        Some(source),
+        Some(format!("{}.{verb}", source.kind)),
+        trace,
+        trace_span,
+        err,
+    );
+    if !matches!(fmt, crate::OutputFormat::Json) {
+        eprintln!("veloq: {err}");
     }
     if let Ok(s) = env.to_json_pretty() {
         println!("{s}");
@@ -400,16 +465,22 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Debug, thiserror::Error)]
+    #[error("disk full")]
+    struct DiskFull;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("writing parquet sidecar")]
+    struct SidecarWriteError(#[source] DiskFull);
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("caching trace summary")]
+    struct TraceSummaryError(#[source] SidecarWriteError);
+
     #[test]
-    fn envelope_error_carries_chain_from_anyhow() -> anyhow::Result<()> {
-        use anyhow::Context;
-        let inner: anyhow::Error = anyhow::anyhow!("disk full");
-        let wrapped: anyhow::Error = Err::<(), _>(inner)
-            .context("writing parquet sidecar")
-            .context("caching trace summary")
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("expected err"))?;
-        let env = EnvelopeError::from_anyhow(
+    fn envelope_error_carries_chain_from_std_error() -> anyhow::Result<()> {
+        let wrapped = TraceSummaryError(SidecarWriteError(DiskFull));
+        let env = EnvelopeError::from_error(
             Some(source()),
             Some("nsys.stats".into()),
             None,
@@ -425,6 +496,42 @@ mod tests {
         let msgs: Vec<&str> = chain.iter().filter_map(|c| c.as_str()).collect();
         assert!(msgs.contains(&"writing parquet sidecar"), "got: {msgs:?}");
         assert!(msgs.contains(&"disk full"), "got: {msgs:?}");
+        Ok(())
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("demo failed")]
+    struct DemoDiagnostic {
+        #[source]
+        source: std::io::Error,
+    }
+
+    impl VeloqDiagnostic for DemoDiagnostic {
+        fn code(&self) -> ErrorCode {
+            ErrorCode::new("demo.failed")
+        }
+    }
+
+    #[test]
+    fn envelope_error_carries_code_from_diagnostic() -> anyhow::Result<()> {
+        let err = DemoDiagnostic {
+            source: std::io::Error::other("inner cause"),
+        };
+        let env = EnvelopeError::from_diagnostic(
+            Some(source()),
+            Some("nsys.stats".into()),
+            None,
+            None,
+            &err,
+        );
+        let v: Value = serde_json::from_str(&env.to_json()?)?;
+        assert_eq!(at_str(&v, "/error/code")?, "demo.failed");
+        assert_eq!(at_str(&v, "/error/message")?, "demo failed");
+        let chain = at(&v, "/error/chain")?
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("chain not an array"))?;
+        let msgs: Vec<&str> = chain.iter().filter_map(|c| c.as_str()).collect();
+        assert!(msgs.contains(&"inner cause"), "got: {msgs:?}");
         Ok(())
     }
 

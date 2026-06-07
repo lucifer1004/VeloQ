@@ -4,11 +4,12 @@
 //! that *are* genuinely shared end up here so the parsing helpers live
 //! in one place and adding a new subcommand is `#[command(flatten)]`.
 
-use anyhow::{Context, Result};
 use clap::Args;
 use std::path::PathBuf;
 use veloq_core::time::{TimePoint, TimeWindow};
 use veloq_nsys_query::{EventKind, KindFilter};
+
+use crate::error::NsysSourceError;
 
 /// The trace-path positional, lifted out so every subcommand can
 /// `#[command(flatten)]` it. Keeping the parsing rule + docstring in
@@ -55,16 +56,15 @@ impl CommonFilters {
     /// when neither is set; errors when exactly one is set, or when
     /// either endpoint is malformed. The caller absolutises via
     /// `veloq_nsys_data::Trace::resolve_window`.
-    pub fn time_window(&self) -> Result<Option<TimeWindow>> {
+    pub fn time_window(&self) -> crate::error::NsysSourceResult<Option<TimeWindow>> {
         match (self.from.as_deref(), self.to.as_deref()) {
             (None, None) => Ok(None),
-            (Some(_), None) | (None, Some(_)) => {
-                anyhow::bail!("`--from` and `--to` must be set together (got only one)")
-            }
+            (Some(_), None) | (None, Some(_)) => Err(NsysSourceError::MissingTimeBound),
             (Some(from), Some(to)) => {
-                let start =
-                    TimePoint::parse(from).with_context(|| format!("invalid --from `{from}`"))?;
-                let end = TimePoint::parse(to).with_context(|| format!("invalid --to `{to}`"))?;
+                let start = TimePoint::parse(from)
+                    .map_err(|source| NsysSourceError::invalid_from(from, source))?;
+                let end = TimePoint::parse(to)
+                    .map_err(|source| NsysSourceError::invalid_to(to, source))?;
                 Ok(Some(TimeWindow { start, end }))
             }
         }
@@ -75,13 +75,10 @@ impl CommonFilters {
     /// fields (those are read off rows the SQL never produces), so we
     /// surface it as a CLI error rather than letting bogus totals
     /// escape into the JSON envelope.
-    pub fn limit_or(&self, default: usize) -> Result<usize> {
+    pub fn limit_or(&self, default: usize) -> crate::error::NsysSourceResult<usize> {
         let n = self.limit.unwrap_or(default);
         if n == 0 {
-            anyhow::bail!(
-                "--limit must be at least 1 (limit=0 would suppress total_matched too); \
-                 use `--limit 1` if you just want a sanity row plus totals"
-            );
+            return Err(NsysSourceError::limit_too_small(n));
         }
         Ok(n)
     }
@@ -166,7 +163,7 @@ impl GpuFilters {
     ///   (stats uses `ALLOWED_KINDS`, search uses `EventKind::ALL`).
     /// - Explicit token lists return [`KindFilter::Only`]; tokens not
     ///   in `allowed` are rejected with a friendly message.
-    pub fn kinds(&self, allowed: &[EventKind]) -> Result<KindFilter> {
+    pub fn kinds(&self, allowed: &[EventKind]) -> crate::error::NsysSourceResult<KindFilter> {
         let raw = self.kinds.trim();
         if raw.eq_ignore_ascii_case("all") {
             return Ok(KindFilter::All);
@@ -177,20 +174,21 @@ impl GpuFilters {
             if tok.is_empty() {
                 continue;
             }
-            let k = EventKind::parse(tok).with_context(|| format!("unknown event kind `{tok}`"))?;
+            let k =
+                EventKind::parse(tok).ok_or_else(|| NsysSourceError::unknown_event_kind(tok))?;
             if !allowed.contains(&k) {
                 let names: Vec<&str> = allowed.iter().map(|k| k.as_str()).collect();
-                anyhow::bail!(
-                    "--type `{tok}` not allowed here (expected one of: {})",
-                    names.join(", ")
-                );
+                return Err(NsysSourceError::event_kind_not_allowed(
+                    tok,
+                    names.join(", "),
+                ));
             }
             if !out.contains(&k) {
                 out.push(k);
             }
         }
         if out.is_empty() {
-            anyhow::bail!("--type must list at least one event kind");
+            return Err(NsysSourceError::EmptyEventKindList);
         }
         Ok(KindFilter::Only(out))
     }
@@ -199,6 +197,7 @@ impl GpuFilters {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
 
     fn gpu(kinds: &str) -> GpuFilters {
         GpuFilters {

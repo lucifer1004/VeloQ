@@ -1,7 +1,7 @@
 {
   "name": "veloq-profile-analysis",
   "description": "Agent-friendly Nsight Systems, Nsight Compute, and PyTorch/Kineto profile analysis via the veloq CLI. Installs nsys-profile-analysis, ncu-profile-analysis, and pytorch-profile-analysis.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Zihua Wu"
   }

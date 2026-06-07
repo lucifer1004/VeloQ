@@ -12,8 +12,7 @@
 //! `VELOQ_UNSTABLE=1` is set in the calling environment, per the
 //! hidden-exposure rule. Public targets live in [`TARGETS`].
 
-use anyhow::Result;
-
+use crate::error::{NsysSourceError, NsysSourceResult};
 use crate::payloads::{CorrelationStatsPayload, PrepPayload, PrepStatusPayload};
 use veloq_nsys_query::{
     concurrency::ConcurrencyResponse, correlate::CorrelateResponse, gaps::GapsResponse,
@@ -28,7 +27,7 @@ use veloq_nsys_query::{
 /// non-capturing closures so the slice can be `const`.
 pub struct SchemaTarget {
     pub name: &'static str,
-    pub schema_fn: fn() -> Result<serde_json::Value>,
+    pub schema_fn: fn() -> NsysSourceResult<serde_json::Value>,
 }
 
 macro_rules! target {
@@ -36,7 +35,8 @@ macro_rules! target {
         SchemaTarget {
             name: $name,
             schema_fn: || {
-                serde_json::to_value(schemars::schema_for!($ty)).map_err(anyhow::Error::from)
+                serde_json::to_value(schemars::schema_for!($ty))
+                    .map_err(|source| NsysSourceError::serialize_schema($name, source))
             },
         }
     };
@@ -99,7 +99,7 @@ pub fn render_target_list() -> String {
 /// Resolve a target name to its JSON Schema document. Hidden
 /// targets resolve only when `VELOQ_UNSTABLE=1`; otherwise they
 /// behave as if absent.
-pub fn resolve(name: &str) -> Result<serde_json::Value> {
+pub fn resolve(name: &str) -> NsysSourceResult<serde_json::Value> {
     if let Some(t) = TARGETS.iter().find(|t| t.name == name) {
         return (t.schema_fn)();
     }
@@ -108,10 +108,10 @@ pub fn resolve(name: &str) -> Result<serde_json::Value> {
     {
         return (t.schema_fn)();
     }
-    anyhow::bail!(
-        "unknown schema target `{name}`; expected one of: {}",
-        render_target_list()
-    )
+    Err(NsysSourceError::unknown_schema_target(
+        name,
+        render_target_list(),
+    ))
 }
 
 #[cfg(test)]

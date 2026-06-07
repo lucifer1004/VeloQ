@@ -15,11 +15,12 @@
 //! are position-independent, so the runtime load address can't be the
 //! key (that's why `cubin_load_base` comes from `ncu_report`).
 
-use anyhow::{Context, Result, bail};
 use object::read::elf::{ElfFile64, FileHeader};
 use object::{Endianness, Object, ObjectSection, ObjectSegment, ObjectSymbol, SymbolKind};
 use std::fs;
 use std::path::Path;
+
+use crate::error::{NcuSourceError, NcuSourceResult};
 
 /// `e_machine` value for NVIDIA CUDA ELF objects.
 const EM_CUDA: u16 = 190;
@@ -50,12 +51,12 @@ impl ExtractedCubin {
 /// committed `<report>.veloq/disasm/<sha>.cubin` files instead. The
 /// extracted cubins are clean compiled device code (no host/network
 /// strings), so they are committable where the report itself is not.
-pub fn extract_cuda_cubins(report: &Path) -> Result<Vec<ExtractedCubin>> {
+pub fn extract_cuda_cubins(report: &Path) -> NcuSourceResult<Vec<ExtractedCubin>> {
     if !report.exists() {
         return load_committed_cubins(report);
     }
     let data = fs::read(report)
-        .with_context(|| format!("reading {} for cubin extraction", report.display()))?;
+        .map_err(|source| NcuSourceError::cubin_report_read(report.display(), source))?;
     let mut out = Vec::new();
     for off in elf_magic_offsets(&data) {
         let Some(rest) = data.get(off..) else {
@@ -76,7 +77,7 @@ pub fn extract_cuda_cubins(report: &Path) -> Result<Vec<ExtractedCubin>> {
 /// re-derives to the filename — the launch→cubin join and the per-cubin
 /// correlated cache key both hold. A missing disasm dir yields an empty
 /// list (the caller then reports no cubin defines the kernel symbol).
-fn load_committed_cubins(report: &Path) -> Result<Vec<ExtractedCubin>> {
+fn load_committed_cubins(report: &Path) -> NcuSourceResult<Vec<ExtractedCubin>> {
     let dir = veloq_core::artifact_dir_for(report).join("disasm");
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -85,13 +86,15 @@ fn load_committed_cubins(report: &Path) -> Result<Vec<ExtractedCubin>> {
     let mut out = Vec::new();
     for entry in entries {
         let path = entry
-            .with_context(|| format!("reading dir entry under {}", dir.display()))?
+            .map_err(|source| {
+                NcuSourceError::cubin_committed_dir_entry_read(dir.display(), source)
+            })?
             .path();
         if path.extension().and_then(|e| e.to_str()) != Some("cubin") {
             continue;
         }
         let bytes = fs::read(&path)
-            .with_context(|| format!("reading committed cubin {}", path.display()))?;
+            .map_err(|source| NcuSourceError::cubin_committed_read(path.display(), source))?;
         if let Ok(Some(cubin)) = parse_one(&bytes) {
             out.push(cubin);
         }
@@ -116,8 +119,8 @@ fn elf_magic_offsets(data: &[u8]) -> Vec<usize> {
 
 /// Parse an ELF starting at the front of `rest` (which runs to EOF).
 /// Returns `Ok(Some)` for a CUDA cubin, `Ok(None)` for a non-CUDA ELF.
-fn parse_one(rest: &[u8]) -> Result<Option<ExtractedCubin>> {
-    let elf = ElfFile64::<Endianness>::parse(rest).context("parse ELF candidate")?;
+fn parse_one(rest: &[u8]) -> NcuSourceResult<Option<ExtractedCubin>> {
+    let elf = ElfFile64::<Endianness>::parse(rest).map_err(NcuSourceError::cubin_elf_parse)?;
     let endian = elf.endian();
     let header = elf.elf_header();
     if header.e_machine(endian) != EM_CUDA {
@@ -140,12 +143,13 @@ fn parse_one(rest: &[u8]) -> Result<Option<ExtractedCubin>> {
             end = end.max(o.saturating_add(sz));
         }
     }
-    let end = usize::try_from(end).context("cubin length overflow")?;
+    let end = usize::try_from(end)
+        .map_err(|source| NcuSourceError::cubin_length_overflow(end, source))?;
     let Some(bytes) = rest.get(..end) else {
-        bail!(
-            "computed cubin length {end} exceeds available bytes {}",
-            rest.len()
-        );
+        return Err(NcuSourceError::cubin_length_exceeds_available_bytes(
+            end,
+            rest.len(),
+        ));
     };
 
     let mut symbols: Vec<String> = elf

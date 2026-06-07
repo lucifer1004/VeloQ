@@ -20,11 +20,11 @@
 //!
 //! Reads the native sidecar ([`crate::native::cache`]).
 
-use anyhow::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::glob;
 use crate::native::{NativeLaunch, cache};
 
@@ -119,12 +119,13 @@ pub struct MetricsAuxiliary {
     pub meta_cache_path: String,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> Result<MetricsResponse> {
-    anyhow::ensure!(req.limit > 0, "limit must be at least 1");
-    anyhow::ensure!(
-        !req.counter_glob.is_empty(),
-        "ncu metrics needs --counter <glob>"
-    );
+pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> NcuSourceResult<MetricsResponse> {
+    if req.limit == 0 {
+        return Err(NcuSourceError::limit_too_small(req.limit));
+    }
+    if counter_glob_is_empty(&req.counter_glob) {
+        return Err(NcuSourceError::counter_glob_empty());
+    }
     let path = path.as_ref();
     let sidecar = cache::build_or_load(path)?;
     let meta_cache_path = cache::path_for(path).display().to_string();
@@ -209,6 +210,10 @@ pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> Result<MetricsRespon
 fn matches_kernel(launch: &NativeLaunch, matcher: Option<&glob::Matcher>) -> bool {
     let Some(m) = matcher else { return true };
     m.matches(&launch.kernel_demangled) || m.matches(&launch.kernel_mangled)
+}
+
+fn counter_glob_is_empty(counter: &str) -> bool {
+    !counter.split(',').any(|part| !part.trim().is_empty())
 }
 
 fn collect_counters(

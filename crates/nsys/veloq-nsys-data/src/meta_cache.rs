@@ -28,15 +28,14 @@
 //! correlation index (its own cache file), keeping the formats
 //! separate lets each one evolve independently.
 
-use crate::Trace;
 use crate::capabilities::CapabilityFlags;
 use crate::hardware::HostInfo;
 use crate::nvtx_nesting::NvtxEntry;
-use anyhow::{Context, Result};
+use crate::{NsysDataError, NsysDataResult, Trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use veloq_core::SidecarCache;
+use veloq_core::{SidecarCache, SourceFingerprint};
 
 /// Bump on every breaking change to [`TraceMetaCache`]. Same
 /// invalidation discipline as `correlation::CACHE_VERSION`: old
@@ -98,10 +97,10 @@ fn cache_handle(trace_path: &Path) -> SidecarCache<TraceMetaCache> {
 /// Build or load the meta cache. First call after a trace open
 /// (or whenever the trace file changes) rebuilds; subsequent calls
 /// in fresh processes deserialise the sidecar.
-pub fn build_or_load(trace: &Trace) -> Result<TraceMetaCache> {
+pub fn build_or_load(trace: &Trace) -> NsysDataResult<TraceMetaCache> {
     let trace_path = trace.path();
     let cache = cache_handle(trace_path);
-    let fp = crate::trace_artifact_fingerprint(trace_path)?;
+    let fp = source_fingerprint(trace_path)?;
 
     match cache.try_load(fp) {
         Ok(Some(payload)) => {
@@ -148,10 +147,12 @@ pub fn build_or_load(trace: &Trace) -> Result<TraceMetaCache> {
 /// `trace.path()`) and by the post-dispatch envelope-emit path
 /// (which avoids opening a `Trace` just to read a few KB of bincode).
 /// Returns `Ok(None)` when the sidecar is absent or fingerprint-stale.
-pub fn try_load_existing(trace_path: &Path) -> Result<Option<TraceMetaCache>> {
+pub fn try_load_existing(trace_path: &Path) -> NsysDataResult<Option<TraceMetaCache>> {
     let source_path = crate::nsys_rep::sidecar_source_path(trace_path);
-    let fp = crate::trace_artifact_fingerprint(&source_path)?;
-    cache_handle(&source_path).try_load(fp)
+    let fp = source_fingerprint(&source_path)?;
+    cache_handle(&source_path)
+        .try_load(fp)
+        .map_err(NsysDataError::sidecar_operation)
 }
 
 /// Peek the on-disk header (format version + source fingerprint)
@@ -159,8 +160,10 @@ pub fn try_load_existing(trace_path: &Path) -> Result<Option<TraceMetaCache>> {
 /// the cache's version next to the current expected one — even for
 /// a sidecar whose `try_load` would return `None` because of a
 /// fingerprint mismatch.
-pub fn read_header(trace_path: &Path) -> anyhow::Result<Option<veloq_core::SidecarHeader>> {
-    cache_handle(trace_path).read_header()
+pub fn read_header(trace_path: &Path) -> NsysDataResult<Option<veloq_core::SidecarHeader>> {
+    cache_handle(trace_path)
+        .read_header()
+        .map_err(crate::NsysDataError::sidecar_header)
 }
 
 /// Project the meta sidecar's primary origin into a [`veloq_core::TraceSpan`]
@@ -181,7 +184,7 @@ pub fn trace_span_for_path(trace_path: &Path) -> Option<veloq_core::TraceSpan> {
         })
 }
 
-fn build(trace: &Trace) -> Result<TraceMetaCache> {
+fn build(trace: &Trace) -> NsysDataResult<TraceMetaCache> {
     let meta = trace.read_export_metadata()?;
     let schema_version = trace.schema_version().cloned();
     let product_version = meta
@@ -202,7 +205,7 @@ fn build(trace: &Trace) -> Result<TraceMetaCache> {
     let (origins, per_table_spans) = trace.read_origins()?;
     let mut per_table: Vec<PerTableEntry> = Vec::with_capacity(per_table_spans.len());
     for (name, span) in per_table_spans {
-        let row_count = count_rows(trace, name).unwrap_or(-1);
+        let row_count = count_rows(trace, name)?;
         per_table.push(PerTableEntry {
             name: name.to_string(),
             row_count,
@@ -230,19 +233,25 @@ fn build(trace: &Trace) -> Result<TraceMetaCache> {
     })
 }
 
-fn count_rows(trace: &Trace, table: &str) -> Result<i64> {
+fn count_rows(trace: &Trace, table: &str) -> NsysDataResult<i64> {
     // Parquetdir-only world: every table is a DuckDB view
     // over `<pqtdir>/<table>.parquet`. Parquet row-group metadata
     // makes `COUNT(*)` near-instant.
-    let sql = format!(r#"SELECT COUNT(*) FROM nsight."{table}""#);
+    let table_ident = crate::quote_sql_identifier(table);
+    let sql = format!("SELECT COUNT(*) FROM nsight.{table_ident}");
     let mut stmt = trace
         .conn()
         .prepare(&sql)
-        .with_context(|| format!("preparing count for {table}"))?;
+        .map_err(|source| crate::NsysDataError::meta_cache_count_prepare(table, source))?;
     let count: i64 = stmt
         .query_row([], |row| row.get(0))
-        .with_context(|| format!("counting {table}"))?;
+        .map_err(|source| crate::NsysDataError::meta_cache_count_read(table, source))?;
     Ok(count)
+}
+
+fn source_fingerprint(path: &Path) -> NsysDataResult<SourceFingerprint> {
+    crate::trace_artifact_fingerprint(path)
+        .map_err(|source| NsysDataError::trace_fingerprint_read(path.display(), source))
 }
 
 // ---- helper: where the cache lives -----------------------------------------
@@ -258,4 +267,65 @@ fn cache_path_for(trace_path: &Path) -> PathBuf {
 /// log it explicitly; internal callers stay on `build_or_load`.
 pub fn path_for(trace_path: &Path) -> PathBuf {
     cache_path_for(trace_path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use duckdb::Connection;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::VeloqDiagnostic;
+
+    fn minimal_trace() -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+        )?;
+        let out = pqtdir.join("CUPTI_ACTIVITY_KIND_KERNEL.parquet");
+        let out_lit = out.to_string_lossy().replace('\'', "''");
+        conn.execute(
+            &format!(
+                r#"COPY (SELECT * FROM "CUPTI_ACTIVITY_KIND_KERNEL") TO '{out_lit}' (FORMAT PARQUET)"#
+            ),
+            [],
+        )?;
+        Ok((dir, pqtdir))
+    }
+
+    #[test]
+    fn count_rows_missing_table_has_typed_prepare_error() -> Result<()> {
+        let (_dir, pqtdir) = minimal_trace()?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match count_rows(&trace, "MISSING_TABLE") {
+            Ok(count) => anyhow::bail!("missing table should not count rows: {count}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some(("meta cache", crate::DuckdbPhase::Prepare, "MISSING_TABLE"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn count_rows_read_error_code_is_stable() {
+        let err = crate::NsysDataError::meta_cache_count_read(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            duckdb_error(),
+        );
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-read");
+        assert!(err.to_string().contains("CUPTI_ACTIVITY_KIND_KERNEL"));
+    }
+
+    fn duckdb_error() -> duckdb::Error {
+        duckdb::Error::InvalidParameterName("test".to_string())
+    }
 }

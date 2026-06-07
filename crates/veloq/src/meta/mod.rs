@@ -8,14 +8,18 @@
 //! responses are tiny and CSV / table flatteners would buy nothing.
 
 pub mod clean;
+pub mod error;
 pub mod info;
 pub mod recipes;
 pub mod self_update;
 pub mod sources;
 
-use anyhow::Result;
 use clap::{ArgMatches, Command};
-use veloq_core::{EnvelopeError, EnvelopeTraceRef, ProfileSource, ResponseMeta, SourceRef};
+use veloq_core::{
+    EnvelopeError, EnvelopeTraceRef, OutputFormat, ProfileSource, ResponseMeta, SourceRef,
+};
+
+pub use error::{MetaError, MetaResult};
 
 /// Source identity emitted on every meta envelope. The binary
 /// surfaces *itself* as the source for meta verbs (no profile
@@ -52,14 +56,21 @@ pub fn cli() -> Vec<Command> {
 /// `Ok(1)` when the verb failed and emitted its own `EnvelopeError`,
 /// `Err(_)` on top-level glue failures (dispatcher emits a
 /// CLI-level envelope).
-pub fn run(verb: &str, matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i32> {
+pub fn run(
+    verb: &str,
+    matches: &ArgMatches,
+    sources: &[Box<dyn ProfileSource>],
+    fmt: OutputFormat,
+) -> MetaResult<i32> {
     match verb {
-        "clean" => clean::run(matches, sources),
-        "info" => info::run(matches, sources),
-        "sources" => sources::run(matches, sources),
-        "recipes" => recipes::run(matches),
-        "self-update" => self_update::run(matches),
-        other => anyhow::bail!("unknown meta verb `{other}`"),
+        "clean" => clean::run(matches, sources, fmt),
+        "info" => info::run(matches, sources, fmt),
+        "sources" => sources::run(matches, sources, fmt),
+        "recipes" => recipes::run(matches, fmt),
+        "self-update" => self_update::run(matches, fmt),
+        other => Err(MetaError::UnknownVerb {
+            verb: other.to_string(),
+        }),
     }
 }
 
@@ -73,8 +84,9 @@ pub(crate) fn emit_meta_envelope<T: serde::Serialize>(
     trace: Option<EnvelopeTraceRef>,
     meta: Option<ResponseMeta>,
     data: T,
-) -> Result<()> {
-    veloq_core::emit_envelope(META_SOURCE, verb.to_string(), trace, None, meta, data)?;
+) -> MetaResult<()> {
+    veloq_core::emit_envelope(META_SOURCE, verb.to_string(), trace, None, meta, data)
+        .map_err(|source| MetaError::SerializeEnvelope { source })?;
     Ok(())
 }
 
@@ -83,28 +95,35 @@ pub(crate) fn emit_meta_envelope<T: serde::Serialize>(
 /// the emit-then-error-fallback tail every meta verb repeated; owns the
 /// `trace` clone the error arm needs.
 pub(crate) fn emit_or_error<T: serde::Serialize>(
+    fmt: OutputFormat,
     verb: &'static str,
     trace: Option<EnvelopeTraceRef>,
     meta: Option<ResponseMeta>,
     data: T,
 ) -> i32 {
     if let Err(err) = emit_meta_envelope(verb, trace.clone(), meta, data) {
-        emit_meta_error(verb, trace, &err);
+        emit_meta_error(fmt, verb, trace, &err);
         return 1;
     }
     0
 }
 
 /// Mirror of `veloq_nsys::output::emit_error` for meta-verb failures.
-/// Dual-channel policy: see `write_error_envelope`.
-pub(crate) fn emit_meta_error(
+/// stdout carries the structured envelope; stderr carries the
+/// human-readable mirror only for non-JSON requests.
+pub(crate) fn emit_meta_error<E>(
+    fmt: OutputFormat,
     verb: &'static str,
     trace: Option<EnvelopeTraceRef>,
-    err: &anyhow::Error,
-) {
+    err: &E,
+) where
+    E: veloq_core::VeloqDiagnostic,
+{
     let env =
-        EnvelopeError::from_anyhow(Some(META_SOURCE), Some(verb.to_string()), trace, None, err);
-    eprintln!("veloq: {err:#}");
+        EnvelopeError::from_diagnostic(Some(META_SOURCE), Some(verb.to_string()), trace, None, err);
+    if !matches!(fmt, OutputFormat::Json) {
+        eprintln!("veloq: {err}");
+    }
     if let Ok(s) = env.to_json_pretty() {
         println!("{s}");
     }

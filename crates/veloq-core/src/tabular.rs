@@ -5,10 +5,42 @@
 //! own payload into [`TabularView`] and this module handles the common
 //! rendering details.
 
-use anyhow::{Context, Result};
+use crate::{ErrorCode, VeloqDiagnostic};
 use comfy_table::{ContentArrangement, Table, presets::UTF8_BORDERS_ONLY};
 use std::fmt;
 use std::io::Write;
+use thiserror::Error;
+
+pub type TabularResult<T> = Result<T, TabularError>;
+
+#[derive(Debug, Error)]
+pub enum TabularError {
+    #[error("writing csv header")]
+    WriteCsvHeader {
+        #[source]
+        source: csv::Error,
+    },
+    #[error("writing csv row")]
+    WriteCsvRow {
+        #[source]
+        source: csv::Error,
+    },
+    #[error("flushing csv")]
+    FlushCsv {
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl VeloqDiagnostic for TabularError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::WriteCsvHeader { .. } => ErrorCode::OUTPUT_CSV_HEADER,
+            Self::WriteCsvRow { .. } => ErrorCode::OUTPUT_CSV_ROW,
+            Self::FlushCsv { .. } => ErrorCode::OUTPUT_CSV_FLUSH,
+        }
+    }
+}
 
 /// Decimal precision for floating-point columns in CSV/table output.
 pub const DISPLAY_PRECISION: usize = 3;
@@ -45,7 +77,25 @@ impl TabularView {
     }
 }
 
-pub fn emit_csv(view: &TabularView, command: &str, trace_path: &str) -> Result<()> {
+pub fn push_count_meta(
+    view: &mut TabularView,
+    count: impl fmt::Display,
+    total_matched: impl fmt::Display,
+) {
+    view.push_meta("count", count.to_string());
+    view.push_meta("total_matched", total_matched.to_string());
+}
+
+pub fn push_optional_meta<T>(view: &mut TabularView, key: impl Into<String>, value: Option<T>)
+where
+    T: fmt::Display,
+{
+    if let Some(value) = value {
+        view.push_meta(key, value.to_string());
+    }
+}
+
+pub fn emit_csv(view: &TabularView, command: &str, trace_path: &str) -> TabularResult<()> {
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     writeln!(handle, "# command={command}").ok();
@@ -56,15 +106,17 @@ pub fn emit_csv(view: &TabularView, command: &str, trace_path: &str) -> Result<(
 
     let mut w = csv::Writer::from_writer(handle);
     w.write_record(view.columns.iter().map(String::as_str))
-        .context("writing csv header")?;
+        .map_err(|source| TabularError::WriteCsvHeader { source })?;
     for row in &view.rows {
-        w.write_record(row).context("writing csv row")?;
+        w.write_record(row)
+            .map_err(|source| TabularError::WriteCsvRow { source })?;
     }
-    w.flush().context("flushing csv")?;
+    w.flush()
+        .map_err(|source| TabularError::FlushCsv { source })?;
     Ok(())
 }
 
-pub fn emit_table(view: &TabularView, command: &str, trace_path: &str) -> Result<()> {
+pub fn emit_table(view: &TabularView, command: &str, trace_path: &str) -> TabularResult<()> {
     let width = terminal_width().unwrap_or(200);
     println!(
         "{}",

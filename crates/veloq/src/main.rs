@@ -14,11 +14,12 @@
 //! emit, CSV/table rendering, error envelope writing — lives in the
 //! source's own crate.
 
+mod error;
 mod meta;
 
-use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
-use veloq_core::{EnvelopeError, OutputFormat, ProfileSource};
+use error::{CliError, CliResult};
+use veloq_core::{EnvelopeError, OutputFormat, ProfileSource, VeloqDiagnostic};
 use veloq_ncu::NcuSource;
 use veloq_nsys::NsysSource;
 use veloq_pytorch::PytorchSource;
@@ -55,11 +56,11 @@ fn main() {
                 let _ = e.print();
                 std::process::exit(e.exit_code());
             }
-            // Parse errors fire before `--format` is resolved, so
-            // assume the documented default (JSON) and let the stdout
-            // envelope carry the diagnostic. Logger isn't initialized
-            // yet — irrelevant; clap doesn't log.
-            veloq_nsys::output::emit_parse_error(&e, OutputFormat::Json);
+            // Parse errors fire before clap has resolved global args.
+            // Best-effort scan argv for an explicit `--format` so
+            // human-targeted parse failures still get the stderr mirror.
+            // Logger isn't initialized yet — irrelevant; clap doesn't log.
+            veloq_nsys::output::emit_parse_error(&e, parse_error_output_format());
             std::process::exit(e.exit_code());
         }
     };
@@ -73,7 +74,7 @@ fn main() {
         Err(err) => {
             // Same as parse errors: `--format` itself is bad, fall
             // back to the documented default for stderr policy.
-            emit_cli_error(&err, OutputFormat::Json);
+            emit_cli_diagnostic_error(&err, OutputFormat::Json);
             std::process::exit(1);
         }
     };
@@ -82,7 +83,7 @@ fn main() {
     // agent contract, also the default), drop the default filter to
     // `error` so library `log::warn!` calls don't duplicate the
     // failure chain that already lives in the stdout envelope
-    // (dual-channel policy: see `write_error_envelope`). A legitimate
+    // (dual-channel policy: see the error-envelope helpers). A legitimate
     // hard error still surfaces; everything chattier requires explicit
     // `RUST_LOG=…` opt-in. CSV / table users keep the chatty filter
     // (warn + per-crate info) so first-time-on-a-trace runs show
@@ -103,23 +104,20 @@ fn main() {
             // was written. Emit a CLI-level error envelope (without
             // source/verb/trace context) so agents still have one
             // JSON document to parse.
-            emit_cli_error(&err, fmt);
+            emit_cli_diagnostic_error(&err, fmt);
             1
         }
     };
     std::process::exit(code);
 }
 
-/// Emit a CLI-level error envelope (no source / verb / trace
-/// context) and mirror the human-readable line to stderr. Used for
-/// errors that fire before dispatch can find a source — invalid
-/// `--format`, no source registered for the requested verb, etc.
-///
-/// Dual-channel policy: see `write_error_envelope`.
-fn emit_cli_error(err: &anyhow::Error, fmt: OutputFormat) {
-    let env = EnvelopeError::from_anyhow(None, None, None, None, err);
+fn emit_cli_diagnostic_error<E>(err: &E, fmt: OutputFormat)
+where
+    E: VeloqDiagnostic,
+{
+    let env = EnvelopeError::from_diagnostic(None, None, None, None, err);
     if !matches!(fmt, OutputFormat::Json) {
-        eprintln!("veloq: {err:#}");
+        eprintln!("veloq: {err}");
     }
     if let Ok(s) = env.to_json_pretty() {
         println!("{s}");
@@ -163,6 +161,27 @@ fn raw_stdout_parse_error_mode() -> bool {
         command_path.as_slice(),
         [source, cmd, ..] if source == "nsys" && cmd == "ncu-command"
     )
+}
+
+fn parse_error_output_format() -> OutputFormat {
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--format" {
+            if let Some(value) = args.next().and_then(|value| value.into_string().ok())
+                && let Ok(fmt) = OutputFormat::parse(&value)
+            {
+                return fmt;
+            }
+            continue;
+        }
+        let arg = arg.to_string_lossy();
+        if let Some(value) = arg.strip_prefix("--format=")
+            && let Ok(fmt) = OutputFormat::parse(value)
+        {
+            return fmt;
+        }
+    }
+    OutputFormat::Json
 }
 
 /// Build the top-level `clap::Command` by composing the global
@@ -218,31 +237,29 @@ fn dispatch(
     sources: &[Box<dyn ProfileSource>],
     matches: &ArgMatches,
     fmt: OutputFormat,
-) -> Result<i32> {
-    let (sub_name, sub_matches) = matches.subcommand().ok_or_else(|| {
-        anyhow::anyhow!("no subcommand selected (clap should have rejected this)")
-    })?;
+) -> CliResult<i32> {
+    let (sub_name, sub_matches) = matches.subcommand().ok_or(CliError::NoSubcommand)?;
 
     // Meta verbs come first — they're owned by the binary, not by
-    // any profile source. `--format` is accepted but ignored
-    // (meta responses are JSON-only).
+    // any profile source. Success responses are JSON-only; `--format`
+    // still controls whether handled errors get a stderr mirror.
     if meta::is_meta(sub_name) {
-        let _ = fmt;
-        return meta::run(sub_name, sub_matches, sources);
+        return meta::run(sub_name, sub_matches, sources, fmt).map_err(CliError::from);
     }
 
     // Source namespace: `veloq <kind> <verb>` (two levels deep).
     for source in sources {
         if source.kind() == sub_name {
-            return source.run(sub_matches, fmt);
+            return source.run(sub_matches, fmt).map_err(CliError::source_run);
         }
     }
 
     // Otherwise the subcommand is a default-source verb (hoisted to
     // the top level). Find the default source and let it run.
-    let default = sources
-        .iter()
-        .find(|s| s.kind() == DEFAULT_SOURCE)
-        .ok_or_else(|| anyhow::anyhow!("default source `{DEFAULT_SOURCE}` not registered"))?;
-    default.run(matches, fmt)
+    let default = sources.iter().find(|s| s.kind() == DEFAULT_SOURCE).ok_or(
+        CliError::DefaultSourceNotRegistered {
+            kind: DEFAULT_SOURCE,
+        },
+    )?;
+    default.run(matches, fmt).map_err(CliError::source_run)
 }

@@ -1,9 +1,9 @@
 use crate::scope::RankScope;
-use anyhow::{Context, Result};
-use regex::Regex;
+use crate::{PytorchQueryError, PytorchQueryResult};
 use std::collections::BTreeSet;
+use veloq_core::LimitRef;
 use veloq_core::time::DurationFilter;
-use veloq_pytorch_data::{Event, EventType, TraceSet};
+use veloq_pytorch_data::{EventType, QueryTrace};
 
 #[derive(Debug, Clone)]
 pub struct EventFilterRequest {
@@ -50,7 +50,7 @@ pub enum TypeToken {
     Comm,
 }
 
-pub fn parse_type_selection(raw: &str) -> Result<TypeSelection> {
+pub fn parse_type_selection(raw: &str) -> PytorchQueryResult<TypeSelection> {
     let raw = raw.trim();
     if raw.eq_ignore_ascii_case("all") {
         return Ok(TypeSelection::All);
@@ -74,140 +74,23 @@ pub fn parse_type_selection(raw: &str) -> Result<TypeSelection> {
             "python" => TypeToken::Event(EventType::Python),
             "comm" => TypeToken::Comm,
             "all" => return Ok(TypeSelection::All),
-            other => anyhow::bail!(
-                "unknown pytorch --type `{other}`; expected one of: cpu-op, annotation, step, runtime, driver, kernel, memcpy, memset, memory, python, comm, all"
-            ),
+            other => return Err(PytorchQueryError::unknown_type(other)),
         };
         out.insert(parsed);
     }
     if out.is_empty() {
-        anyhow::bail!("--type must list at least one event type");
+        return Err(PytorchQueryError::EmptyTypeSelection);
     }
     Ok(TypeSelection::Only(out))
 }
 
-pub(crate) fn require_rank_scope(trace: &TraceSet, scope: RankScope) -> Result<()> {
+pub(crate) fn require_rank_scope(trace: &QueryTrace, scope: RankScope) -> PytorchQueryResult<()> {
     if trace.is_multi_rank() && scope.rank.is_none() && !scope.all_ranks {
-        anyhow::bail!("pytorch trace-set has multiple ranks; use `--rank <n>` or `--all-ranks`");
+        return Err(PytorchQueryError::MultiRankRequiresScope);
     }
     Ok(())
 }
 
-pub(crate) fn filtered_events<'a>(
-    trace: &'a TraceSet,
-    request: &EventFilterRequest,
-) -> Result<Vec<&'a Event>> {
-    if request.limit == 0 {
-        anyhow::bail!("--limit must be at least 1");
-    }
-    let compiled = CompiledFilters::new(request)?;
-    let mut events = trace
-        .events
-        .iter()
-        .filter(|event| event_matches_type(event, &request.types))
-        .filter(|event| !request.is_comm || event.is_comm)
-        .filter(|event| event_matches_scope(event, request))
-        .filter(|event| compiled.matches_name(&event.name))
-        .filter(|event| {
-            request
-                .duration
-                .is_none_or(|filter| duration_matches(event.duration_ns, filter))
-        })
-        .filter(|event| {
-            request
-                .time_window_ns
-                .is_none_or(|(start, end)| event.end_ns > start && event.start_ns < end)
-        })
-        .collect::<Vec<_>>();
-    events.sort_by_key(|event| (event.start_ns, event.stable_index));
-    Ok(events)
-}
-
-pub(crate) fn event_matches_scope(event: &Event, request: &EventFilterRequest) -> bool {
-    if let Some(rank) = request.rank_scope.rank
-        && event.rank != Some(rank)
-    {
-        return false;
-    }
-    if let Some(device) = request.device
-        && event.device_id != Some(device)
-    {
-        return false;
-    }
-    if let Some(stream) = request.stream
-        && event.stream_id != Some(stream)
-    {
-        return false;
-    }
-    if let Some(step) = request.step
-        && event.step != Some(step)
-    {
-        return false;
-    }
-    true
-}
-
-fn event_matches_type(event: &Event, selection: &TypeSelection) -> bool {
-    match selection {
-        TypeSelection::All => true,
-        TypeSelection::Only(tokens) => tokens.iter().any(|token| match token {
-            TypeToken::Event(event_type) => event.event_type == *event_type,
-            TypeToken::Comm => event.is_comm,
-        }),
-    }
-}
-
-pub(crate) struct CompiledFilters {
-    glob: Option<Regex>,
-    regex: Option<Regex>,
-}
-
-impl CompiledFilters {
-    pub(crate) fn new(request: &EventFilterRequest) -> Result<Self> {
-        if request.name_glob.is_some() && request.name_regex.is_some() {
-            anyhow::bail!("--name and --name-regex are mutually exclusive");
-        }
-        Ok(Self {
-            glob: request
-                .name_glob
-                .as_deref()
-                .map(glob_regex)
-                .transpose()
-                .context("invalid --name glob")?,
-            regex: request
-                .name_regex
-                .as_deref()
-                .map(Regex::new)
-                .transpose()
-                .context("invalid --name-regex")?,
-        })
-    }
-
-    pub(crate) fn matches_name(&self, name: &str) -> bool {
-        self.glob.as_ref().is_none_or(|regex| regex.is_match(name))
-            && self.regex.as_ref().is_none_or(|regex| regex.is_match(name))
-    }
-}
-
-fn glob_regex(pattern: &str) -> Result<Regex> {
-    let mut out = String::from("^");
-    for ch in pattern.chars() {
-        match ch {
-            '*' => out.push_str(".*"),
-            '?' => out.push('.'),
-            _ => out.push_str(&regex::escape(&ch.to_string())),
-        }
-    }
-    out.push('$');
-    Regex::new(&out).map_err(Into::into)
-}
-
-fn duration_matches(duration_ns: i64, filter: DurationFilter) -> bool {
-    match filter {
-        DurationFilter::Gt(ns) => duration_ns > ns,
-        DurationFilter::Gte(ns) => duration_ns >= ns,
-        DurationFilter::Lt(ns) => duration_ns < ns,
-        DurationFilter::Lte(ns) => duration_ns <= ns,
-        DurationFilter::Range { min_ns, max_ns } => duration_ns >= min_ns && duration_ns <= max_ns,
-    }
+pub(crate) fn limit_ref(limit: usize) -> PytorchQueryResult<LimitRef> {
+    LimitRef::new(limit).map_err(|_| PytorchQueryError::LimitTooSmall)
 }

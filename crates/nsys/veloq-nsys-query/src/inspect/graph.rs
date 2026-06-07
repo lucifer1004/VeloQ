@@ -13,13 +13,15 @@
 //!   markers: `Graph Creation` (eventClass 95), `GraphExec Creation`
 //!   (eventClass 94), and friends.
 
-use crate::RowId;
-use anyhow::{Context, Result};
+use crate::{NsysQueryResult, RowId};
 use duckdb::Connection;
-use duckdb::types::Value;
 use serde::Serialize;
 
-use super::{ColumnMap, EventDetails, maybe_col};
+use super::{ColumnMap, EventDetails, map_inspect_read, maybe_col, query_inspect_row};
+
+const INSPECT_GRAPH_SQL: &str = "graph";
+const INSPECT_GRAPH_NODE_SQL: &str = "graph_node";
+const INSPECT_GRAPH_EVENT_SQL: &str = "graph_event";
 
 /// CUDA graph launch (`CUPTI_ACTIVITY_KIND_GRAPH_TRACE`). One row per
 /// graph execution; in `--cuda-graph-trace=graph` captures the inner
@@ -120,7 +122,7 @@ pub(super) fn query_graph(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUPTI_ACTIVITY_KIND_GRAPH_TRACE";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -143,33 +145,30 @@ pub(super) fn query_graph(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare graph inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    Ok(Some(EventDetails::Graph(GraphDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        device_id: r.get(2)?,
-        context_id: r.get(3)?,
-        stream_id: r.get(4)?,
-        graph_id: r.get(5)?,
-        graph_exec_id: r.get(6)?,
-        correlation_id: r.get(7)?,
-    })))
+    query_inspect_row(conn, INSPECT_GRAPH_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_GRAPH_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_GRAPH_SQL, r.get(1))?;
+        Ok(EventDetails::Graph(GraphDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            device_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(2))?,
+            context_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(3))?,
+            stream_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(4))?,
+            graph_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(5))?,
+            graph_exec_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(6))?,
+            correlation_id: map_inspect_read(INSPECT_GRAPH_SQL, r.get(7))?,
+        }))
+    })
 }
 
 pub(super) fn query_graph_node(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUDA_GRAPH_NODE_EVENTS";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -221,33 +220,30 @@ pub(super) fn query_graph_node(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare graph_node inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: Option<i64> = r.get(1)?;
-    let duration_ns = end_ns.map(|e| e - start_ns).unwrap_or(0);
-    Ok(Some(EventDetails::GraphNode(GraphNodeDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns,
-        global_tid: r.get(4)?,
-        graph_node_id: r.get(2)?,
-        original_graph_node_id: r.get(3)?,
-        graph_id: r.get(5)?,
-        graph_exec_id: r.get(6)?,
-    })))
+    query_inspect_row(conn, INSPECT_GRAPH_NODE_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(0))?;
+        let end_ns: Option<i64> = map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(1))?;
+        let duration_ns = end_ns.map(|e| e - start_ns).unwrap_or(0);
+        Ok(EventDetails::GraphNode(GraphNodeDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns,
+            global_tid: map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(4))?,
+            graph_node_id: map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(2))?,
+            original_graph_node_id: map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(3))?,
+            graph_id: map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(5))?,
+            graph_exec_id: map_inspect_read(INSPECT_GRAPH_NODE_SQL, r.get(6))?,
+        }))
+    })
 }
 
 pub(super) fn query_graph_event(
     conn: &Connection,
     cols: &ColumnMap,
     id: RowId,
-) -> Result<Option<EventDetails>> {
+) -> NsysQueryResult<Option<EventDetails>> {
     const T: &str = "CUDA_GRAPH_EVENTS";
     if !cols.contains_key(T) {
         return Ok(None);
@@ -269,25 +265,22 @@ pub(super) fn query_graph_event(
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = conn.prepare(&sql).context("prepare graph_event inspect")?;
-    let mut rows = stmt.query([Value::BigInt(id.rowid)])?;
-    let Some(r) = rows.next()? else {
-        return Ok(None);
-    };
-    let start_ns: i64 = r.get(0)?;
-    let end_ns: i64 = r.get(1)?;
-    let event_class: i64 = r.get(2)?;
-    Ok(Some(EventDetails::GraphEvent(GraphEventDetails {
-        key: id.to_string(),
-        row_id: id,
-        start_ns,
-        end_ns,
-        duration_ns: end_ns - start_ns,
-        global_tid: r.get(6)?,
-        event_class,
-        event_class_name: crate::kind_sql::graph_event_class_label(event_class),
-        graph_id: r.get(3)?,
-        original_graph_id: r.get(4)?,
-        graph_exec_id: r.get(5)?,
-    })))
+    query_inspect_row(conn, INSPECT_GRAPH_EVENT_SQL, &sql, id, |r| {
+        let start_ns: i64 = map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(0))?;
+        let end_ns: i64 = map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(1))?;
+        let event_class: i64 = map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(2))?;
+        Ok(EventDetails::GraphEvent(GraphEventDetails {
+            key: id.to_string(),
+            row_id: id,
+            start_ns,
+            end_ns,
+            duration_ns: end_ns - start_ns,
+            global_tid: map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(6))?,
+            event_class,
+            event_class_name: crate::kind_sql::graph_event_class_label(event_class),
+            graph_id: map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(3))?,
+            original_graph_id: map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(4))?,
+            graph_exec_id: map_inspect_read(INSPECT_GRAPH_EVENT_SQL, r.get(5))?,
+        }))
+    })
 }

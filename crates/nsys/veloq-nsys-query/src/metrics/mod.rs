@@ -39,7 +39,8 @@
 //! `common: MetricsCommon` block, so the coverage gate is one
 //! navigation step away regardless of which source you queried.
 //!
-use anyhow::{Context, Result};
+use crate::query_sql::exec::SqlLabel;
+use crate::{NsysQueryError, NsysQueryResult};
 use serde::Serialize;
 use std::path::Path;
 use veloq_core::{SortSpec, time::TimeWindow};
@@ -87,18 +88,13 @@ pub enum MetricSource {
 }
 
 impl MetricSource {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "gpu" => Ok(MetricSource::Gpu),
             "nic" | "network" => Ok(MetricSource::Nic),
             "cpu-sampling" | "cpu_sampling" | "cpu-ip" | "cpu_ip" => Ok(MetricSource::CpuSampling),
             "cpu-sched" | "cpu_sched" | "sched" => Ok(MetricSource::CpuSched),
-            other => {
-                anyhow::bail!(
-                    "unknown `--type {other}` for metrics \
-                     (supported: gpu, nic, cpu-sampling, cpu-sched)"
-                )
-            }
+            other => Err(NsysQueryError::metrics_unknown_source(other)),
         }
     }
 
@@ -207,7 +203,7 @@ pub struct CpuSchedRequest {
 /// Parse a CLI `--bucket` string (`50ms`, `100us`, `1.2s`, …) into
 /// ns. Mirrors `TimelineRequest::parse_interval` so both commands
 /// reject the same shapes with the same wording.
-pub fn parse_bucket(s: &str) -> Result<i64> {
+pub fn parse_bucket(s: &str) -> crate::NsysQueryResult<i64> {
     crate::parse_positive_duration(s, "--bucket")
 }
 
@@ -435,7 +431,7 @@ pub struct CpuBucketSample {
     pub samples: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> Result<MetricsResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> NsysQueryResult<MetricsResponse> {
     let common = match &req {
         MetricsRequest::Gpu(r) => &r.common,
         MetricsRequest::Nic(r) => &r.common,
@@ -443,21 +439,22 @@ pub fn run<P: AsRef<Path>>(path: P, req: MetricsRequest) -> Result<MetricsRespon
         MetricsRequest::CpuSched(r) => &r.common,
     };
     crate::check_limit(common.limit)?;
-    if let Some(b) = common.bucket_ns {
-        anyhow::ensure!(b > 0, "--bucket must be positive (got {b} ns)");
+    if let Some(b) = common.bucket_ns
+        && b <= 0
+    {
+        return Err(NsysQueryError::MetricsBucketTooSmall { bucket_ns: b });
     }
     if common.bucket_ns.is_some() && common.sort.is_some() {
-        anyhow::bail!(
-            "--sort doesn't apply in bucketed mode; buckets are time-ordered. \
-             Drop `--sort`, or run without `--bucket` to sort the summary view"
-        );
+        return Err(NsysQueryError::MetricsSortWithBucket);
     }
 
-    let trace = Trace::open(path)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
     // All metric tables (GPU_METRICS, SAMPLING_CALLCHAINS, COMPOSITE_EVENTS,
     // SCHED_EVENTS) resolve under `nsight.<TABLE>` directly.
-    let abs_window = trace.resolve_window(common.time_window)?;
-    let (origins, _) = trace.read_origins()?;
+    let abs_window = trace
+        .resolve_window(common.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
+    let (origins, _) = trace.read_origins().map_err(NsysQueryError::data)?;
     let trace_span = origins.primary;
     let trace_origin_ns = trace_span.start_ns;
     let trace_span_ns = (trace_span.start_ns, trace_span.end_ns);
@@ -527,11 +524,11 @@ fn covered_ns(metrics_span: Option<(i64, i64)>, denominator_span: (i64, i64)) ->
     (hi - lo).max(0)
 }
 
-/// Prepare `sql`, bind `params` via [`crate::bind`], execute, and
-/// project each yielded row via `hydrate` into a `Vec<T>`. Folds
-/// away the prepare → bind → loop boilerplate that every metrics
-/// SQL call site replays — caller supplies only the SQL body,
-/// param slice, error-context label, and per-row projection.
+/// Prepare `sql`, bind `params`, execute, and project each yielded row via
+/// `hydrate` into a `Vec<T>`. Folds away the prepare → bind → loop
+/// boilerplate that every metrics SQL call site replays — caller supplies
+/// only the SQL body, param slice, error-context label, and per-row
+/// projection.
 ///
 /// `label` appears in the prepare-error context (e.g. `"cpu-sched
 /// per-tid summary"`).
@@ -540,74 +537,45 @@ pub(super) fn query_rows<T>(
     sql: &str,
     params: &[duckdb::types::Value],
     label: &'static str,
-    mut hydrate: impl FnMut(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
-) -> Result<Vec<T>> {
-    let mut stmt = trace
-        .conn()
-        .prepare(sql)
-        .with_context(|| format!("preparing {label} SQL"))?;
-    let params_ref = crate::bind(params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let mut out: Vec<T> = Vec::new();
-    while let Some(r) = rows.next()? {
-        out.push(hydrate(r)?);
-    }
-    Ok(out)
+    hydrate: impl FnMut(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Vec<T>> {
+    query_rows_on_conn(trace.conn(), sql, params, label, hydrate)
 }
 
-/// Shared builder for the per-source "narrowed events" CTE used by
-/// both `cpu-sampling` and `cpu-sched`. The two sources scan
-/// different tables (`COMPOSITE_EVENTS` vs `SCHED_EVENTS`) and
-/// project slightly different columns, but apply the same three
-/// optional filters — time window, `--cpu`, `--tid` — in the same
-/// order, with the same param-binding contract. Keeping the
-/// predicate construction in one place means a new optional filter
-/// only needs to land once.
-///
-/// `select_projection` is the comma-separated SELECT-list body (no
-/// trailing comma), e.g. `"id, start, cpu, globalTid"`. The WHERE
-/// clauses reference the raw column names (`start`, `cpu`,
-/// `globalTid`) on the underlying table, so the projection can
-/// safely cast or rename them.
-pub(super) fn build_filtered_cte(
-    cte_name: &str,
-    table: &str,
-    select_projection: &str,
-    cpu_filter: Option<i64>,
-    tid_filter: Option<i64>,
-    abs_window: Option<(i64, i64)>,
-) -> (String, Vec<duckdb::types::Value>) {
-    let mut preds: Vec<String> = Vec::new();
-    let mut params: Vec<duckdb::types::Value> = Vec::new();
-    if let Some((start, end)) = abs_window {
-        preds.push("start >= ? AND start < ?".to_string());
-        params.push(duckdb::types::Value::BigInt(start));
-        params.push(duckdb::types::Value::BigInt(end));
-    }
-    if let Some(cpu) = cpu_filter {
-        preds.push("CAST(cpu AS BIGINT) = ?".to_string());
-        params.push(duckdb::types::Value::BigInt(cpu));
-    }
-    if let Some(tid) = tid_filter {
-        preds.push(format!(
-            "{} = ?",
-            veloq_nsys_data::sql_expr::u64_bits_to_i64("globalTid")
-        ));
-        params.push(duckdb::types::Value::BigInt(tid));
-    }
-    let where_clause = if preds.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", preds.join(" AND "))
-    };
-    let cte = format!(
-        "{cte_name} AS (
-            SELECT {select_projection}
-            FROM nsight.{table}
-            {where_clause}
-        )"
-    );
-    (cte, params)
+fn query_rows_on_conn<T>(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[duckdb::types::Value],
+    label: &'static str,
+    hydrate: impl FnMut(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Vec<T>> {
+    crate::query_sql::exec::query_rows(conn, sql, params, SqlLabel::new("metrics", label), hydrate)
+}
+
+pub(super) fn query_optional_row<T>(
+    trace: &Trace,
+    sql: &str,
+    params: &[duckdb::types::Value],
+    label: &'static str,
+    hydrate: impl FnOnce(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Option<T>> {
+    query_optional_row_on_conn(trace.conn(), sql, params, label, hydrate)
+}
+
+fn query_optional_row_on_conn<T>(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[duckdb::types::Value],
+    label: &'static str,
+    hydrate: impl FnOnce(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Option<T>> {
+    crate::query_sql::exec::query_optional_row(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("metrics", label),
+        hydrate,
+    )
 }
 
 impl Coverage {
@@ -637,6 +605,7 @@ impl Coverage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use veloq_core::VeloqDiagnostic;
 
     #[test]
     fn metric_source_parse() {
@@ -670,5 +639,111 @@ mod tests {
         assert_eq!(c.covered_ns, 100);
         assert_eq!(c.trace_ns, 100);
         assert!((c.ratio - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn run_rejects_non_positive_bucket_before_opening_trace() -> anyhow::Result<()> {
+        let req = MetricsRequest::Gpu(GpuMetricsRequest {
+            common: MetricsRequestCommon {
+                bucket_ns: Some(0),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        let err = match run("does-not-need-to-exist.nsys-rep", req) {
+            Ok(_) => anyhow::bail!("expected invalid bucket to fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.metrics-bucket-too-small");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::MetricsBucketTooSmall { bucket_ns: 0 }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn query_rows_prepare_error_is_typed() -> anyhow::Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err =
+            match query_rows_on_conn(&conn, "SELECT * FROM", &[], "test-metrics", |_| Ok(0i64)) {
+                Ok(rows) => anyhow::bail!("malformed metrics SQL should not succeed: {rows:?}"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("metrics", crate::SqlPhase::Prepare, "test-metrics"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_rows_query_error_is_typed() -> anyhow::Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS value WHERE ? IS NOT NULL";
+        let params = [duckdb::types::Value::BigInt(1)];
+
+        let err = match query_rows_on_conn(&conn, sql, &params, "test-metrics", |_| Ok(0i64)) {
+            Ok(rows) => anyhow::bail!("unbound metrics SQL should not succeed: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("metrics", crate::SqlPhase::Query, "test-metrics"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_rows_read_error_is_typed() -> anyhow::Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match query_rows_on_conn(
+            &conn,
+            "SELECT 'not-an-int' AS value",
+            &[],
+            "test-metrics",
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(rows) => anyhow::bail!("malformed metrics row should not hydrate: {rows:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("metrics", crate::SqlPhase::Read, "test-metrics"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn query_optional_row_read_error_is_typed() -> anyhow::Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match query_optional_row_on_conn(
+            &conn,
+            "SELECT 'not-an-int' AS value",
+            &[],
+            "test-metrics-optional",
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(row) => anyhow::bail!("malformed optional metrics row should not hydrate: {row:?}"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("metrics", crate::SqlPhase::Read, "test-metrics-optional"))
+        );
+        Ok(())
     }
 }

@@ -15,7 +15,6 @@
 //! `<sha>.correlated.json` cache is reused, so a committed cache makes
 //! this verb NCU-free *and* nvdisasm-free at query time.
 
-use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
@@ -27,6 +26,7 @@ use crate::disasm_pipeline::{
     acquire_correlated, build_source_index, correlated_cache_path, cubin_sha,
     extract_and_cache_cubin, load_cached, write_cache,
 };
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::native::{NativeSidecar, NativeSourceRef, cache, cubin};
 
 /// SASS instruction stride: 16 bytes on Volta and later.
@@ -79,20 +79,18 @@ pub struct DisasmAuxiliary {
 
 /// Resolve `row_id` → launch → kernel symbol, find the embedded cubin
 /// that defines it, and project that cubin's correlated disasm.
-pub fn run<P: AsRef<Path>>(path: P, row_id: &str) -> Result<DisasmResponse> {
+pub fn run<P: AsRef<Path>>(path: P, row_id: &str) -> NcuSourceResult<DisasmResponse> {
     let idx = crate::row_id::parse_launch_idx(row_id)?;
     let path = path.as_ref();
     let sidecar = cache::build_or_load(path)?;
     let n_launches = sidecar.launches.len();
-    ensure!(
-        idx < n_launches,
-        "launch idx {idx} out of range ({n_launches} launches in this report)"
-    );
-    let Some(launch) = sidecar.launches.get(idx) else {
-        return Ok(empty_response(
-            row_id,
-            format!("launch idx {idx} out of range"),
+    if idx >= n_launches {
+        return Err(NcuSourceError::launch_row_id_out_of_range(
+            row_id, idx, n_launches,
         ));
+    }
+    let Some(launch) = sidecar.launches.get(idx) else {
+        return Err(NcuSourceError::launch_vanished_after_bounds_check(idx));
     };
     let mangled = &launch.kernel_mangled;
 

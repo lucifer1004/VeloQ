@@ -7,13 +7,18 @@
 //! `per_cpu_max_gap_ns` (the response's `coverage` block is filled
 //! by `run_cpu_sched` itself).
 
-use anyhow::{Context, Result};
+use crate::{NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
 use veloq_nsys_data::Trace;
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{total_matched_bigint_expr, window};
 
 use super::{Coverage, CpuBucketSample, CpuSchedBody, CpuSchedRequest, MetricsCommon};
+
+const CPU_SCHED_STATS_SQL: &str = "cpu-sched stats";
+const CPU_SCHED_BUCKETS_SQL: &str = "cpu-sched buckets";
 
 /// `--group-by` axis for `--type cpu-sched`.
 ///
@@ -31,15 +36,12 @@ pub enum SchedGroupBy {
 }
 
 impl SchedGroupBy {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "tid" | "thread" => Ok(Self::Tid),
             "cpu" | "core" => Ok(Self::Cpu),
             "state" => Ok(Self::State),
-            other => anyhow::bail!(
-                "unknown --group-by `{other}` for cpu-sched \
-                 (expected: tid, cpu, state)"
-            ),
+            other => Err(NsysQueryError::metrics_cpu_sched_unknown_group_by(other)),
         }
     }
 
@@ -223,13 +225,9 @@ pub(super) fn run_cpu_sched(
     abs_window: Option<(i64, i64)>,
     trace_origin_ns: i64,
     trace_span_ns: (i64, i64),
-) -> Result<CpuSchedBody> {
+) -> NsysQueryResult<CpuSchedBody> {
     if !trace.table_exists("SCHED_EVENTS") {
-        anyhow::bail!(
-            "metrics --type cpu-sched requires `SCHED_EVENTS`, which is \
-             absent from this trace; re-capture with \
-             `nsys profile --cpuctxsw=process-tree` (or `system-wide`)"
-        );
+        return Err(NsysQueryError::MetricsCpuSchedEventsMissing);
     }
 
     let group_by = match req.group_by.as_deref() {
@@ -330,7 +328,7 @@ fn query_sched_stats(
     trace: &Trace,
     req: &CpuSchedRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<SchedStats> {
+) -> NsysQueryResult<SchedStats> {
     let (filtered_cte, params) = build_sched_filtered_cte(req, abs_window);
     let sql = format!(
         r#"
@@ -349,18 +347,14 @@ fn query_sched_stats(
             CAST((SELECT MAX(gap_ns) FROM gaps) AS BIGINT) AS max_gap
         "#
     );
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing cpu-sched stats SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let r = rows
-        .next()?
-        .ok_or_else(|| anyhow::anyhow!("internal: cpu-sched stats returned no row"))?;
-    let events_total: i64 = r.get("events_total")?;
+    super::query_optional_row(trace, &sql, &params, CPU_SCHED_STATS_SQL, sched_stats_row)?
+        .ok_or_else(|| crate::NsysQueryError::internal_stats_row_missing("cpu-sched"))
+}
+
+fn sched_stats_row(row: &duckdb::Row<'_>) -> Result<SchedStats, duckdb::Error> {
+    let events_total: i64 = row.get("events_total")?;
     let span = if events_total > 0 {
-        Some((r.get("span_lo")?, r.get("span_hi")?))
+        Some((row.get("span_lo")?, row.get("span_hi")?))
     } else {
         None
     };
@@ -368,11 +362,11 @@ fn query_sched_stats(
     // on any partition (only one row per cpu, or zero rows). Read as
     // SQL NULL → `None` so the wire format doesn't carry a misleading
     // zero.
-    let per_cpu_max_gap: Option<i64> = r.get("max_gap")?;
+    let per_cpu_max_gap: Option<i64> = row.get("max_gap")?;
     Ok(SchedStats {
         events_total,
         span,
-        n_unknown_state: r.get("n_unknown")?,
+        n_unknown_state: row.get("n_unknown")?,
         per_cpu_max_gap,
     })
 }
@@ -386,7 +380,7 @@ fn build_sched_filtered_cte(
     abs_window: Option<(i64, i64)>,
 ) -> (String, Vec<Value>) {
     let global_tid = veloq_nsys_data::sql_expr::u64_bits_to_i64("globalTid");
-    super::build_filtered_cte(
+    let fragment = crate::query_sql::sample_scan::filtered_cte(
         "filtered_sched",
         "SCHED_EVENTS",
         &format!(
@@ -399,7 +393,8 @@ fn build_sched_filtered_cte(
         req.cpu,
         req.tid,
         abs_window,
-    )
+    );
+    (fragment.sql, fragment.params)
 }
 
 /// Build the paired-quanta CTE: each `(cpu, globalTid)` partition is
@@ -443,7 +438,7 @@ fn query_sched_summary_tid(
     trace: &Trace,
     req: &CpuSchedRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<SchedSummaryRow>> {
+) -> NsysQueryResult<Vec<SchedSummaryRow>> {
     let (filtered_cte, params) = build_sched_filtered_cte(req, abs_window);
     let quanta = quanta_cte();
     let sql = format!(
@@ -503,7 +498,7 @@ fn query_sched_summary_cpu(
     trace: &Trace,
     req: &CpuSchedRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<SchedSummaryRow>> {
+) -> NsysQueryResult<Vec<SchedSummaryRow>> {
     let (filtered_cte, params) = build_sched_filtered_cte(req, abs_window);
     let quanta = quanta_cte();
     let sql = format!(
@@ -569,7 +564,7 @@ fn query_sched_summary_state(
     trace: &Trace,
     req: &CpuSchedRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<SchedSummaryRow>> {
+) -> NsysQueryResult<Vec<SchedSummaryRow>> {
     let (filtered_cte, params) = build_sched_filtered_cte(req, abs_window);
     let quanta = quanta_cte();
     let sql = format!(
@@ -673,7 +668,7 @@ fn query_sched_buckets(
     bucket_ns: i64,
     group_by: SchedGroupBy,
     trace_origin_ns: i64,
-) -> Result<(Vec<CpuBucketSample>, i64)> {
+) -> NsysQueryResult<(Vec<CpuBucketSample>, i64)> {
     let (filtered_cte, mut params) = build_sched_filtered_cte(req, abs_window);
     let quanta = quanta_cte();
     // Key expression per axis. The state axis joins
@@ -688,6 +683,14 @@ fn query_sched_buckets(
         ),
     };
     params.push(Value::BigInt(req.common.limit as i64));
+    let bucket_start_expr = format!("bucket_idx * {bucket_ns} + {trace_origin_ns}");
+    let bucket_end_expr = format!("bucket_idx * {bucket_ns} + {trace_origin_ns} + {bucket_ns}");
+    let clipped_ns_expr = window::bucket_clipped_duration_expr(
+        "quantum_start",
+        "quantum_end",
+        &bucket_start_expr,
+        &bucket_end_expr,
+    );
     let sql = format!(
         r#"
         WITH {filtered_cte},
@@ -719,11 +722,10 @@ fn query_sched_buckets(
         clipped AS (
             SELECT
                 key,
-                bucket_idx * {bucket} + {anchor} AS t_start,
-                bucket_idx * {bucket} + {anchor} + {bucket} AS t_end,
+                {bucket_start_expr} AS t_start,
+                {bucket_end_expr} AS t_end,
                 -- Clip the quantum to this bucket's bounds.
-                LEAST(quantum_end, bucket_idx * {bucket} + {anchor} + {bucket})
-                  - GREATEST(quantum_start, bucket_idx * {bucket} + {anchor}) AS clipped_ns
+                {clipped_ns_expr} AS clipped_ns
             FROM spans
         ),
         agg AS (
@@ -738,34 +740,48 @@ fn query_sched_buckets(
             GROUP BY key, t_start, t_end
         )
         SELECT *,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM agg
         ORDER BY t_start ASC, key ASC
         LIMIT ?
         "#,
         anchor = trace_origin_ns,
         bucket = bucket_ns,
+        total_matched = total_matched_bigint_expr(),
     );
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing cpu-sched bucket SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let mut out: Vec<CpuBucketSample> = Vec::new();
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        out.push(CpuBucketSample {
-            t_start_ns: r.get("t_start")?,
-            t_end_ns: r.get("t_end")?,
-            key: r.get("key")?,
+    let rows = super::query_rows(
+        trace,
+        &sql,
+        &params,
+        CPU_SCHED_BUCKETS_SQL,
+        sched_bucket_row,
+    )?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::Last,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok(row.bucket),
+    )
+}
+
+struct SchedBucketRow {
+    bucket: CpuBucketSample,
+    total_matched: i64,
+}
+
+fn sched_bucket_row(row: &duckdb::Row<'_>) -> Result<SchedBucketRow, duckdb::Error> {
+    Ok(SchedBucketRow {
+        bucket: CpuBucketSample {
+            t_start_ns: row.get("t_start")?,
+            t_end_ns: row.get("t_end")?,
+            key: row.get("key")?,
             agg: "sum",
-            value: r.get("value")?,
-            samples: r.get("samples")?,
-        });
-        total_matched = r.get("total_matched")?;
-    }
-    Ok((out, total_matched))
+            value: row.get("value")?,
+            samples: row.get("samples")?,
+        },
+        total_matched: row.get("total_matched")?,
+    })
 }
 
 /// Sort axes the cpu-sched summary list supports. The default is
@@ -845,12 +861,12 @@ impl SortKeyDef for SchedSortKey {
     }
 }
 
-fn sort_sched(out: &mut [SchedSummaryRow], spec: &SortSpec) -> Result<()> {
+fn sort_sched(out: &mut [SchedSummaryRow], spec: &SortSpec) -> NsysQueryResult<()> {
     let resolved: Vec<(SchedSortKey, Direction)> = spec
         .fields()
         .iter()
-        .map(|f| SchedSortKey::from_field(f).map_err(Into::into))
-        .collect::<Result<_>>()?;
+        .map(|f| SchedSortKey::from_field(f).map_err(NsysQueryError::metrics_sort_invalid))
+        .collect::<NsysQueryResult<_>>()?;
     // Stable tiebreaker on `key` ASC.
     veloq_core::sort_in_memory(
         out,

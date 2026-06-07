@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Nsight Systems profile source (CLI surface + dispatch) for veloq."
+description = "Nsight Systems profile source (CLI surface + dispatch) for VeloQ."
 # Publish whitelist — library sources only; tests stay out of the package.
 include = ["src/**/*.rs"]
 
@@ -13,7 +13,6 @@ include = ["src/**/*.rs"]
 veloq-core.workspace = true
 veloq-nsys-data.workspace = true
 veloq-nsys-query.workspace = true
-anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -25,8 +24,10 @@ comfy-table.workspace = true
 csv.workspace = true
 terminal_size.workspace = true
 log.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+anyhow.workspace = true
 tempfile.workspace = true
 
 [lints]

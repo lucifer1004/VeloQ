@@ -13,8 +13,7 @@
 //! `read_parquet('…')` into a `LEFT JOIN`, and provides the column
 //! expressions stats.rs splices into the per-kind subquery.
 
-use crate::EventKind;
-use anyhow::Result;
+use crate::{EventKind, NsysQueryError, NsysQueryResult};
 use std::path::Path;
 use veloq_nsys_data::Trace;
 
@@ -56,8 +55,9 @@ pub const NO_NVTX_PATH_KEY: &str = "nvtx-path:none";
 /// before any per-kind subquery emits its `LEFT JOIN`. The sidecar
 /// is shared across all attributable kinds in this query and across
 /// every NVTX-bearing verb on the same trace.
-pub fn ensure_sidecar(trace: &Trace) -> Result<()> {
-    veloq_nsys_data::runtime_nvtx_parent::ensure_sidecar(trace)?;
+pub fn ensure_sidecar(trace: &Trace) -> NsysQueryResult<()> {
+    veloq_nsys_data::runtime_nvtx_parent::ensure_sidecar(trace)
+        .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
     Ok(())
 }
 

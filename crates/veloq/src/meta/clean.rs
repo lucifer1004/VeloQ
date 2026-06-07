@@ -7,14 +7,15 @@
 //! It does not remove direct `_pqtdir/` inputs, `.nsys-rep` files,
 //! `.ncu-rep` files, or any legacy sidecar names.
 
-use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use veloq_core::{ARTIFACT_DIR_SUFFIX, EnvelopeTraceRef, ProfileSource, artifact_dir_for};
+use veloq_core::{
+    ARTIFACT_DIR_SUFFIX, EnvelopeTraceRef, OutputFormat, ProfileSource, artifact_dir_for,
+};
 
-use super::{emit_meta_error, emit_or_error};
+use super::{MetaError, MetaResult, emit_meta_error, emit_or_error};
 
 const VERB: &str = "clean";
 
@@ -61,12 +62,16 @@ pub fn cli() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i32> {
+pub fn run(
+    matches: &ArgMatches,
+    sources: &[Box<dyn ProfileSource>],
+    fmt: OutputFormat,
+) -> MetaResult<i32> {
     let trace_str = match matches.get_one::<String>("trace") {
         Some(s) => s,
         None => {
-            let err = anyhow::anyhow!("`<trace>` argument is required");
-            emit_meta_error(VERB, None, &err);
+            let err = MetaError::missing_argument("trace");
+            emit_meta_error(fmt, VERB, None, &err);
             return Ok(1);
         }
     };
@@ -79,15 +84,15 @@ pub fn run(matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i
     });
 
     match clean(&trace, dry_run) {
-        Ok(payload) => Ok(emit_or_error(VERB, trace_ref, None, payload)),
+        Ok(payload) => Ok(emit_or_error(fmt, VERB, trace_ref, None, payload)),
         Err(err) => {
-            emit_meta_error(VERB, trace_ref, &err);
+            emit_meta_error(fmt, VERB, trace_ref, &err);
             Ok(1)
         }
     }
 }
 
-fn clean(trace: &Path, dry_run: bool) -> Result<CleanPayload> {
+fn clean(trace: &Path, dry_run: bool) -> MetaResult<CleanPayload> {
     let cache_root = cache_root_arg(trace);
     let existed = cache_root.exists();
     let stats = if existed {
@@ -98,8 +103,10 @@ fn clean(trace: &Path, dry_run: bool) -> Result<CleanPayload> {
     };
 
     if existed && !dry_run {
-        fs::remove_dir_all(&cache_root)
-            .with_context(|| format!("removing cache root {}", cache_root.display()))?;
+        fs::remove_dir_all(&cache_root).map_err(|source| MetaError::RemoveCacheRoot {
+            path: path_string(&cache_root),
+            source,
+        })?;
     }
 
     Ok(CleanPayload {
@@ -130,28 +137,30 @@ fn cache_root_arg(trace: &Path) -> PathBuf {
     }
 }
 
-fn ensure_removable_cache_root(cache_root: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(cache_root)
-        .with_context(|| format!("stat cache root {}", cache_root.display()))?;
+fn ensure_removable_cache_root(cache_root: &Path) -> MetaResult<()> {
+    let meta = fs::symlink_metadata(cache_root).map_err(|source| MetaError::StatCacheRoot {
+        path: path_string(cache_root),
+        source,
+    })?;
     let file_type = meta.file_type();
     if file_type.is_symlink() {
-        anyhow::bail!(
-            "cache root is a symlink; refusing to clean {}",
-            cache_root.display()
-        );
+        return Err(MetaError::CacheRootSymlink {
+            path: path_string(cache_root),
+        });
     }
     if !file_type.is_dir() {
-        anyhow::bail!(
-            "cache root is not a directory; refusing to clean {}",
-            cache_root.display()
-        );
+        return Err(MetaError::CacheRootNotDirectory {
+            path: path_string(cache_root),
+        });
     }
     Ok(())
 }
 
-fn measure(path: &Path) -> Result<ArtifactStats> {
-    let meta =
-        fs::symlink_metadata(path).with_context(|| format!("stat artifact {}", path.display()))?;
+fn measure(path: &Path) -> MetaResult<ArtifactStats> {
+    let meta = fs::symlink_metadata(path).map_err(|source| MetaError::StatArtifact {
+        path: path_string(path),
+        source,
+    })?;
     let file_type = meta.file_type();
     if file_type.is_symlink() {
         return Ok(ArtifactStats {
@@ -173,9 +182,19 @@ fn measure(path: &Path) -> Result<ArtifactStats> {
         directories: 1,
         bytes: 0,
     };
-    for entry in fs::read_dir(path).with_context(|| format!("reading {}", path.display()))? {
-        let entry = entry?;
+    for entry in fs::read_dir(path).map_err(|source| MetaError::ReadDir {
+        path: path_string(path),
+        source,
+    })? {
+        let entry = entry.map_err(|source| MetaError::ReadDirEntry {
+            path: path_string(path),
+            source,
+        })?;
         stats.add(measure(&entry.path())?);
     }
     Ok(stats)
+}
+
+fn path_string(path: &Path) -> String {
+    path.display().to_string()
 }

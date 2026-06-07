@@ -6,9 +6,36 @@
 //! the user typing the source name, and the run glue that produces
 //! output in whichever [`OutputFormat`] the user asked for.
 
+use crate::diagnostic::{ErrorCode, VeloqDiagnostic};
 use crate::envelope::{SourceRef, TraceSpan};
-use anyhow::Result;
+use std::error::Error;
 use std::path::Path;
+use thiserror::Error;
+
+pub type SourceRunError = Box<dyn Error + Send + Sync + 'static>;
+pub type SourceRunResult<T> = Result<T, SourceRunError>;
+
+#[derive(Debug, Error)]
+pub enum OutputFormatError {
+    #[error("unknown --format `{value}` (expected: json, csv, table)")]
+    Unknown { value: String },
+}
+
+impl OutputFormatError {
+    pub fn unknown(value: &str) -> Self {
+        Self::Unknown {
+            value: value.to_string(),
+        }
+    }
+}
+
+impl VeloqDiagnostic for OutputFormatError {
+    fn code(&self) -> ErrorCode {
+        match self {
+            Self::Unknown { .. } => ErrorCode::new("cli.unknown-format"),
+        }
+    }
+}
 
 /// Output format every CLI invocation has to pick. JSON is the agent
 /// contract; CSV / table are human-only conveniences. Lives in
@@ -23,12 +50,13 @@ pub enum OutputFormat {
 impl OutputFormat {
     /// Parse the `--format` flag. Accepts `json`, `csv`, `table`,
     /// case-insensitive (plus `tbl` as a shorter alias for `table`).
-    pub fn parse(s: &str) -> Result<Self> {
-        match s.to_ascii_lowercase().as_str() {
+    pub fn parse(s: &str) -> Result<Self, OutputFormatError> {
+        let normalized = s.to_ascii_lowercase();
+        match normalized.as_str() {
             "json" => Ok(Self::Json),
             "csv" => Ok(Self::Csv),
             "table" | "tbl" => Ok(Self::Table),
-            other => anyhow::bail!("unknown --format `{other}` (expected: json, csv, table)"),
+            _ => Err(OutputFormatError::unknown(s)),
         }
     }
 }
@@ -131,7 +159,7 @@ pub trait ProfileSource: Send + Sync {
     /// `process::exit` from inside the source.
     ///
     /// [`ArgMatches`]: clap::ArgMatches
-    fn run(&self, matches: &clap::ArgMatches, fmt: OutputFormat) -> Result<i32>;
+    fn run(&self, matches: &clap::ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32>;
 }
 
 #[cfg(test)]
@@ -153,14 +181,18 @@ mod tests {
         fn cli(&self) -> Command {
             Command::new("fake").subcommand(Command::new("ping"))
         }
-        fn run(&self, m: &clap::ArgMatches, _fmt: OutputFormat) -> Result<i32> {
+        fn run(&self, m: &clap::ArgMatches, _fmt: OutputFormat) -> SourceRunResult<i32> {
             // Real impls emit to stdout. The test impl just verifies
             // the dispatch path: assert we got the subcommand we
             // expected.
             let verb = m
                 .subcommand_name()
-                .ok_or_else(|| anyhow::anyhow!("no subcommand"))?;
-            anyhow::ensure!(verb == "ping", "unexpected subcommand `{verb}`");
+                .ok_or_else(|| std::io::Error::other("no subcommand"))?;
+            if verb != "ping" {
+                return Err(
+                    std::io::Error::other(format!("unexpected subcommand `{verb}`")).into(),
+                );
+            }
             Ok(0)
         }
     }
@@ -182,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn run_dispatches_subcommand() -> anyhow::Result<()> {
+    fn run_dispatches_subcommand() -> SourceRunResult<()> {
         let s = FakeSource;
         let m = s.cli().try_get_matches_from(["fake", "ping"])?;
         assert_eq!(s.run(&m, OutputFormat::Json)?, 0);
@@ -190,11 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn output_format_parse_round_trip() -> anyhow::Result<()> {
+    fn output_format_parse_round_trip() {
         for s in ["json", "JSON", "csv", "Csv", "table", "tbl"] {
-            let _ = OutputFormat::parse(s)?;
+            assert!(OutputFormat::parse(s).is_ok());
         }
         assert!(OutputFormat::parse("bogus").is_err());
-        Ok(())
     }
 }

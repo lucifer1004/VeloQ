@@ -13,10 +13,10 @@
 //!
 //! CMDLIST (OptiX command lists) is not ingested.
 
-use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
 
+use crate::error::{NcuSourceError, NcuSourceResult};
 use crate::native;
 
 /// Auxiliary block every list verb returns. Just the sidecar path so
@@ -86,8 +86,10 @@ pub struct RangesResponse {
     pub auxiliary: ListsAuxiliary,
 }
 
-pub fn ranges<P: AsRef<Path>>(path: P, limit: usize) -> Result<RangesResponse> {
-    anyhow::ensure!(limit > 0, "limit must be at least 1");
+pub fn ranges<P: AsRef<Path>>(path: P, limit: usize) -> NcuSourceResult<RangesResponse> {
+    if limit == 0 {
+        return Err(NcuSourceError::limit_too_small(limit));
+    }
     let path = path.as_ref();
     let sidecar = native::cache::build_or_load(path)?;
     Ok(ranges_from_sidecar(
@@ -125,8 +127,10 @@ pub struct GraphsResponse {
     pub auxiliary: ListsAuxiliary,
 }
 
-pub fn graphs<P: AsRef<Path>>(path: P, limit: usize) -> Result<GraphsResponse> {
-    anyhow::ensure!(limit > 0, "limit must be at least 1");
+pub fn graphs<P: AsRef<Path>>(path: P, limit: usize) -> NcuSourceResult<GraphsResponse> {
+    if limit == 0 {
+        return Err(NcuSourceError::limit_too_small(limit));
+    }
     let path = path.as_ref();
     let sidecar = native::cache::build_or_load(path)?;
     Ok(graphs_from_sidecar(
@@ -189,8 +193,10 @@ pub struct SourceRow {
 /// row per launch (the cubin it ran out of), degraded:
 /// `reference` / `ptx_bytes` / `cubin_bytes` / `sass_level_name` are
 /// dropped (no raw-binary surface).
-pub fn sources<P: AsRef<Path>>(path: P, limit: usize) -> Result<SourcesResponse> {
-    anyhow::ensure!(limit > 0, "limit must be at least 1");
+pub fn sources<P: AsRef<Path>>(path: P, limit: usize) -> NcuSourceResult<SourcesResponse> {
+    if limit == 0 {
+        return Err(NcuSourceError::limit_too_small(limit));
+    }
     let path = path.as_ref();
     let sidecar = native::cache::build_or_load(path)?;
     let total = sidecar.launches.len();

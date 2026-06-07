@@ -11,8 +11,13 @@
 mod fixture;
 
 use anyhow::{Result, anyhow};
+use veloq_core::VeloqDiagnostic;
 use veloq_nsys_query::stats_by_size::{StatsBySizeRequest, run};
-use veloq_nsys_query::{EventKind, KindFilter};
+use veloq_nsys_query::{EventKind, KindFilter, NsysQueryError};
+
+fn assert_query_error_code(err: &NsysQueryError, expected: &str) {
+    assert_eq!(err.code().as_str(), expected);
+}
 
 #[test]
 fn memcpy_rows_aggregate_by_bytes() -> Result<()> {
@@ -57,6 +62,7 @@ fn rejects_non_memop_kind_explicit() -> Result<()> {
         Ok(_) => return Err(anyhow!("expected reject for kernel under --by size")),
         Err(e) => e,
     };
+    assert_query_error_code(&err, "nsys.query.stats-by-size-kind-not-allowed");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("byte-carrying") || msg.contains("memcpy/memset"),
@@ -148,6 +154,7 @@ fn rejects_unsupported_group_by_axes() -> Result<()> {
                 ));
             }
             Err(e) => {
+                assert_query_error_code(&e, "nsys.query.stats-by-size-group-by-unsupported");
                 let msg = format!("{e:#}");
                 assert!(
                     msg.contains("does not yet support") || msg.contains("not yet"),

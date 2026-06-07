@@ -1,5 +1,6 @@
 use crate::dto::{
     CapabilitiesDto, CaptureFlagsRow, SummaryAuxiliary, SummaryResponse, TraceFileRow,
+    TraceSchemaSurveyDto,
 };
 use veloq_pytorch_data::{TraceFile, TraceSet};
 
@@ -22,6 +23,7 @@ pub fn summary(trace: &TraceSet) -> SummaryResponse {
                     flags: file.capture_flags.clone(),
                 })
                 .collect(),
+            schema_survey: TraceSchemaSurveyDto::from(&trace.schema_survey),
         },
     }
 }

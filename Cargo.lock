@@ -3381,7 +3381,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "veloq"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3394,6 +3394,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "veloq-core",
  "veloq-ncu",
  "veloq-nsys",
@@ -3402,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3410,6 +3411,7 @@ dependencies = [
  "comfy-table",
  "csv",
  "log",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
@@ -3419,8 +3421,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "veloq-data"
+version = "0.2.0"
+dependencies = [
+ "arrow",
+ "flate2",
+ "log",
+ "parquet",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "veloq-core",
+]
+
+[[package]]
 name = "veloq-ncu"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3437,7 +3453,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3449,6 +3465,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "terminal_size",
+ "thiserror",
  "veloq-core",
  "veloq-nsys-data",
  "veloq-nsys-query",
@@ -3456,7 +3473,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys-data"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3471,11 +3488,12 @@ dependencies = [
  "tempfile",
  "thiserror",
  "veloq-core",
+ "veloq-data",
 ]
 
 [[package]]
 name = "veloq-nsys-query"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "duckdb",
@@ -3487,11 +3505,12 @@ dependencies = [
  "thiserror",
  "veloq-core",
  "veloq-nsys-data",
+ "veloq-query",
 ]
 
 [[package]]
 name = "veloq-pytorch"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3499,6 +3518,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "veloq-core",
  "veloq-pytorch-data",
  "veloq-pytorch-query",
@@ -3506,32 +3526,43 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch-data"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
  "arrow",
- "bincode",
  "flate2",
  "log",
  "parquet",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "veloq-core",
+ "veloq-data",
 ]
 
 [[package]]
 name = "veloq-pytorch-query"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
+ "duckdb",
  "regex",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "veloq-core",
  "veloq-pytorch-data",
+ "veloq-query",
+]
+
+[[package]]
+name = "veloq-query"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "duckdb",
+ "veloq-core",
 ]
 
 [[package]]

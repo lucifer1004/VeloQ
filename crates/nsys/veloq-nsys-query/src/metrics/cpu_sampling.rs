@@ -2,18 +2,21 @@
 //!
 //! Reads `COMPOSITE_EVENTS` (periodic IP samples) plus
 //! `SAMPLING_CALLCHAINS` (per-sample stack frames) and rolls up
-//! per-key hotspot histograms on four axes (`symbol` / `module` /
-//! `tid` / `cpu`) or bucketed sample counts. Trust signals:
+//! per-key hotspot histograms on five axes (`symbol` / `module` /
+//! `stack` / `tid` / `cpu`) or bucketed sample counts. Trust signals:
 //! `unresolved_leaf_share`, `kernel_leaf_share`,
 //! `truncated_stack_share`.
 
-use anyhow::{Context, Result};
+use crate::{NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use serde::Serialize;
 use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
 use veloq_nsys_data::Trace;
 
 use super::{Coverage, CpuBucketSample, CpuSamplingBody, CpuSamplingRequest, MetricsCommon};
+
+const CPU_SAMPLING_STATS_SQL: &str = "cpu-sampling stats";
+const CPU_SAMPLING_BUCKETS_SQL: &str = "cpu-sampling buckets";
 
 /// `--group-by` axis for `--type cpu-sampling`. The default is
 /// `Symbol` (leaf-frame function — `perf top` ergonomics). Other
@@ -26,19 +29,18 @@ pub enum CpuGroupBy {
     Tid,
     Cpu,
     Module,
+    Stack,
 }
 
 impl CpuGroupBy {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "symbol" => Ok(Self::Symbol),
             "tid" | "thread" => Ok(Self::Tid),
             "cpu" | "core" => Ok(Self::Cpu),
             "module" | "binary" => Ok(Self::Module),
-            other => anyhow::bail!(
-                "unknown --group-by `{other}` for cpu-sampling \
-                 (expected: symbol, tid, cpu, module)"
-            ),
+            "stack" | "callchain" | "call-stack" | "call_stack" => Ok(Self::Stack),
+            other => Err(NsysQueryError::metrics_cpu_sampling_unknown_group_by(other)),
         }
     }
 
@@ -48,6 +50,7 @@ impl CpuGroupBy {
             Self::Tid => "tid",
             Self::Cpu => "cpu",
             Self::Module => "module",
+            Self::Stack => "stack",
         }
     }
 }
@@ -69,6 +72,13 @@ pub struct HotspotRow {
     pub key: String,
     pub samples: i64,
     pub percentage: f64,
+    /// Representative sample for this hotspot row, chosen as the
+    /// earliest `(start,id)` in the group. Feed this directly to
+    /// `veloq inspect`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_row_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sample_start_ns: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -95,6 +105,15 @@ pub struct HotspotRow {
     /// `--group-by tid` axis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tid: Option<i64>,
+    /// Present on `--group-by stack` axis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack_hash: Option<String>,
+    /// Present on `--group-by stack` axis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stack_depth: Option<i64>,
+    /// Present on `--group-by stack` axis, leaf frame first.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub stack_frames: Vec<String>,
 }
 
 pub(super) fn run_cpu_sampling(
@@ -103,13 +122,9 @@ pub(super) fn run_cpu_sampling(
     abs_window: Option<(i64, i64)>,
     trace_origin_ns: i64,
     trace_span_ns: (i64, i64),
-) -> Result<CpuSamplingBody> {
+) -> NsysQueryResult<CpuSamplingBody> {
     if !trace.table_exists("COMPOSITE_EVENTS") {
-        anyhow::bail!(
-            "metrics --type cpu-sampling requires `COMPOSITE_EVENTS`, \
-             which is absent from this trace; re-capture with \
-             `nsys profile --sample=process-tree`"
-        );
+        return Err(NsysQueryError::MetricsCpuSamplingCompositeEventsMissing);
     }
     // SAMPLING_CALLCHAINS missing is recoverable — `--group-by tid` /
     // `cpu` don't need stacks. Surface a hint only when the requested
@@ -118,14 +133,14 @@ pub(super) fn run_cpu_sampling(
         Some(s) => CpuGroupBy::parse(s)?,
         None => CpuGroupBy::Symbol,
     };
-    let needs_callchains = matches!(group_by, CpuGroupBy::Symbol | CpuGroupBy::Module);
+    let needs_callchains = matches!(
+        group_by,
+        CpuGroupBy::Symbol | CpuGroupBy::Module | CpuGroupBy::Stack
+    );
     if needs_callchains && !trace.table_exists("SAMPLING_CALLCHAINS") {
-        anyhow::bail!(
-            "--group-by {} needs `SAMPLING_CALLCHAINS` (per-sample stacks), \
-             which is absent from this trace; either re-capture with stack \
-             sampling enabled or switch to `--group-by tid` / `cpu`",
-            group_by.as_str()
-        );
+        return Err(NsysQueryError::MetricsCpuSamplingCallchainsMissing {
+            group_by: group_by.as_str(),
+        });
     }
     // `--name` is only meaningful on the symbol / module axes where it
     // matches against a string key. On `tid` / `cpu` axes the key is
@@ -133,11 +148,12 @@ pub(super) fn run_cpu_sampling(
     // ignoring would let an agent burn time wondering why the filter
     // had no effect.
     if req.name_glob.is_some() && !needs_callchains {
-        anyhow::bail!(
-            "--name doesn't apply on --group-by {} (keys are numeric); \
-             drop it or switch to `--group-by symbol` / `module`",
-            group_by.as_str()
-        );
+        return Err(NsysQueryError::MetricsCpuSamplingNameOnNumericAxis {
+            group_by: group_by.as_str(),
+        });
+    }
+    if req.common.bucket_ns.is_some() && matches!(group_by, CpuGroupBy::Stack) {
+        return Err(NsysQueryError::MetricsCpuSamplingStackBucketUnsupported);
     }
 
     let stats = query_cpu_sample_stats(trace, req, abs_window)?;
@@ -145,12 +161,16 @@ pub(super) fn run_cpu_sampling(
     // Apply name glob filter on the relevant axis. We do it in Rust on
     // the resolved rows so the SQL stays uniform and the LIKE pattern
     // doesn't have to compose with the per-axis column expression.
-    let like_pattern = req.name_glob.as_deref().map(crate::search_glob_to_like);
+    let like_pattern = req
+        .name_glob
+        .as_deref()
+        .map(veloq_core::query::glob_sql_like);
 
     let hotspot = if req.common.bucket_ns.is_none() {
         let rows = match group_by {
             CpuGroupBy::Symbol => query_cpu_hotspot_symbol(trace, req, abs_window)?,
             CpuGroupBy::Module => query_cpu_hotspot_module(trace, req, abs_window)?,
+            CpuGroupBy::Stack => query_cpu_hotspot_stack(trace, req, abs_window)?,
             CpuGroupBy::Tid => query_cpu_hotspot_tid(trace, req, abs_window)?,
             CpuGroupBy::Cpu => query_cpu_hotspot_cpu(trace, req, abs_window)?,
         };
@@ -251,7 +271,7 @@ fn query_cpu_sample_stats(
     trace: &Trace,
     req: &CpuSamplingRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<CpuSampleStats> {
+) -> NsysQueryResult<CpuSampleStats> {
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let has_callchains = trace.table_exists("SAMPLING_CALLCHAINS");
     // Trust signals all come from SAMPLING_CALLCHAINS. When that table
@@ -307,27 +327,29 @@ fn query_cpu_sample_stats(
             "#
         )
     };
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing cpu-sampling stats SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let r = rows
-        .next()?
-        .ok_or_else(|| anyhow::anyhow!("internal: cpu-sampling stats returned no row"))?;
-    let samples_total: i64 = r.get("samples_total")?;
+    super::query_optional_row(
+        trace,
+        &sql,
+        &params,
+        CPU_SAMPLING_STATS_SQL,
+        cpu_sample_stats_row,
+    )?
+    .ok_or_else(|| crate::NsysQueryError::internal_stats_row_missing("cpu-sampling"))
+}
+
+fn cpu_sample_stats_row(row: &duckdb::Row<'_>) -> Result<CpuSampleStats, duckdb::Error> {
+    let samples_total: i64 = row.get("samples_total")?;
     let span = if samples_total > 0 {
-        Some((r.get("span_lo")?, r.get("span_hi")?))
+        Some((row.get("span_lo")?, row.get("span_hi")?))
     } else {
         None
     };
     Ok(CpuSampleStats {
         samples_total,
         span,
-        n_unresolved_leaf: r.get("n_unresolved")?,
-        n_kernel_leaf: r.get("n_kernel")?,
-        n_truncated_stack: r.get("n_truncated")?,
+        n_unresolved_leaf: row.get("n_unresolved")?,
+        n_kernel_leaf: row.get("n_kernel")?,
+        n_truncated_stack: row.get("n_truncated")?,
     })
 }
 
@@ -340,14 +362,15 @@ fn build_cpu_filtered_samples_cte(
     abs_window: Option<(i64, i64)>,
 ) -> (String, Vec<Value>) {
     let global_tid = veloq_nsys_data::sql_expr::u64_bits_to_i64("globalTid");
-    super::build_filtered_cte(
+    let fragment = crate::query_sql::sample_scan::filtered_cte(
         "filtered_samples",
         "COMPOSITE_EVENTS",
         &format!("id, start, cpu, {global_tid} AS globalTid"),
         req.cpu,
         req.tid,
         abs_window,
-    )
+    );
+    (fragment.sql, fragment.params)
 }
 
 /// Internal row carrying raw SQL output before percentage / key
@@ -360,6 +383,10 @@ struct RawHotspot {
     unresolved: Option<bool>,
     cpu: Option<i64>,
     global_tid: Option<i64>,
+    sample_id: Option<i64>,
+    sample_start_ns: Option<i64>,
+    stack_signature: Option<String>,
+    stack_depth: Option<i64>,
     samples: i64,
 }
 
@@ -367,7 +394,7 @@ fn query_cpu_hotspot_symbol(
     trace: &Trace,
     req: &CpuSamplingRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<RawHotspot>> {
+) -> NsysQueryResult<Vec<RawHotspot>> {
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let sql = format!(
         r#"
@@ -387,7 +414,9 @@ fn query_cpu_hotspot_symbol(
             m.value AS module_path,
             CAST(COALESCE(leaf.kernelMode, 0) AS BIGINT) AS kernel_mode_int,
             CAST(COALESCE(leaf.unresolved, 0) AS BIGINT) AS unresolved_int,
-            CAST(COUNT(*) AS BIGINT) AS samples
+            CAST(COUNT(*) AS BIGINT) AS samples,
+            CAST(FIRST(fs.id ORDER BY fs.start ASC, fs.id ASC) AS BIGINT) AS sample_id,
+            CAST(FIRST(fs.start ORDER BY fs.start ASC, fs.id ASC) AS BIGINT) AS sample_start_ns
         FROM filtered_samples fs
         LEFT JOIN leaf ON leaf.id = fs.id
         LEFT JOIN nsight.StringIds s ON s.id = leaf.symbol
@@ -403,6 +432,10 @@ fn query_cpu_hotspot_symbol(
             unresolved: Some(r.get::<_, i64>("unresolved_int")? != 0),
             cpu: None,
             global_tid: None,
+            sample_id: r.get("sample_id")?,
+            sample_start_ns: r.get("sample_start_ns")?,
+            stack_signature: None,
+            stack_depth: None,
             samples: r.get("samples")?,
         })
     })
@@ -412,7 +445,7 @@ fn query_cpu_hotspot_module(
     trace: &Trace,
     req: &CpuSamplingRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<RawHotspot>> {
+) -> NsysQueryResult<Vec<RawHotspot>> {
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let sql = format!(
         r#"
@@ -425,7 +458,9 @@ fn query_cpu_hotspot_module(
         SELECT
             m.value AS module_path,
             CAST(COALESCE(leaf.kernelMode, 0) AS BIGINT) AS kernel_mode_int,
-            CAST(COUNT(*) AS BIGINT) AS samples
+            CAST(COUNT(*) AS BIGINT) AS samples,
+            CAST(FIRST(fs.id ORDER BY fs.start ASC, fs.id ASC) AS BIGINT) AS sample_id,
+            CAST(FIRST(fs.start ORDER BY fs.start ASC, fs.id ASC) AS BIGINT) AS sample_start_ns
         FROM filtered_samples fs
         LEFT JOIN leaf ON leaf.id = fs.id
         LEFT JOIN nsight.StringIds m ON m.id = leaf.module
@@ -440,6 +475,73 @@ fn query_cpu_hotspot_module(
             unresolved: None,
             cpu: None,
             global_tid: None,
+            sample_id: r.get("sample_id")?,
+            sample_start_ns: r.get("sample_start_ns")?,
+            stack_signature: None,
+            stack_depth: None,
+            samples: r.get("samples")?,
+        })
+    })
+}
+
+fn query_cpu_hotspot_stack(
+    trace: &Trace,
+    req: &CpuSamplingRequest,
+    abs_window: Option<(i64, i64)>,
+) -> NsysQueryResult<Vec<RawHotspot>> {
+    let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
+    let sql = format!(
+        r#"
+        WITH {filtered_sql},
+        frames AS (
+            SELECT
+                fs.id AS sample_id,
+                fs.start AS sample_start_ns,
+                c.stackDepth AS stack_depth,
+                CASE
+                    WHEN COALESCE(c.unresolved, 0) = 1 THEN '<unresolved>'
+                    ELSE COALESCE(s.value, '<no symbol>')
+                END AS symbol_name,
+                COALESCE(m.value, '') AS module_path
+            FROM filtered_samples fs
+            JOIN nsight.SAMPLING_CALLCHAINS c ON c.id = fs.id
+            LEFT JOIN nsight.StringIds s ON s.id = c.symbol
+            LEFT JOIN nsight.StringIds m ON m.id = c.module
+        ),
+        sample_stacks AS (
+            SELECT
+                sample_id,
+                sample_start_ns,
+                STRING_AGG(symbol_name || '@' || module_path, '\n' ORDER BY stack_depth ASC)
+                    AS stack_signature,
+                CAST(COUNT(*) AS BIGINT) AS stack_depth
+            FROM frames
+            GROUP BY sample_id, sample_start_ns
+        )
+        SELECT
+            stack_signature,
+            stack_depth,
+            CAST(COUNT(*) AS BIGINT) AS samples,
+            CAST(FIRST(sample_id ORDER BY sample_start_ns ASC, sample_id ASC) AS BIGINT)
+                AS sample_id,
+            CAST(FIRST(sample_start_ns ORDER BY sample_start_ns ASC, sample_id ASC) AS BIGINT)
+                AS sample_start_ns
+        FROM sample_stacks
+        GROUP BY stack_signature, stack_depth
+        "#
+    );
+    super::query_rows(trace, &sql, &params, "cpu-sampling hotspot-stack", |r| {
+        Ok(RawHotspot {
+            symbol_name: None,
+            module_path: None,
+            kernel_mode: None,
+            unresolved: None,
+            cpu: None,
+            global_tid: None,
+            sample_id: r.get("sample_id")?,
+            sample_start_ns: r.get("sample_start_ns")?,
+            stack_signature: r.get("stack_signature")?,
+            stack_depth: r.get("stack_depth")?,
             samples: r.get("samples")?,
         })
     })
@@ -449,14 +551,16 @@ fn query_cpu_hotspot_tid(
     trace: &Trace,
     req: &CpuSamplingRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<RawHotspot>> {
+) -> NsysQueryResult<Vec<RawHotspot>> {
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let sql = format!(
         r#"
         WITH {filtered_sql}
         SELECT
             globalTid AS global_tid,
-            CAST(COUNT(*) AS BIGINT) AS samples
+            CAST(COUNT(*) AS BIGINT) AS samples,
+            CAST(FIRST(id ORDER BY start ASC, id ASC) AS BIGINT) AS sample_id,
+            CAST(FIRST(start ORDER BY start ASC, id ASC) AS BIGINT) AS sample_start_ns
         FROM filtered_samples
         GROUP BY global_tid
         "#
@@ -469,6 +573,10 @@ fn query_cpu_hotspot_tid(
             unresolved: None,
             cpu: None,
             global_tid: Some(r.get("global_tid")?),
+            sample_id: r.get("sample_id")?,
+            sample_start_ns: r.get("sample_start_ns")?,
+            stack_signature: None,
+            stack_depth: None,
             samples: r.get("samples")?,
         })
     })
@@ -478,14 +586,16 @@ fn query_cpu_hotspot_cpu(
     trace: &Trace,
     req: &CpuSamplingRequest,
     abs_window: Option<(i64, i64)>,
-) -> Result<Vec<RawHotspot>> {
+) -> NsysQueryResult<Vec<RawHotspot>> {
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let sql = format!(
         r#"
         WITH {filtered_sql}
         SELECT
             CAST(cpu AS BIGINT) AS cpu,
-            CAST(COUNT(*) AS BIGINT) AS samples
+            CAST(COUNT(*) AS BIGINT) AS samples,
+            CAST(FIRST(id ORDER BY start ASC, id ASC) AS BIGINT) AS sample_id,
+            CAST(FIRST(start ORDER BY start ASC, id ASC) AS BIGINT) AS sample_start_ns
         FROM filtered_samples
         GROUP BY cpu
         "#
@@ -498,6 +608,10 @@ fn query_cpu_hotspot_cpu(
             unresolved: None,
             cpu: Some(r.get("cpu")?),
             global_tid: None,
+            sample_id: r.get("sample_id")?,
+            sample_start_ns: r.get("sample_start_ns")?,
+            stack_signature: None,
+            stack_depth: None,
             samples: r.get("samples")?,
         })
     })
@@ -534,6 +648,10 @@ fn finalize_hotspot(
                     .unwrap_or_else(|| "<unknown>".to_string());
                 (m, None)
             }
+            CpuGroupBy::Stack => match r.stack_signature.as_deref() {
+                Some(signature) => (format!("stack|{}", stable_stack_hash(signature)), None),
+                None => continue,
+            },
             CpuGroupBy::Tid => match r.global_tid {
                 Some(g) => (g.to_string(), None),
                 None => continue, // shouldn't happen; defensive
@@ -546,8 +664,11 @@ fn finalize_hotspot(
         // --name applies to the row's `key` for symbol/module axes;
         // tid/cpu axes ignore it (numeric keys aren't glob-meaningful).
         if let Some(pat) = name_like
-            && matches!(group_by, CpuGroupBy::Symbol | CpuGroupBy::Module)
-            && !crate::sql_like_match(&key, pat)
+            && matches!(
+                group_by,
+                CpuGroupBy::Symbol | CpuGroupBy::Module | CpuGroupBy::Stack
+            )
+            && !hotspot_name_matches(&key, r.stack_signature.as_deref(), pat, group_by)
         {
             continue;
         }
@@ -563,6 +684,8 @@ fn finalize_hotspot(
             key,
             samples: r.samples,
             percentage,
+            sample_row_id: r.sample_id.map(|id| format!("cpu_sample:{id}")),
+            sample_start_ns: r.sample_start_ns,
             symbol_name,
             module_name,
             kernel_mode: r.kernel_mode,
@@ -571,9 +694,68 @@ fn finalize_hotspot(
             global_tid: r.global_tid,
             pid,
             tid,
+            stack_hash: r.stack_signature.as_deref().map(stable_stack_hash),
+            stack_depth: r.stack_depth,
+            stack_frames: r
+                .stack_signature
+                .as_deref()
+                .map(render_stack_frames)
+                .unwrap_or_default(),
         });
     }
     out
+}
+
+fn hotspot_name_matches(
+    key: &str,
+    stack_signature: Option<&str>,
+    pattern: &str,
+    group_by: CpuGroupBy,
+) -> bool {
+    match group_by {
+        CpuGroupBy::Stack => stack_signature
+            .map(render_stack_frames)
+            .map(|frames| {
+                frames
+                    .iter()
+                    .any(|frame| veloq_core::query::sql_like_matches(frame, pattern))
+            })
+            .unwrap_or(false),
+        _ => veloq_core::query::sql_like_matches(key, pattern),
+    }
+}
+
+fn render_stack_frames(signature: &str) -> Vec<String> {
+    signature
+        .split('\n')
+        .flat_map(|chunk| chunk.split("\\n"))
+        .filter(|frame| !frame.is_empty())
+        .map(render_stack_frame)
+        .collect::<Vec<_>>()
+}
+
+fn render_stack_frame(raw: &str) -> String {
+    let Some((symbol, module)) = raw.rsplit_once('@') else {
+        return raw.to_string();
+    };
+    if module.is_empty() {
+        return symbol.to_string();
+    }
+    let module_name = crate::module_basename(module);
+    if symbol == "<unresolved>" {
+        format!("<unresolved>@{module_name}")
+    } else {
+        format!("{symbol}@{module_name}")
+    }
+}
+
+fn stable_stack_hash(signature: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in signature.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn query_cpu_buckets(
@@ -584,16 +766,14 @@ fn query_cpu_buckets(
     group_by: CpuGroupBy,
     name_like: Option<&str>,
     primary_origin_ns: i64,
-) -> Result<Vec<CpuBucketSample>> {
+) -> NsysQueryResult<Vec<CpuBucketSample>> {
     let anchor = abs_window.map(|(s, _)| s).unwrap_or(primary_origin_ns);
     let (filtered_sql, params) = build_cpu_filtered_samples_cte(req, abs_window);
     let needs_callchains = matches!(group_by, CpuGroupBy::Symbol | CpuGroupBy::Module);
     if needs_callchains && !trace.table_exists("SAMPLING_CALLCHAINS") {
-        anyhow::bail!(
-            "--group-by {} bucketed mode needs `SAMPLING_CALLCHAINS`, \
-             which is absent from this trace",
-            group_by.as_str()
-        );
+        return Err(NsysQueryError::MetricsCpuSamplingBucketCallchainsMissing {
+            group_by: group_by.as_str(),
+        });
     }
 
     // Group-by expression — same axis a hotspot query uses, but inside
@@ -615,6 +795,9 @@ fn query_cpu_buckets(
                 ON c.id = fs.id AND c.stackDepth = 0 \
              LEFT JOIN nsight.StringIds m ON m.id = c.module",
         ),
+        CpuGroupBy::Stack => {
+            return Err(NsysQueryError::MetricsCpuSamplingStackBucketUnsupported);
+        }
         CpuGroupBy::Tid => ("CAST(fs.globalTid AS VARCHAR)", ""),
         CpuGroupBy::Cpu => ("CAST(fs.cpu AS VARCHAR)", ""),
     };
@@ -645,39 +828,54 @@ fn query_cpu_buckets(
         "#,
         bucket = bucket_ns,
     );
-    let conn = trace.conn();
-    let mut stmt = conn
-        .prepare(&sql)
-        .context("preparing cpu-sampling bucket SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-    let mut out: Vec<CpuBucketSample> = Vec::new();
-    while let Some(r) = rows.next()? {
-        let key: String = r.get("key")?;
+    let rows = super::query_rows(
+        trace,
+        &sql,
+        &params,
+        CPU_SAMPLING_BUCKETS_SQL,
+        cpu_bucket_row,
+    )?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
         // Apply --name glob in Rust on symbol / module axes; the SQL
         // already projects basenames-as-part-of-key for symbol axis,
         // so glob matches against the projected `key` correctly.
         let render_key = match group_by {
-            CpuGroupBy::Module => crate::module_basename(&key),
-            _ => key.clone(),
+            CpuGroupBy::Module => crate::module_basename(&row.key),
+            _ => row.key,
         };
         if let Some(pat) = name_like
             && matches!(group_by, CpuGroupBy::Symbol | CpuGroupBy::Module)
-            && !crate::sql_like_match(&render_key, pat)
+            && !veloq_core::query::sql_like_matches(&render_key, pat)
         {
             continue;
         }
-        let samples: i64 = r.get("samples")?;
         out.push(CpuBucketSample {
-            t_start_ns: r.get("t_start")?,
-            t_end_ns: r.get("t_end")?,
+            t_start_ns: row.t_start_ns,
+            t_end_ns: row.t_end_ns,
             key: render_key,
             agg: "sum",
-            value: samples as f64,
-            samples,
+            value: row.samples as f64,
+            samples: row.samples,
         });
     }
     Ok(out)
+}
+
+struct RawCpuBucket {
+    t_start_ns: i64,
+    t_end_ns: i64,
+    key: String,
+    samples: i64,
+}
+
+fn cpu_bucket_row(row: &duckdb::Row<'_>) -> Result<RawCpuBucket, duckdb::Error> {
+    Ok(RawCpuBucket {
+        t_start_ns: row.get("t_start")?,
+        t_end_ns: row.get("t_end")?,
+        key: row.get("key")?,
+        samples: row.get("samples")?,
+    })
 }
 
 /// Sort axes the cpu-sampling hotspot list supports.
@@ -751,12 +949,12 @@ impl SortKeyDef for HotspotSortKey {
 /// Sort the cpu-sampling hotspot list per the user's `--sort` spec.
 /// Default direction by key matches what an agent would expect:
 /// `samples` and `percentage` DESC (biggest first), names ASC.
-fn sort_hotspot(out: &mut [HotspotRow], spec: &SortSpec) -> Result<()> {
+fn sort_hotspot(out: &mut [HotspotRow], spec: &SortSpec) -> NsysQueryResult<()> {
     let resolved: Vec<(HotspotSortKey, Direction)> = spec
         .fields()
         .iter()
-        .map(|f| HotspotSortKey::from_field(f).map_err(Into::into))
-        .collect::<Result<_>>()?;
+        .map(|f| HotspotSortKey::from_field(f).map_err(NsysQueryError::metrics_sort_invalid))
+        .collect::<NsysQueryResult<_>>()?;
     // Stable: tie-break on key ASC.
     veloq_core::sort_in_memory(
         out,

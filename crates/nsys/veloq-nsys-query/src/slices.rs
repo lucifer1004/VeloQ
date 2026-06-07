@@ -17,20 +17,28 @@
 //! raw `correlationId` across processes — see
 //! `veloq-nsys-data::correlation` for the same logic in single-event form.
 
-use crate::{RowId, row_id::EventKind};
-use anyhow::{Context, Result};
+use crate::query_sql::{
+    exec::{SqlLabel, query_rows, query_rows_with_context},
+    sort::order_by,
+};
+use crate::{NsysQueryError, NsysQueryResult, RowId, row_id::EventKind};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec, time::TimeWindow};
-use veloq_nsys_data::{Trace, runtime_nvtx_parent};
+use veloq_core::{Direction, NameFilterRef, SortKeyDef, SortKeySpec, SortSpec, time::TimeWindow};
+use veloq_nsys_data::{NvtxNesting, Trace, runtime_nvtx_parent};
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{name, total_matched_bigint_expr, window};
 
 // Per-kind CTE body for the NVTX projection lives in
 // `crate::nvtx_projection::gpu_kind_cte` so instance and aggregate views
 // share the same attribution SQL.
 use crate::nvtx_projection::gpu_kind_cte;
+
+const SLICES_INSTANCE_SQL: &str = "instance";
+const SLICES_AGGREGATE_SQL: &str = "aggregate";
 
 #[derive(Debug, Clone)]
 pub struct SlicesRequest {
@@ -115,13 +123,11 @@ pub enum SlicesAggregateGroupBy {
 }
 
 impl SlicesAggregateGroupBy {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "name" | "leaf" | "nvtx-name" | "nvtx_name" => Ok(Self::Name),
             "path" | "nvtx-path" | "nvtx_path" => Ok(Self::Path),
-            other => anyhow::bail!(
-                "unknown --group-by `{other}` for slices --aggregate (expected: name, path)"
-            ),
+            other => Err(NsysQueryError::slices_unknown_group_by(other)),
         }
     }
 
@@ -204,19 +210,16 @@ impl SortKey {
     }
 }
 
-fn slices_sort_sql(spec: &SortSpec) -> anyhow::Result<String> {
-    let mut resolved: Vec<(&'static str, Direction)> = Vec::new();
-    for f in spec.fields() {
-        let (k, d) = SortKey::from_field(f)?;
-        resolved.push((k.column(), d));
-    }
+fn slices_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
     // r_start as tiebreaker for determinism — only kicks in when the
     // primary key truly ties (rare for the aggregate columns; possible
     // for `name`).
-    Ok(veloq_core::sort::build_order_by(
-        &resolved,
+    order_by::<SortKey>(
+        spec,
+        SortKey::column,
+        NsysQueryError::slices_sort_invalid,
         "r_start, nvtx_rowid",
-    ))
+    )
 }
 
 /// Sort axes `slices --aggregate` supports.
@@ -286,13 +289,13 @@ impl AggregateSortKey {
     }
 }
 
-fn aggregate_sort_sql(spec: &SortSpec) -> anyhow::Result<String> {
-    let mut resolved: Vec<(&'static str, Direction)> = Vec::new();
-    for f in spec.fields() {
-        let (k, d) = AggregateSortKey::from_field(f)?;
-        resolved.push((k.column(), d));
-    }
-    let order = veloq_core::sort::build_order_by(&resolved, "path");
+fn aggregate_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
+    let order = order_by::<AggregateSortKey>(
+        spec,
+        AggregateSortKey::column,
+        NsysQueryError::slices_sort_invalid,
+        "path",
+    )?;
     Ok(format!("{order}, name ASC"))
 }
 
@@ -403,9 +406,9 @@ pub struct GpuStreamSpan {
     pub memset_count: i64,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> Result<SlicesResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<SlicesResponse> {
     crate::check_limit(req.limit)?;
-    let trace = Trace::open(path)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
 
     // NVTX_EVENTS / RUNTIME / CONTEXT_INFO are all required for the
     // attribution walk to make sense. They're each optional in the NSys
@@ -420,20 +423,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> Result<SlicesResponse
         "TARGET_INFO_CUDA_CONTEXT_INFO",
     ] {
         if !trace.table_exists(t) {
-            anyhow::bail!(
-                "slices requires `{t}`, which is not present in this trace \
-                 (NVTX attribution is unavailable)"
-            );
+            return Err(NsysQueryError::SlicesPrereqTableMissing { table: t });
         }
     }
     let has_kernel = trace.table_exists("CUPTI_ACTIVITY_KIND_KERNEL");
     let has_memcpy = trace.table_exists("CUPTI_ACTIVITY_KIND_MEMCPY");
     let has_memset = trace.table_exists("CUPTI_ACTIVITY_KIND_MEMSET");
     if !(has_kernel || has_memcpy || has_memset) {
-        anyhow::bail!(
-            "slices requires at least one GPU event table \
-             (kernel/memcpy/memset), but none is present in this trace"
-        );
+        return Err(NsysQueryError::SlicesGpuEventTableMissing);
     }
 
     // Time window scopes the NVTX RANGES. Inclusion uses **overlap**
@@ -443,39 +440,23 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> Result<SlicesResponse
     // four time-windowed commands.) The slice's full CPU bounds are
     // still reported as-is; we don't clip the reporting to the window,
     // just the inclusion.
-    let abs_window = trace.resolve_window(req.time_window)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
-    if req.name.is_some() && req.name_regex.is_some() {
-        anyhow::bail!("`--name` and `--name-regex` are mutually exclusive; pick one");
-    }
-    // The NVTX name filter has three modes:
-    // - `--name <glob>`   → LIKE with our shell-glob translation
-    // - `--name-regex <r>` → DuckDB regexp_matches
-    // - neither           → constant TRUE (every NVTX range qualifies)
-    // Both forms bind exactly one positional `?` so the param-vector
-    // layout downstream stays uniform.
+    let name_filter = NameFilterRef::from_optional(req.name.as_deref(), req.name_regex.as_deref())
+        .map_err(|_| NsysQueryError::NameFilterConflict)?;
     let mut params: Vec<Value> = Vec::new();
-    let name_predicate = if let Some(re) = &req.name_regex {
-        params.push(Value::Text(re.clone()));
-        "regexp_matches(COALESCE(n.text, s.value, ''), ?)"
-    } else if let Some(glob) = &req.name {
-        params.push(Value::Text(super::search_glob_to_like(glob)));
-        r#"COALESCE(n.text, s.value, '') LIKE ? ESCAPE '\'"#
-    } else {
-        // Match every NVTX range. We still bind one ? for layout
-        // uniformity — a constant-true predicate that takes a string
-        // and ignores it.
-        params.push(Value::Text(String::new()));
-        "(? IS NOT NULL OR TRUE)"
-    };
+    let name_fragment = name::predicate_or_bound_true("COALESCE(n.text, s.value, '')", name_filter);
+    let name_predicate = name_fragment.sql;
+    params.extend(name_fragment.params);
 
-    let time_filter = if let Some((s, e)) = abs_window {
+    let time_filter = if let Some(fragment) = window::overlap_filter("n", abs_window) {
         // overlap: range_start < window_end AND range_end > window_start
-        params.push(Value::BigInt(e));
-        params.push(Value::BigInt(s));
-        "AND n.start < ? AND n.\"end\" > ?"
+        params.extend(fragment.params);
+        format!("AND {}", fragment.sql)
     } else {
-        ""
+        String::new()
     };
 
     // Rank filter (cross-axis bridge from `--device <N>`): the
@@ -515,8 +496,8 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> Result<SlicesResponse
             &trace,
             req,
             abs_window,
-            name_predicate,
-            time_filter,
+            &name_predicate,
+            &time_filter,
             &host_pid_filter,
             &attrib_filters,
             &gpu_stream_filter,
@@ -546,7 +527,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> Result<SlicesResponse
     // against `CUPTI_ACTIVITY_KIND_RUNTIME` with a JOIN against
     // `read_parquet('<sidecar>')` UNNESTed by enclosing-rowid lists.
     let sidecar_path = runtime_nvtx_parent::ensure_sidecar(&trace)
-        .context("building NVTX-parent attribution sidecar for slices")?;
+        .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
     let sidecar_quoted = crate::nvtx_projection::quote_sidecar_path(&sidecar_path);
     let sidecar_expanded_cte =
         crate::nvtx_projection::sidecar_expanded_cte("sidecar_expanded", &sidecar_quoted);
@@ -724,7 +705,7 @@ fn run_aggregate(
     has_kernel: bool,
     has_memcpy: bool,
     has_memset: bool,
-) -> Result<SlicesResponse> {
+) -> NsysQueryResult<SlicesResponse> {
     let sort_spec = req
         .sort
         .clone()
@@ -733,7 +714,7 @@ fn run_aggregate(
     params.push(Value::BigInt(req.limit as i64));
 
     let sidecar_path = runtime_nvtx_parent::ensure_sidecar(trace)
-        .context("building NVTX-parent attribution sidecar for slices --aggregate")?;
+        .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
     let sidecar_quoted = crate::nvtx_projection::quote_sidecar_path(&sidecar_path);
     let sidecar_expanded_cte =
         crate::nvtx_projection::sidecar_expanded_cte("sidecar_expanded", &sidecar_quoted);
@@ -749,7 +730,7 @@ fn run_aggregate(
             ),
             SlicesAggregateGroupBy::Path => {
                 veloq_nsys_data::nvtx_tree::ensure_sidecar(trace)
-                    .context("building NVTX tree sidecar for slices --aggregate --group-by path")?;
+                    .map_err(NsysQueryError::nvtx_tree_load)?;
                 (
                     "LEFT JOIN nsight.nvtx_tree nt ON nt.range_id = n.rowid",
                     "COALESCE(nt.path, COALESCE(n.text, s.value, '<unnamed>'))",
@@ -854,7 +835,7 @@ fn run_aggregate(
         ),
         ranked AS (
             SELECT *,
-                   CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+                   {total_matched}
             FROM per_group
         )
         SELECT
@@ -862,40 +843,12 @@ fn run_aggregate(
         FROM ranked
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
 
-    let mut stmt = trace
-        .conn()
-        .prepare(&sql)
-        .context("preparing slices --aggregate SQL")?;
-    let params_ref = crate::bind(&params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
-
-    let mut out: Vec<SlicesRow> = Vec::with_capacity(req.limit);
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        let name: String = r.get(0)?;
-        let path: Option<String> = r.get(1)?;
-        let instances: i64 = r.get(2)?;
-        let attributed_total_ns: i64 = r.get(3)?;
-        let p50_ns: f64 = r.get(4)?;
-        let p99_ns: f64 = r.get(5)?;
-        total_matched = r.get(6)?;
-        let key = match (req.group_by, path.as_deref()) {
-            (SlicesAggregateGroupBy::Path, Some(p)) => format!("scope|path:{p}"),
-            _ => format!("scope|{name}"),
-        };
-        out.push(SlicesRow::Aggregate(SliceAggregate {
-            key,
-            name,
-            path,
-            instances,
-            attributed_total_ns,
-            p50_ns,
-            p99_ns,
-        }));
-    }
+    let (out, total_matched) =
+        hydrate_aggregate_rows(trace.conn(), &sql, &params, req.limit, req.group_by)?;
 
     Ok(SlicesResponse {
         attribution: "correlation",
@@ -906,7 +859,7 @@ fn run_aggregate(
         count: out.len(),
         total_matched,
         time_window_ns: abs_window,
-        rows: out,
+        rows: out.into_iter().map(SlicesRow::Aggregate).collect(),
     })
 }
 
@@ -920,18 +873,101 @@ fn run_aggregate(
 /// returns rows sorted by `rn ASC, device_id, stream_id, kind`, so
 /// the first time a `nvtx_rowid` appears it dictates the slice's
 /// position in the response.
-fn hydrate_slice_rows(trace: &Trace, sql: &str, params: &[Value]) -> Result<(Vec<Slice>, i64)> {
-    let mut stmt = trace.conn().prepare(sql).context("preparing slices SQL")?;
-    let params_ref = crate::bind(params);
-    let mut rows = stmt.query(params_ref.as_slice())?;
+fn hydrate_aggregate_rows(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    limit: usize,
+    group_by: SlicesAggregateGroupBy,
+) -> NsysQueryResult<(Vec<SliceAggregate>, i64)> {
+    let rows = query_rows(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("slices", SLICES_AGGREGATE_SQL),
+        slice_aggregate_sql_row,
+    )?;
+    let (out, total_matched) = duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::First,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok(slice_aggregate_from_sql_row(row, group_by)),
+    )?;
+    debug_assert!(out.len() <= limit);
+    Ok((out, total_matched))
+}
 
-    // Compute NVTX nesting depths once for the whole trace. Cheap
-    // (single-digit ms even on large traces) and avoids per-range
-    // re-queries. The map keys on NVTX rowid; the builder looks
-    // depths up as it folds.
-    let nesting = trace
-        .nvtx_nesting()
-        .context("computing NVTX nesting depth for slices")?;
+struct SliceAggregateSqlRow {
+    name: String,
+    path: Option<String>,
+    instances: i64,
+    attributed_total_ns: i64,
+    p50_ns: f64,
+    p99_ns: f64,
+    total_matched: i64,
+}
+
+fn slice_aggregate_sql_row(row: &duckdb::Row<'_>) -> Result<SliceAggregateSqlRow, duckdb::Error> {
+    Ok(SliceAggregateSqlRow {
+        name: row.get(0)?,
+        path: row.get(1)?,
+        instances: row.get(2)?,
+        attributed_total_ns: row.get(3)?,
+        p50_ns: row.get(4)?,
+        p99_ns: row.get(5)?,
+        total_matched: row.get(6)?,
+    })
+}
+
+fn slice_aggregate_from_sql_row(
+    row: SliceAggregateSqlRow,
+    group_by: SlicesAggregateGroupBy,
+) -> SliceAggregate {
+    let key = match (group_by, row.path.as_deref()) {
+        (SlicesAggregateGroupBy::Path, Some(p)) => format!("scope|path:{p}"),
+        _ => format!("scope|{}", row.name),
+    };
+    SliceAggregate {
+        key,
+        name: row.name,
+        path: row.path,
+        instances: row.instances,
+        attributed_total_ns: row.attributed_total_ns,
+        p50_ns: row.p50_ns,
+        p99_ns: row.p99_ns,
+    }
+}
+
+fn hydrate_slice_rows(
+    trace: &Trace,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<(Vec<Slice>, i64)> {
+    hydrate_slice_rows_with_nesting(trace.conn(), sql, params, || {
+        trace
+            .nvtx_nesting()
+            .map_err(NsysQueryError::nvtx_nesting_load)
+    })
+}
+
+fn hydrate_slice_rows_with_nesting<F>(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    load_nesting: F,
+) -> NsysQueryResult<(Vec<Slice>, i64)>
+where
+    F: FnOnce() -> NsysQueryResult<NvtxNesting>,
+{
+    let (rows, nesting) = query_rows_with_context(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("slices", SLICES_INSTANCE_SQL),
+        load_nesting,
+        |row, _nesting| slice_sql_row(row),
+    )?;
 
     // Fold (range, device, stream, kind) rows into per-range structs.
     // Keyed by nvtx_rowid → Slice; per-stream sub-key (device, stream).
@@ -939,47 +975,39 @@ fn hydrate_slice_rows(trace: &Trace, sql: &str, params: &[Value]) -> Result<(Vec
     let mut order: Vec<i64> = Vec::new();
     let mut last_row_id: Option<i64> = None;
 
-    let mut total_matched: i64 = 0;
-    while let Some(r) = rows.next()? {
-        let nvtx_rowid: i64 = r.get(0)?;
-        let name: String = r.get(1)?;
-        let tid: i64 = r.get(2)?;
-        let r_start: i64 = r.get(3)?;
-        let r_end: i64 = r.get(4)?;
-        let device_id: Option<i32> = r.get(5)?;
-        let stream_id: Option<i64> = r.get(6)?;
-        let kind: Option<String> = r.get(7)?;
-        let gpu_start: Option<i64> = r.get(8)?;
-        let gpu_end: Option<i64> = r.get(9)?;
-        let busy_ns: Option<i64> = r.get(10)?;
-        let event_count: Option<i64> = r.get(11)?;
-        total_matched = r.get(12)?;
-
-        if last_row_id != Some(nvtx_rowid) {
-            order.push(nvtx_rowid);
-            last_row_id = Some(nvtx_rowid);
+    let total_matched =
+        duckdb_list::total_matched::<i64, _>(&rows, duckdb_list::TotalCarrier::Last, |row| {
+            row.total_matched
+        })
+        .map_err(duckdb_list::infallible_count_error)?;
+    for row in rows {
+        if last_row_id != Some(row.nvtx_rowid) {
+            order.push(row.nvtx_rowid);
+            last_row_id = Some(row.nvtx_rowid);
         }
 
-        let builder = slices_by_id.entry(nvtx_rowid).or_insert_with(|| {
+        let builder = slices_by_id.entry(row.nvtx_rowid).or_insert_with(|| {
             SliceBuilder::new(
-                nvtx_rowid,
-                name.clone(),
-                tid,
-                r_start,
-                r_end,
-                nesting.get(&nvtx_rowid).map(|e| e.depth),
+                row.nvtx_rowid,
+                row.name.clone(),
+                row.tid,
+                row.r_start,
+                row.r_end,
+                nesting.get(&row.nvtx_rowid).map(|e| e.depth),
             )
         });
 
-        if let (Some(dev), Some(stream), Some(kind)) = (device_id, stream_id, kind) {
+        if let (Some(dev), Some(stream), Some(kind)) =
+            (row.device_id, row.stream_id, row.kind.as_deref())
+        {
             builder.add_aggregate(
                 dev,
                 stream,
-                &kind,
-                gpu_start.unwrap_or(0),
-                gpu_end.unwrap_or(0),
-                busy_ns.unwrap_or(0),
-                event_count.unwrap_or(0),
+                kind,
+                row.gpu_start.unwrap_or(0),
+                row.gpu_end.unwrap_or(0),
+                row.busy_ns.unwrap_or(0),
+                row.event_count.unwrap_or(0),
             );
         }
     }
@@ -991,13 +1019,47 @@ fn hydrate_slice_rows(trace: &Trace, sql: &str, params: &[Value]) -> Result<(Vec
     // panicking, in case a future refactor drifts the invariant.
     let mut slices: Vec<Slice> = Vec::with_capacity(order.len());
     for id in order {
-        let builder = slices_by_id.remove(&id).with_context(|| {
-            format!("slice builder for nvtx_rowid {id} disappeared between fold and emit")
-        })?;
+        let Some(builder) = slices_by_id.remove(&id) else {
+            return Err(NsysQueryError::internal_slice_builder_missing(id));
+        };
         slices.push(builder.build());
     }
 
     Ok((slices, total_matched))
+}
+
+struct SliceSqlRow {
+    nvtx_rowid: i64,
+    name: String,
+    tid: i64,
+    r_start: i64,
+    r_end: i64,
+    device_id: Option<i32>,
+    stream_id: Option<i64>,
+    kind: Option<String>,
+    gpu_start: Option<i64>,
+    gpu_end: Option<i64>,
+    busy_ns: Option<i64>,
+    event_count: Option<i64>,
+    total_matched: i64,
+}
+
+fn slice_sql_row(row: &duckdb::Row<'_>) -> Result<SliceSqlRow, duckdb::Error> {
+    Ok(SliceSqlRow {
+        nvtx_rowid: row.get(0)?,
+        name: row.get(1)?,
+        tid: row.get(2)?,
+        r_start: row.get(3)?,
+        r_end: row.get(4)?,
+        device_id: row.get(5)?,
+        stream_id: row.get(6)?,
+        kind: row.get(7)?,
+        gpu_start: row.get(8)?,
+        gpu_end: row.get(9)?,
+        busy_ns: row.get(10)?,
+        event_count: row.get(11)?,
+        total_matched: row.get(12)?,
+    })
 }
 
 // ---- internal builder -----------------------------------------------------
@@ -1139,5 +1201,173 @@ impl SliceBuilder {
             attributed_memset_ns: tot_memset_ns,
             attributed_memset_count: tot_memset_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn empty_nesting() -> NsysQueryResult<NvtxNesting> {
+        Ok(HashMap::new())
+    }
+
+    #[test]
+    fn hydrate_aggregate_rows_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_aggregate_rows(
+            &conn,
+            "SELECT * FROM",
+            &[],
+            1,
+            SlicesAggregateGroupBy::Name,
+        ) {
+            Ok(rows) => anyhow::bail!(
+                "malformed slices aggregate SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("slices", crate::SqlPhase::Prepare, SLICES_AGGREGATE_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_aggregate_rows_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS name";
+
+        let err = match hydrate_aggregate_rows(&conn, sql, &[], 1, SlicesAggregateGroupBy::Name) {
+            Ok(rows) => anyhow::bail!(
+                "unbound slices aggregate SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_aggregate_rows_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT \
+                   'scope' AS name, \
+                   NULL::VARCHAR AS path, \
+                   'not-instances' AS instances";
+
+        let err = match hydrate_aggregate_rows(&conn, sql, &[], 1, SlicesAggregateGroupBy::Name) {
+            Ok(rows) => anyhow::bail!(
+                "malformed slices aggregate row should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_slice_rows_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_slice_rows_with_nesting(&conn, "SELECT * FROM", &[], empty_nesting)
+        {
+            Ok(rows) => anyhow::bail!(
+                "malformed slices instance SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("slices", crate::SqlPhase::Prepare, SLICES_INSTANCE_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_slice_rows_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS nvtx_rowid";
+
+        let err = match hydrate_slice_rows_with_nesting(&conn, sql, &[], empty_nesting) {
+            Ok(rows) => anyhow::bail!(
+                "unbound slices instance SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_slice_rows_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'not-a-rowid' AS nvtx_rowid";
+
+        let err = match hydrate_slice_rows_with_nesting(&conn, sql, &[], empty_nesting) {
+            Ok(rows) => anyhow::bail!(
+                "malformed slices instance row should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn internal_slice_builder_missing_has_typed_code() {
+        let err = crate::NsysQueryError::internal_slice_builder_missing(42);
+
+        assert_eq!(err.code().as_str(), "nsys.internal.slice-builder-missing");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::InternalSliceBuilderMissing { row_id: 42 }
+        ));
     }
 }

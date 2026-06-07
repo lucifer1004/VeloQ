@@ -21,18 +21,17 @@
 //! the trace-map blocks are NSys-specific so a stray `info` on an NCU
 //! report or an unknown file stays well-behaved.
 
-use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use veloq_core::{EnvelopeTraceRef, NextStep, ProfileSource, ResponseMeta};
+use veloq_core::{EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta};
 use veloq_nsys::CapabilityFlags;
 use veloq_nsys::trace_map::{
     DeviceInventory, NVTX_TOP_PATHS_DEFAULT, NvtxDomain, NvtxSummary, NvtxTopPath,
     ProcessInventory, ProcessLaunch, TraceMap,
 };
 
-use super::{emit_meta_error, emit_or_error};
+use super::{MetaError, MetaResult, emit_meta_error, emit_or_error};
 use veloq_core::recipes::{self, TraceShape};
 
 const VERB: &str = "info";
@@ -136,12 +135,16 @@ pub fn cli() -> Command {
         )
 }
 
-pub fn run(matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i32> {
+pub fn run(
+    matches: &ArgMatches,
+    sources: &[Box<dyn ProfileSource>],
+    fmt: OutputFormat,
+) -> MetaResult<i32> {
     let trace_str = match matches.get_one::<String>("trace") {
         Some(s) => s,
         None => {
-            let err = anyhow::anyhow!("`<trace>` argument is required");
-            emit_meta_error(VERB, None, &err);
+            let err = MetaError::missing_argument("trace");
+            emit_meta_error(fmt, VERB, None, &err);
             return Ok(1);
         }
     };
@@ -238,7 +241,7 @@ pub fn run(matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i
         })
     };
 
-    Ok(emit_or_error(VERB, trace_ref, meta, payload))
+    Ok(emit_or_error(fmt, VERB, trace_ref, meta, payload))
 }
 
 fn trace_path_string(p: &Path) -> String {

@@ -1,8 +1,15 @@
 use crate::dto::{TimelineAuxiliary, TimelineBucketRow, TimelineResponse};
-use crate::filter::{EventFilterRequest, filtered_events, require_rank_scope};
-use anyhow::Result;
+use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::query_sql::{
+    event_filter,
+    exec::{self, SqlLabel, SqlVerb},
+    sidecar,
+};
+use crate::{PytorchQueryError, PytorchQueryResult};
 use std::collections::BTreeMap;
-use veloq_pytorch_data::{Event, TraceSet};
+use veloq_core::TimelineBucket;
+use veloq_pytorch_data::{PytorchSidecar, QueryTrace};
+use veloq_query::duckdb::list::{TotalCarrier, count_from_i64, total_matched};
 
 #[derive(Default)]
 struct BucketAcc {
@@ -14,14 +21,23 @@ struct BucketAcc {
 }
 
 pub fn timeline(
-    trace: &TraceSet,
+    trace: &QueryTrace,
     request: EventFilterRequest,
     interval_ns: i64,
-) -> Result<TimelineResponse> {
+) -> PytorchQueryResult<TimelineResponse> {
     require_rank_scope(trace, request.rank_scope)?;
     if interval_ns <= 0 {
-        anyhow::bail!("--interval must be greater than 0 ns");
+        return Err(PytorchQueryError::IntervalTooSmall);
     }
+    timeline_sql(trace, request, interval_ns)
+}
+
+fn timeline_sql(
+    trace: &QueryTrace,
+    request: EventFilterRequest,
+    interval_ns: i64,
+) -> PytorchQueryResult<TimelineResponse> {
+    limit_ref(request.limit)?;
     let origin = trace.trace_span.map(|span| span.start_ns).unwrap_or(0);
     let window = request.time_window_ns.or_else(|| {
         trace
@@ -29,36 +45,16 @@ pub fn timeline(
             .map(|span| (span.start_ns, span.end_ns.max(span.start_ns)))
     });
     let (window_start, window_end) = window.unwrap_or((origin, origin));
-    let mut buckets: BTreeMap<i64, BucketAcc> = BTreeMap::new();
-    for event in filtered_events(trace, &request)? {
-        add_event_to_buckets(
-            event,
-            interval_ns,
-            origin,
-            window_start,
-            window_end,
-            &mut buckets,
-        );
-    }
-    let total_matched = buckets.len();
-    let mut rows = Vec::new();
-    for (bucket_start, acc) in buckets {
-        rows.push(TimelineBucketRow {
-            key: format!(
-                "bucket|{}..{}",
-                bucket_start,
-                bucket_start.saturating_add(interval_ns)
-            ),
-            start_ns: bucket_start,
-            end_ns: bucket_start.saturating_add(interval_ns),
-            cpu_ns: acc.cpu_ns,
-            gpu_ns: acc.gpu_ns,
-            comm_ns: acc.comm_ns,
-            event_count: acc.event_count,
-            by_type_ns: acc.by_type_ns,
-        });
-    }
-    rows.truncate(request.limit);
+    let events_path = sidecar::path(&trace.artifact_dir, PytorchSidecar::Events);
+    let query = event_filter::timeline_sql(
+        &events_path,
+        &request,
+        origin,
+        window_start,
+        window_end,
+        interval_ns,
+    )?;
+    let (rows, total_matched) = query_timeline_rows(&query.sql, &query.params, interval_ns)?;
     Ok(TimelineResponse {
         count: rows.len(),
         total_matched,
@@ -71,39 +67,76 @@ pub fn timeline(
     })
 }
 
-fn add_event_to_buckets(
-    event: &Event,
+fn query_timeline_rows(
+    sql: &str,
+    params: &[duckdb::types::Value],
     interval_ns: i64,
-    origin: i64,
-    window_start: i64,
-    window_end: i64,
-    buckets: &mut BTreeMap<i64, BucketAcc>,
-) {
-    let start = event.start_ns.max(window_start);
-    let end = event.end_ns.max(event.start_ns).min(window_end);
-    if end <= start {
-        return;
+) -> PytorchQueryResult<(Vec<TimelineBucketRow>, usize)> {
+    let raw_rows = exec::query_rows(
+        sql,
+        params,
+        SqlLabel::new(SqlVerb::Timeline, "aggregate"),
+        timeline_sql_row,
+    )?;
+    let total_matched =
+        total_matched::<usize, _>(&raw_rows, TotalCarrier::First, |row| row.total_matched)
+            .map_err(PytorchQueryError::timeline_count_overflow)?;
+    let mut buckets: BTreeMap<i64, BucketAcc> = BTreeMap::new();
+    for row in raw_rows {
+        let event_count = usize_count(row.event_count)?;
+
+        let acc = buckets.entry(row.bucket_start).or_default();
+        acc.cpu_ns = acc.cpu_ns.saturating_add(row.cpu_ns);
+        acc.gpu_ns = acc.gpu_ns.saturating_add(row.gpu_ns);
+        acc.comm_ns = acc.comm_ns.saturating_add(row.comm_ns);
+        acc.event_count = acc.event_count.saturating_add(event_count);
+        let entry = acc.by_type_ns.entry(row.event_type).or_default();
+        *entry = entry.saturating_add(row.type_ns);
     }
-    let offset = start.saturating_sub(origin);
-    let mut bucket_start = origin.saturating_add((offset / interval_ns) * interval_ns);
-    while bucket_start < end {
-        let bucket_end = bucket_start.saturating_add(interval_ns);
-        let overlap = end.min(bucket_end).saturating_sub(start.max(bucket_start));
-        if overlap > 0 {
-            let acc = buckets.entry(bucket_start).or_default();
-            if event.is_gpu_activity() {
-                acc.gpu_ns = acc.gpu_ns.saturating_add(overlap);
-            } else {
-                acc.cpu_ns = acc.cpu_ns.saturating_add(overlap);
+
+    let rows = buckets
+        .into_iter()
+        .map(|(bucket_start, acc)| {
+            let bucket = TimelineBucket::new(bucket_start, interval_ns);
+            TimelineBucketRow {
+                key: bucket.key(),
+                start_ns: bucket.start_ns,
+                end_ns: bucket.end_ns(),
+                cpu_ns: acc.cpu_ns,
+                gpu_ns: acc.gpu_ns,
+                comm_ns: acc.comm_ns,
+                event_count: acc.event_count,
+                by_type_ns: acc.by_type_ns,
             }
-            if event.is_comm {
-                acc.comm_ns = acc.comm_ns.saturating_add(overlap);
-            }
-            acc.event_count += 1;
-            let type_key = event.event_type.as_str().to_string();
-            let entry = acc.by_type_ns.entry(type_key).or_default();
-            *entry = entry.saturating_add(overlap);
-        }
-        bucket_start = bucket_start.saturating_add(interval_ns);
-    }
+        })
+        .collect::<Vec<_>>();
+    Ok((rows, total_matched))
+}
+
+struct TimelineSqlRow {
+    bucket_start: i64,
+    event_type: String,
+    type_ns: i64,
+    cpu_ns: i64,
+    gpu_ns: i64,
+    comm_ns: i64,
+    event_count: i64,
+    total_matched: i64,
+}
+
+fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Error> {
+    Ok(TimelineSqlRow {
+        bucket_start: row.get("bucket_start")?,
+        event_type: row.get("type")?,
+        type_ns: row.get("type_ns")?,
+        cpu_ns: row.get("cpu_ns")?,
+        gpu_ns: row.get("gpu_ns")?,
+        comm_ns: row.get("comm_ns")?,
+        event_count: row.get("event_count")?,
+        total_matched: row.get("total_matched")?,
+    })
+}
+
+fn usize_count(value: i64) -> PytorchQueryResult<usize> {
+    count_from_i64(value, PytorchQueryError::timeline_count_overflow)
 }

@@ -7,12 +7,11 @@
 //! the SSOT for per-verb `--help` recipe injection plus `info`'s
 //! `applicable_recipes` field.
 
-use anyhow::Result;
 use clap::{Arg, ArgMatches, Command};
 use serde::Serialize;
 
-use super::{emit_meta_error, emit_or_error};
-use veloq_core::recipes;
+use super::{MetaError, MetaResult, emit_meta_error, emit_or_error};
+use veloq_core::{OutputFormat, recipes};
 
 const VERB: &str = "recipes";
 
@@ -62,14 +61,14 @@ pub fn cli() -> Command {
         ))
 }
 
-pub fn run(matches: &ArgMatches) -> Result<i32> {
+pub fn run(matches: &ArgMatches, fmt: OutputFormat) -> MetaResult<i32> {
     match matches.get_one::<String>("id") {
-        Some(id) => show_recipe(id),
-        None => list_recipes(),
+        Some(id) => show_recipe(id, fmt),
+        None => list_recipes(fmt),
     }
 }
 
-fn list_recipes() -> Result<i32> {
+fn list_recipes(fmt: OutputFormat) -> MetaResult<i32> {
     let rows: Vec<RecipeSummary> = recipes::all_recipes()
         .iter()
         .map(|r| RecipeSummary {
@@ -84,15 +83,13 @@ fn list_recipes() -> Result<i32> {
         count: rows.len(),
         rows,
     });
-    Ok(emit_or_error(VERB, None, None, payload))
+    Ok(emit_or_error(fmt, VERB, None, None, payload))
 }
 
-fn show_recipe(id: &str) -> Result<i32> {
+fn show_recipe(id: &str, fmt: OutputFormat) -> MetaResult<i32> {
     let Some(recipe) = recipes::recipe_by_id(id) else {
-        let err = anyhow::anyhow!(
-            "no recipe with id `{id}` (run `veloq recipes` to list registered ids)"
-        );
-        emit_meta_error(VERB, None, &err);
+        let err = MetaError::UnknownRecipe { id: id.to_string() };
+        emit_meta_error(fmt, VERB, None, &err);
         return Ok(1);
     };
     let payload = RecipesPayload::Show(RecipeDetailPayload {
@@ -104,5 +101,5 @@ fn show_recipe(id: &str) -> Result<i32> {
         related_verbs: recipe.related_verbs,
         trace_shape: recipe.trace_shape,
     });
-    Ok(emit_or_error(VERB, None, None, payload))
+    Ok(emit_or_error(fmt, VERB, None, None, payload))
 }

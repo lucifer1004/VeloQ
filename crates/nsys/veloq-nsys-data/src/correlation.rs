@@ -26,8 +26,7 @@
 //! mismatch), and SidecarCache itself handles the source-fingerprint
 //! invalidation, bincode wrapping, and atomic-rename write.
 
-use crate::Trace;
-use anyhow::{Context, Result};
+use crate::{NsysDataResult, Trace};
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -238,7 +237,7 @@ impl CorrelationIndex {
     /// Uses Parquet-backed `nsight.<TABLE>` views, so a built-up trace
     /// runs the index build orders of magnitude faster than repeated
     /// raw table scans.
-    pub fn build(trace: &Trace) -> Result<Self> {
+    pub fn build(trace: &Trace) -> NsysDataResult<Self> {
         let mut idx = Self::default();
         // TARGET_INFO_CUDA_CONTEXT_INFO is small; read it straight
         // from the attached DuckDB view.
@@ -248,7 +247,7 @@ impl CorrelationIndex {
         Ok(idx)
     }
 
-    fn load_context_process_maps(&mut self, conn: &Connection) -> Result<()> {
+    fn load_context_process_maps(&mut self, conn: &Connection) -> NsysDataResult<()> {
         // Probe table existence cheaply (LIMIT 0). If absent, we can
         // still serve kernel/memcpy/memset lookups (which carry their
         // own device/context) — only runtime API resolution becomes
@@ -265,14 +264,28 @@ impl CorrelationIndex {
             return Ok(());
         }
 
-        let mut stmt = conn.prepare(
-            "SELECT deviceId, contextId, processId FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO",
-        )?;
-        let mut rows = stmt.query([])?;
-        while let Some(r) = rows.next()? {
-            let device: i64 = r.get(0)?;
-            let context: i64 = r.get(1)?;
-            let process: i64 = r.get(2)?;
+        const TABLE: &str = "TARGET_INFO_CUDA_CONTEXT_INFO";
+        let mut stmt = conn
+            .prepare(
+                "SELECT deviceId, contextId, processId FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO",
+            )
+            .map_err(|source| crate::NsysDataError::correlation_scan_prepare(TABLE, source))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|source| crate::NsysDataError::correlation_scan_query(TABLE, source))?;
+        while let Some(r) = rows
+            .next()
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?
+        {
+            let device: i64 = r
+                .get(0)
+                .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
+            let context: i64 = r
+                .get(1)
+                .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
+            let process: i64 = r
+                .get(2)
+                .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
             let dev = device as u64;
             let ctx = context as u64;
             let pid = process as u64;
@@ -316,11 +329,12 @@ impl CorrelationIndex {
     /// Build or load the index. On first call: try cache, validate
     /// against source mtime/size, fall back to rebuild + atomic save.
     /// On subsequent calls (same process or fresh): hit the cache.
-    pub fn build_or_load(trace: &Trace) -> Result<Self> {
+    pub fn build_or_load(trace: &Trace) -> NsysDataResult<Self> {
         let trace_path = trace.path();
         let cache = cache_handle(trace_path);
-        let fp = crate::trace_artifact_fingerprint(trace_path)
-            .with_context(|| format!("stat-ing trace at {}", trace_path.display()))?;
+        let fp = crate::trace_artifact_fingerprint(trace_path).map_err(|source| {
+            crate::NsysDataError::correlation_trace_fingerprint(trace_path.display(), source)
+        })?;
 
         match cache.try_load(fp) {
             Ok(Some(idx)) => {
@@ -385,7 +399,7 @@ struct CorrelationItem {
 fn collect_correlation_items(
     trace: &Trace,
     process_to_contexts: &HashMap<u64, Vec<(u64, u64)>>,
-) -> Result<Vec<CorrelationItem>> {
+) -> NsysDataResult<Vec<CorrelationItem>> {
     let mut items: Vec<CorrelationItem> = Vec::new();
 
     // Kernel/memcpy/memset/sync: native (device, context, correlation_id)
@@ -436,7 +450,7 @@ fn collect_gpu_kind(
     table: &str,
     kind: ItemKind,
     out: &mut Vec<CorrelationItem>,
-) -> Result<()> {
+) -> NsysDataResult<()> {
     // Probe — table may be absent on partial traces.
     let probe_sql = format!("SELECT 1 FROM nsight.{table} LIMIT 0");
     let probe = trace.conn().execute(&probe_sql, []);
@@ -451,14 +465,27 @@ fn collect_gpu_kind(
     let mut stmt = trace
         .conn()
         .prepare(&sql)
-        .with_context(|| format!("preparing {table} correlation scan"))?;
-    let mut rows = stmt.query([])?;
+        .map_err(|source| crate::NsysDataError::correlation_scan_prepare(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::correlation_scan_query(table, source))?;
     let mut n = 0;
-    while let Some(r) = rows.next()? {
-        let rowid: i64 = r.get(0)?;
-        let corr: i64 = r.get(1)?;
-        let device: i64 = r.get(2)?;
-        let context: i64 = r.get(3)?;
+    while let Some(r) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?
+    {
+        let rowid: i64 = r
+            .get(0)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let corr: i64 = r
+            .get(1)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let device: i64 = r
+            .get(2)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let context: i64 = r
+            .get(3)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
         out.push(CorrelationItem {
             syn_id: synthetic_id(device as u64, context as u64, corr as u64),
             rowid,
@@ -474,7 +501,7 @@ fn collect_runtime(
     trace: &Trace,
     process_to_contexts: &HashMap<u64, Vec<(u64, u64)>>,
     out: &mut Vec<CorrelationItem>,
-) -> Result<()> {
+) -> NsysDataResult<()> {
     let probe_sql = "SELECT 1 FROM nsight.CUPTI_ACTIVITY_KIND_RUNTIME LIMIT 0";
     let probe = trace.conn().execute(probe_sql, []);
     if probe.is_err() {
@@ -486,15 +513,30 @@ fn collect_runtime(
          FROM nsight.CUPTI_ACTIVITY_KIND_RUNTIME \
          WHERE correlationId IS NOT NULL AND globalTid IS NOT NULL"
     );
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let mut rows = stmt.query([])?;
+    const TABLE: &str = "CUPTI_ACTIVITY_KIND_RUNTIME";
+    let mut stmt = trace
+        .conn()
+        .prepare(&sql)
+        .map_err(|source| crate::NsysDataError::correlation_scan_prepare(TABLE, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::correlation_scan_query(TABLE, source))?;
     let mut resolved = 0u64;
     let mut fanout = 0u64;
     let mut fallback = 0u64;
-    while let Some(r) = rows.next()? {
-        let rowid: i64 = r.get(0)?;
-        let corr: i64 = r.get(1)?;
-        let global_tid: i64 = r.get(2)?;
+    while let Some(r) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?
+    {
+        let rowid: i64 = r
+            .get(0)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
+        let corr: i64 = r
+            .get(1)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
+        let global_tid: i64 = r
+            .get(2)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
         let pid = native_pid_from_global_tid(global_tid);
         match process_to_contexts.get(&pid) {
             Some(ctxs) if !ctxs.is_empty() => {
@@ -564,7 +606,54 @@ pub fn path_for(trace_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use veloq_core::SourceFingerprint;
+    use anyhow::{Context, Result};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+    use veloq_core::{SourceFingerprint, VeloqDiagnostic};
+
+    fn parquet_fixture(tables: Vec<(&str, &str, Vec<&str>)>) -> Result<(TempDir, PathBuf)> {
+        let dir = tempfile::tempdir()?;
+        let pqtdir = dir.path().join("test_pqtdir");
+        std::fs::create_dir_all(&pqtdir)?;
+        let conn = Connection::open_in_memory()?;
+        for (_, ddl, inserts) in &tables {
+            conn.execute_batch(ddl)?;
+            for insert in inserts {
+                conn.execute_batch(insert)?;
+            }
+        }
+        for (table, _, _) in &tables {
+            let out = pqtdir.join(format!("{table}.parquet"));
+            let out_lit = out.to_string_lossy().replace('\'', "''");
+            conn.execute(
+                &format!(r#"COPY (SELECT * FROM "{table}") TO '{out_lit}' (FORMAT PARQUET)"#),
+                [],
+            )?;
+        }
+        Ok((dir, pqtdir))
+    }
+
+    fn minimal_kernel_without_correlation() -> (&'static str, &'static str, Vec<&'static str>) {
+        (
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+            Vec::new(),
+        )
+    }
+
+    fn assert_correlation_scan_error(
+        err: crate::NsysDataError,
+        expected_code: &str,
+        expected_table: &str,
+    ) -> Result<()> {
+        assert_eq!(err.code().as_str(), expected_code);
+        let Some((area, _, label)) = err.duckdb_parts() else {
+            anyhow::bail!("expected correlation scan DuckDB error, got {err:?}");
+        };
+        assert_eq!(area, "correlation scan");
+        assert_eq!(label, expected_table);
+        Ok(())
+    }
 
     #[test]
     fn synthetic_id_layout() {
@@ -584,6 +673,124 @@ mod tests {
         // domain byte.
         let global_tid = (1000i64 << 24) | (0x3B << 16) | 7;
         assert_eq!(native_pid_from_global_tid(global_tid), 1000);
+    }
+
+    #[test]
+    fn build_or_load_missing_trace_fingerprint_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![minimal_kernel_without_correlation()])?;
+        let trace = Trace::open(&pqtdir)?;
+        std::fs::remove_dir_all(&pqtdir)?;
+
+        let err = match CorrelationIndex::build_or_load(&trace) {
+            Ok(idx) => {
+                anyhow::bail!("missing parquetdir should not build correlation index: {idx:?}")
+            }
+            Err(err) => err,
+        };
+
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.correlation-trace-fingerprint"
+        );
+        match err {
+            crate::NsysDataError::CorrelationTraceFingerprint { path, .. } => {
+                assert!(path.contains("test_pqtdir"));
+            }
+            other => anyhow::bail!("expected CorrelationTraceFingerprint, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn build_or_load_context_scan_prepare_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![
+            minimal_kernel_without_correlation(),
+            (
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (deviceId BIGINT, contextId BIGINT)",
+                Vec::new(),
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match CorrelationIndex::build_or_load(&trace) {
+            Ok(idx) => anyhow::bail!(
+                "context table missing processId should not build correlation index: {idx:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_correlation_scan_error(
+            err,
+            "nsys.data.duckdb-prepare",
+            "TARGET_INFO_CUDA_CONTEXT_INFO",
+        )
+    }
+
+    #[test]
+    fn build_or_load_gpu_scan_prepare_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![minimal_kernel_without_correlation()])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match CorrelationIndex::build_or_load(&trace) {
+            Ok(idx) => anyhow::bail!(
+                "kernel table missing correlation columns should not build index: {idx:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.data.duckdb-prepare");
+        assert_eq!(
+            err.duckdb_parts(),
+            Some((
+                "correlation scan",
+                crate::DuckdbPhase::Prepare,
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn build_or_load_gpu_scan_read_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT, correlationId TEXT, deviceId BIGINT, contextId BIGINT)"#,
+            vec![
+                r#"INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL (start, "end", correlationId, deviceId, contextId) VALUES (0, 1, 'bad', 0, 7)"#,
+            ],
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match CorrelationIndex::build_or_load(&trace) {
+            Ok(idx) => {
+                anyhow::bail!("bad GPU correlationId should not build correlation index: {idx:?}")
+            }
+            Err(err) => err,
+        };
+
+        assert_correlation_scan_error(err, "nsys.data.duckdb-read", "CUPTI_ACTIVITY_KIND_KERNEL")
+    }
+
+    #[test]
+    fn build_or_load_runtime_scan_read_error_is_typed() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture(vec![(
+            "CUPTI_ACTIVITY_KIND_RUNTIME",
+            r#"CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME (start BIGINT, "end" BIGINT, correlationId TEXT, globalTid BIGINT)"#,
+            vec![
+                r#"INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME (start, "end", correlationId, globalTid) VALUES (0, 1, 'bad', 7)"#,
+            ],
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match CorrelationIndex::build_or_load(&trace) {
+            Ok(idx) => anyhow::bail!(
+                "bad runtime correlationId should not build correlation index: {idx:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_correlation_scan_error(err, "nsys.data.duckdb-read", "CUPTI_ACTIVITY_KIND_RUNTIME")
     }
 
     #[test]

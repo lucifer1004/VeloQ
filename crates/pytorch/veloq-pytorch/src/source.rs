@@ -1,10 +1,11 @@
+use crate::PytorchSourceError;
 use crate::cli::Cmd;
 use crate::commands;
-use anyhow::Result;
 use clap::{ArgMatches, Command, FromArgMatches, Subcommand};
 use std::path::Path;
 use veloq_core::{
-    EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef, TraceSpan, write_error_envelope,
+    EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef, SourceRunResult, TraceSpan,
+    write_diagnostic_error_envelope,
 };
 
 pub struct PytorchSource;
@@ -53,7 +54,7 @@ impl ProfileSource for PytorchSource {
         Cmd::augment_subcommands(parent)
     }
 
-    fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> Result<i32> {
+    fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {
         let cmd = Cmd::from_arg_matches(matches)?;
         let verb = cmd.name();
         let trace_path = cmd.trace_path().map(Path::to_path_buf);
@@ -74,10 +75,30 @@ fn emit_err(
     verb: &str,
     trace: Option<&Path>,
     trace_span: Option<TraceSpan>,
-    err: &anyhow::Error,
+    err: &PytorchSourceError,
     fmt: OutputFormat,
 ) {
-    write_error_envelope(
+    match err {
+        PytorchSourceError::Command(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Query(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Tabular(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::SerializeEnvelope { .. } => {
+            emit_diagnostic(verb, trace, trace_span, err, fmt);
+        }
+    }
+}
+
+fn emit_diagnostic<E>(
+    verb: &str,
+    trace: Option<&Path>,
+    trace_span: Option<TraceSpan>,
+    err: &E,
+    fmt: OutputFormat,
+) where
+    E: veloq_core::VeloqDiagnostic,
+{
+    write_diagnostic_error_envelope(
         PytorchSource::source_ref(),
         verb,
         trace.map(PytorchSource::trace_ref),

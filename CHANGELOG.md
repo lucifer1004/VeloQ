@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-07
+
+### Added
+
+- **PyTorch/Kineto source** — experimental Chrome-trace analysis for
+  `.pt.trace.json` / `.pt.trace.json.gz` profiles, with `summary`, `search`,
+  `inspect`, `stats`, `correlate`, `timeline`, `slices`, `collectives`,
+  `prep`, and `schema`.
+- **PyTorch profile-analysis skill** — `scripts/install.sh`,
+  `veloq self-update`, and the Claude Code plugin now include
+  `pytorch-profile-analysis` alongside the NSys and NCU skills.
+
+### Changed
+
+- **Distribution** — installer and self-update skill installs replace each
+  bundled skill directory wholesale, so files removed from a later release do
+  not linger from an older install.
+
 ## [0.1.0] - 2026-06-04
 
 Initial public release.
@@ -38,4 +56,5 @@ Initial public release.
   `nsys-profile-analysis` and `ncu-profile-analysis` Claude Code skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
+[0.2.0]: https://github.com/lucifer1004/veloq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucifer1004/veloq/releases/tag/v0.1.0

@@ -38,10 +38,10 @@
 //! Downstream `attributed_<kind>_rowids` CTEs (which join
 //! `attributed_runtime × ctx_for_pid × <cupti-kind>`) are unchanged.
 
-use crate::EventKind;
-use anyhow::{Context, Result};
+use crate::{EventKind, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
 use veloq_nsys_data::{Trace, runtime_nvtx_parent};
+use veloq_query::sql::name;
 
 /// Whether a per-kind subquery should be constrained by NVTX
 /// attribution. Replaces `nvtx_attributed: bool` parameters that left
@@ -102,7 +102,7 @@ pub struct AttributionCte {
 ///
 /// `pattern` is a shell-style glob (`*`/`?`) against the NVTX range
 /// name (`COALESCE(text, StringIds.value)`). It's escape-safe via
-/// `crate::search_glob_to_like`.
+/// `veloq_core::query::glob_sql_like`.
 ///
 /// `kinds` enumerates the GPU kinds the caller will need rowid views for.
 /// Only those GPU `attributed_<kind>_rowids` materialised views are
@@ -113,10 +113,10 @@ pub struct AttributionCte {
 /// prerequisite plus the kinds the caller actually requested; this
 /// function returns an error if any prerequisite is missing or if the
 /// caller's requested kinds all lack a backing table.
-pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> Result<AttributionCte> {
+pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> NsysQueryResult<AttributionCte> {
     for t in CORE_PREREQ_TABLES {
         if !trace.table_exists(t) {
-            anyhow::bail!("--nvtx attribution requires `{t}`, which is not present in this trace");
+            return Err(NsysQueryError::NvtxAttributionPrereqTableMissing { table: t });
         }
     }
 
@@ -136,11 +136,7 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> Result<Attrib
         && trace.table_exists("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION");
     let want_runtime = kinds.contains(&EventKind::Runtime);
     if !(want_kernel || want_memcpy || want_memset || want_sync || want_runtime) {
-        anyhow::bail!(
-            "--nvtx attribution needs at least one attributable kind \
-             (kernel/memcpy/memset/sync/runtime); requested kinds don't \
-             match any present table"
-        );
+        return Err(NsysQueryError::NvtxAttributionNoAttributableTableMatch);
     }
 
     // `TARGET_INFO_CUDA_CONTEXT_INFO` is required when a GPU-side
@@ -151,12 +147,7 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> Result<Attrib
     // runtime CTE joins on `runtime_rowid`).
     let needs_ctx_bridge = want_kernel || want_memcpy || want_memset || want_sync;
     if needs_ctx_bridge && !trace.table_exists(GPU_PREREQ_TABLE) {
-        anyhow::bail!(
-            "--nvtx attribution on kernel/memcpy/memset/sync requires `{GPU_PREREQ_TABLE}`, \
-             which is not present in this trace (GPU activity rows cannot be bridged to \
-             runtime rows without the context-info table; the lookup would silently miss \
-             every kernel)"
-        );
+        return Err(NsysQueryError::NvtxAttributionContextInfoMissing);
     }
 
     // Build (or warm-load) the shared sidecar, then splice its path
@@ -164,12 +155,13 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> Result<Attrib
     // predicate down through the parquet scan; for a typical 2M-row
     // sidecar that's tens of ms of warm work.
     let sidecar_path = runtime_nvtx_parent::ensure_sidecar(trace)
-        .context("building NVTX-parent attribution sidecar for forward filter")?;
+        .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
     let sidecar_quoted = crate::nvtx_projection::quote_sidecar_path(&sidecar_path);
     let attributed_runtime_cte =
         crate::nvtx_projection::sidecar_expanded_cte("attributed_runtime", &sidecar_quoted);
 
-    let params = vec![Value::Text(crate::search_glob_to_like(pattern))];
+    let name_match = name::glob_like("nvtx_name", pattern);
+    let params = name_match.params;
 
     // `matched_runtime` narrows the UNNESTed sidecar to runtime rows
     // whose chain contains a name matching the pattern — outer
@@ -188,8 +180,9 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> Result<Attrib
                    device_id,
                    context_id
             FROM attributed_runtime
-            WHERE nvtx_name LIKE ? ESCAPE '\'
-        )"#
+            WHERE {name_match_sql}
+        )"#,
+        name_match_sql = name_match.sql,
     );
 
     // `AS MATERIALIZED` is load-bearing: DuckDB's default is to inline

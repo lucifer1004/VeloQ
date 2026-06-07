@@ -5,15 +5,22 @@
 //! the captured application under `ncu --kernel-name ... --launch-skip
 //! ... --launch-count 1`.
 
-use anyhow::{Context, Result};
+use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 use veloq_nsys_data::Trace;
 
-use crate::{EventKind, RowId};
+use crate::query_sql::exec::SqlLabel;
+use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 
 const KERNEL_TABLE: &str = "CUPTI_ACTIVITY_KIND_KERNEL";
+const KERNEL_COLUMN_SCAN_SQL: &str = "kernel-column scan";
+const KERNEL_LOOKUP_SQL: &str = "kernel lookup";
+const PRIOR_LAUNCH_COUNT_SQL: &str = "prior-launch count";
+const PROCESS_COUNT_SQL: &str = "process count";
+const PROCESS_NAME_SQL: &str = "process-name lookup";
+const LAUNCH_RECIPE_SQL: &str = "launch-recipe scan";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -24,12 +31,12 @@ pub enum EnvPolicy {
 }
 
 impl EnvPolicy {
-    pub fn parse(s: &str) -> Result<Self> {
+    pub fn parse(s: &str) -> NsysQueryResult<Self> {
         match s.to_ascii_lowercase().as_str() {
             "none" => Ok(Self::None),
             "safe" => Ok(Self::Safe),
             "all" => Ok(Self::All),
-            other => anyhow::bail!("unknown --env `{other}` (expected: none, safe, all)"),
+            other => Err(NsysQueryError::ncu_command_unknown_env(other)),
         }
     }
 }
@@ -169,26 +176,21 @@ struct EnvSelection {
     skipped_count: usize,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: NcuCommandRequest) -> Result<NcuCommandResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: NcuCommandRequest) -> NsysQueryResult<NcuCommandResponse> {
     if req.row_id.kind != EventKind::Kernel {
-        anyhow::bail!(
-            "ncu-command requires a CUDA kernel row id (got `{}`); use `search --type kernel` first",
-            req.row_id
-        );
+        return Err(NsysQueryError::ncu_command_row_id_kind(req.row_id));
     }
 
     // ncu-command is a narrow lookup verb — single kernel by rowid,
     // a few count/distinct queries, then META_DATA_CAPTURE reads.
     // All of those run against the parquetdir-backed
     // `nsight.<TABLE>` views in DuckDB.
-    let trace = Trace::open(path)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
     if !trace.table_exists(KERNEL_TABLE) {
-        anyhow::bail!("ncu-command requires `{KERNEL_TABLE}`, which is absent from this trace");
+        return Err(NsysQueryError::NcuCommandKernelTableMissing);
     }
     if !trace.table_exists("META_DATA_CAPTURE") {
-        anyhow::bail!(
-            "ncu-command requires `META_DATA_CAPTURE` to recover the original command, argv, cwd, and env"
-        );
+        return Err(NsysQueryError::NcuCommandMetadataTableMissing);
     }
 
     let kernel = selected_kernel(&trace, req.row_id)?;
@@ -305,7 +307,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: NcuCommandRequest) -> Result<NcuCommand
     })
 }
 
-fn selected_kernel(trace: &Trace, row_id: RowId) -> Result<KernelRow> {
+fn selected_kernel(trace: &Trace, row_id: RowId) -> NsysQueryResult<KernelRow> {
     let columns = kernel_columns(trace)?;
     let smem_static = maybe_col(&columns, "staticSharedMemory");
     let smem_dyn = maybe_col(&columns, "dynamicSharedMemory");
@@ -338,14 +340,25 @@ fn selected_kernel(trace: &Trace, row_id: RowId) -> Result<KernelRow> {
         WHERE t.rowid = ?
         "#
     );
-    let mut stmt = trace
-        .conn()
-        .prepare(&sql)
-        .context("prepare kernel lookup")?;
-    let mut rows = stmt.query([row_id.rowid])?;
-    let Some(r) = rows.next()? else {
-        anyhow::bail!("kernel row `{row_id}` was not found");
+    hydrate_selected_kernel(trace.conn(), row_id, &sql)
+}
+
+fn hydrate_selected_kernel(
+    conn: &duckdb::Connection,
+    row_id: RowId,
+    sql: &str,
+) -> NsysQueryResult<KernelRow> {
+    let params = [Value::BigInt(row_id.rowid)];
+    let Some(row) = query_ncu_optional_row(conn, sql, &params, KERNEL_LOOKUP_SQL, |r| {
+        hydrate_kernel_row(row_id, r)
+    })?
+    else {
+        return Err(NsysQueryError::ncu_command_kernel_not_found(row_id));
     };
+    Ok(row)
+}
+
+fn hydrate_kernel_row(row_id: RowId, r: &duckdb::Row<'_>) -> Result<KernelRow, duckdb::Error> {
     let start_ns: i64 = r.get(0)?;
     let end_ns: i64 = r.get(1)?;
     Ok(KernelRow {
@@ -370,17 +383,48 @@ fn selected_kernel(trace: &Trace, row_id: RowId) -> Result<KernelRow> {
     })
 }
 
-fn selector_name(kernel: &KernelRow) -> Result<(String, String, &'static str, i64)> {
+fn query_ncu_rows<T>(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    query: &'static str,
+    hydrate: impl FnMut(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Vec<T>> {
+    crate::query_sql::exec::query_rows(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("ncu-command", query),
+        hydrate,
+    )
+}
+
+fn query_ncu_optional_row<T>(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    query: &'static str,
+    hydrate: impl FnOnce(&duckdb::Row<'_>) -> Result<T, duckdb::Error>,
+) -> NsysQueryResult<Option<T>> {
+    crate::query_sql::exec::query_optional_row(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("ncu-command", query),
+        hydrate,
+    )
+}
+
+fn selector_name(kernel: &KernelRow) -> NsysQueryResult<(String, String, &'static str, i64)> {
     if let (Some(id), Some(name)) = (kernel.short_name_id, kernel.short_name.clone()) {
         return Ok(("function".to_string(), name, "shortName", id));
     }
     if let (Some(id), Some(name)) = (kernel.demangled_name_id, kernel.demangled_name.clone()) {
         return Ok(("demangled".to_string(), name, "demangledName", id));
     }
-    anyhow::bail!(
-        "kernel row `{}` has neither a resolved shortName nor demangledName",
-        kernel.row_id
-    )
+    Err(NsysQueryError::ncu_command_kernel_name_missing(
+        kernel.row_id,
+    ))
 }
 
 fn count_prior_matching_launches(
@@ -388,7 +432,7 @@ fn count_prior_matching_launches(
     kernel: &KernelRow,
     name_column: &str,
     name_id: i64,
-) -> Result<i64> {
+) -> NsysQueryResult<i64> {
     let sql = format!(
         r#"
         SELECT COUNT(*)
@@ -397,24 +441,24 @@ fn count_prior_matching_launches(
           AND (start < ? OR (start = ? AND rowid < ?))
         "#
     );
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let count: i64 = stmt.query_row(
-        [
-            name_id,
-            kernel.start_ns,
-            kernel.start_ns,
-            kernel.row_id.rowid,
+    query_single_i64(
+        trace.conn(),
+        &sql,
+        &[
+            Value::BigInt(name_id),
+            Value::BigInt(kernel.start_ns),
+            Value::BigInt(kernel.start_ns),
+            Value::BigInt(kernel.row_id.rowid),
         ],
-        |r| r.get(0),
-    )?;
-    Ok(count)
+        PRIOR_LAUNCH_COUNT_SQL,
+    )
 }
 
 fn count_distinct_processes_for_name(
     trace: &Trace,
     name_column: &str,
     name_id: i64,
-) -> Result<i64> {
+) -> NsysQueryResult<i64> {
     let columns = kernel_columns(trace)?;
     if !columns.iter().any(|c| c == "globalPid") {
         return Ok(0);
@@ -426,44 +470,49 @@ fn count_distinct_processes_for_name(
         WHERE {name_column} = ? AND globalPid IS NOT NULL
         "#
     );
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let count: i64 = stmt.query_row([name_id], |r| r.get(0))?;
-    Ok(count)
+    query_single_i64(
+        trace.conn(),
+        &sql,
+        &[Value::BigInt(name_id)],
+        PROCESS_COUNT_SQL,
+    )
 }
 
-fn process_name_for_kernel(trace: &Trace, kernel: &KernelRow) -> Result<Option<String>> {
+fn process_name_for_kernel(trace: &Trace, kernel: &KernelRow) -> NsysQueryResult<Option<String>> {
     let Some(global_pid) = kernel.global_pid else {
         return Ok(None);
     };
     if !trace.table_exists("PROCESSES") {
         return Ok(None);
     }
-    let mut stmt = trace
-        .conn()
-        .prepare("SELECT name FROM nsight.PROCESSES WHERE globalPid = ? LIMIT 1")?;
-    let mut rows = stmt.query([global_pid])?;
-    match rows.next()? {
-        Some(r) => {
-            let v: Option<String> = r.get(0)?;
-            Ok(v)
-        }
-        None => Ok(None),
-    }
+    let params = [Value::BigInt(global_pid)];
+    let row = query_ncu_optional_row(
+        trace.conn(),
+        "SELECT name FROM nsight.PROCESSES WHERE globalPid = ? LIMIT 1",
+        &params,
+        PROCESS_NAME_SQL,
+        |r| r.get::<_, Option<String>>(0),
+    )?;
+    Ok(row.flatten())
 }
 
-fn load_launch_recipes(trace: &Trace) -> Result<Vec<LaunchRecipe>> {
-    let mut stmt = trace
-        .conn()
-        .prepare(
-            "SELECT name, value FROM nsight.META_DATA_CAPTURE \
-             WHERE name LIKE 'PROCESS\\_%:%' ESCAPE '\\'",
-        )
-        .context("prepare META_DATA_CAPTURE scan")?;
-    let mut rows = stmt.query([])?;
+fn load_launch_recipes(trace: &Trace) -> NsysQueryResult<Vec<LaunchRecipe>> {
+    load_launch_recipes_with_sql(
+        trace.conn(),
+        "SELECT name, value FROM nsight.META_DATA_CAPTURE \
+         WHERE name LIKE 'PROCESS\\_%:%' ESCAPE '\\'",
+    )
+}
+
+fn load_launch_recipes_with_sql(
+    conn: &duckdb::Connection,
+    sql: &str,
+) -> NsysQueryResult<Vec<LaunchRecipe>> {
+    let rows = query_ncu_rows(conn, sql, &[], LAUNCH_RECIPE_SQL, |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
     let mut builders: BTreeMap<u32, LaunchRecipeBuilder> = BTreeMap::new();
-    while let Some(r) = rows.next()? {
-        let key: String = r.get(0)?;
-        let value: String = r.get(1)?;
+    for (key, value) in rows {
         let Some((idx, field)) = split_process_key(&key) else {
             continue;
         };
@@ -500,15 +549,25 @@ fn load_launch_recipes(trace: &Trace) -> Result<Vec<LaunchRecipe>> {
         }
     }
     if out.is_empty() {
-        anyhow::bail!("META_DATA_CAPTURE contains no PROCESS_N:COMMAND launch recipe");
+        return Err(NsysQueryError::NcuCommandLaunchRecipeMissing);
     }
     Ok(out)
+}
+
+fn query_single_i64(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+    query: &'static str,
+) -> NsysQueryResult<i64> {
+    query_ncu_optional_row(conn, sql, params, query, |row| row.get(0))?
+        .ok_or(NsysQueryError::InternalNcuCommandSqlRowMissing { query })
 }
 
 fn pick_launch_recipe(
     recipes: &[LaunchRecipe],
     process_name: Option<&str>,
-) -> Result<(LaunchRecipe, Vec<String>)> {
+) -> NsysQueryResult<(LaunchRecipe, Vec<String>)> {
     let mut warnings = Vec::new();
     if let Some(name) = process_name {
         let matches: Vec<&LaunchRecipe> = recipes
@@ -516,15 +575,17 @@ fn pick_launch_recipe(
             .filter(|r| commands_match_process(&r.command, name))
             .collect();
         if matches.len() == 1 {
-            let recipe = matches
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("internal: expected one launch recipe match"))?;
+            let Some(recipe) = matches.first() else {
+                return Err(
+                    NsysQueryError::InternalNcuCommandLaunchRecipeSelectionMissing {
+                        selector: "process match",
+                    },
+                );
+            };
             return Ok(((*recipe).clone(), warnings));
         }
         if matches.len() > 1 {
-            anyhow::bail!(
-                "multiple META_DATA_CAPTURE launch recipes match process `{name}`; cannot choose an NCU target command"
-            );
+            return Err(NsysQueryError::ncu_command_ambiguous_process_recipe(name));
         }
         warnings.push(format!(
             "kernel process `{name}` did not match any META_DATA_CAPTURE command; falling back to launch recipe count"
@@ -532,15 +593,17 @@ fn pick_launch_recipe(
     }
 
     if recipes.len() == 1 {
-        let recipe = recipes
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("internal: expected one launch recipe"))?;
+        let Some(recipe) = recipes.first() else {
+            return Err(
+                NsysQueryError::InternalNcuCommandLaunchRecipeSelectionMissing {
+                    selector: "single recipe",
+                },
+            );
+        };
         return Ok((recipe.clone(), warnings));
     }
 
-    anyhow::bail!(
-        "multiple META_DATA_CAPTURE launch recipes are present and none matched the selected kernel process"
-    )
+    Err(NsysQueryError::NcuCommandAmbiguousLaunchRecipe)
 }
 
 fn ncu_argv(
@@ -786,18 +849,15 @@ impl LaunchRecipeBuilder {
     }
 }
 
-fn kernel_columns(trace: &Trace) -> Result<Vec<String>> {
+fn kernel_columns(trace: &Trace) -> NsysQueryResult<Vec<String>> {
     // DuckDB's `DESCRIBE` returns the view's columns; sanitisation:
     // KERNEL_TABLE is a compile-time constant so interpolation is safe.
     let sql = format!(r#"DESCRIBE nsight."{KERNEL_TABLE}""#);
-    let mut stmt = trace.conn().prepare(&sql)?;
-    let mut rows = stmt.query([])?;
-    let mut cols = Vec::new();
-    while let Some(r) = rows.next()? {
-        let name: String = r.get(0)?;
-        cols.push(name);
-    }
-    Ok(cols)
+    load_kernel_columns(trace.conn(), &sql)
+}
+
+fn load_kernel_columns(conn: &duckdb::Connection, sql: &str) -> NsysQueryResult<Vec<String>> {
+    query_ncu_rows(conn, sql, &[], KERNEL_COLUMN_SCAN_SQL, |r| r.get(0))
 }
 
 fn maybe_col(cols: &[String], col: &str) -> String {
@@ -815,6 +875,40 @@ fn opt_string(row: &duckdb::Row<'_>, idx: usize) -> duckdb::Result<Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+
+    fn kernel_row_id() -> RowId {
+        RowId::new(EventKind::Kernel, 7)
+    }
+
+    fn selected_kernel_hydration_sql(start_expr: &str) -> String {
+        format!(
+            "SELECT \
+             {start_expr} AS start_ns, \
+             20::BIGINT AS end_ns, \
+             0::INTEGER AS device_id, \
+             1::BIGINT AS context_id, \
+             2::BIGINT AS stream_id, \
+             3::BIGINT AS short_name_id, \
+             'short' AS short_name, \
+             4::BIGINT AS demangled_name_id, \
+             'demangled' AS demangled_name, \
+             1::BIGINT AS grid_x, \
+             1::BIGINT AS grid_y, \
+             1::BIGINT AS grid_z, \
+             32::BIGINT AS block_x, \
+             1::BIGINT AS block_y, \
+             1::BIGINT AS block_z, \
+             CAST(NULL AS BIGINT) AS static_shared_memory, \
+             CAST(NULL AS BIGINT) AS dynamic_shared_memory, \
+             CAST(NULL AS BIGINT) AS correlation_id, \
+             CAST(NULL AS BIGINT) AS global_pid, \
+             CAST(NULL AS BIGINT) AS graph_id, \
+             CAST(NULL AS BIGINT) AS graph_node_id \
+             WHERE ? IS NOT NULL"
+        )
+    }
 
     #[test]
     fn shell_quote_handles_spaces_and_single_quotes() {
@@ -829,6 +923,133 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("expected parsed env"))?;
         assert_eq!(env.name, "CUDA_VISIBLE_DEVICES");
         assert_eq!(env.value, "0,1");
+        Ok(())
+    }
+
+    #[test]
+    fn load_kernel_columns_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match load_kernel_columns(&conn, "SELECT * FROM") {
+            Ok(cols) => anyhow::bail!(
+                "malformed kernel-column SQL should not hydrate successfully: {cols:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some((
+                "ncu-command",
+                crate::SqlPhase::Prepare,
+                KERNEL_COLUMN_SCAN_SQL
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_kernel_columns_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match load_kernel_columns(&conn, "SELECT CAST(? AS BIGINT) AS column_name") {
+            Ok(cols) => {
+                anyhow::bail!("unbound kernel-column SQL should not hydrate successfully: {cols:?}")
+            }
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert_eq!(
+            err.sql_parts(),
+            Some((
+                "ncu-command",
+                crate::SqlPhase::Query,
+                KERNEL_COLUMN_SCAN_SQL
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_kernel_columns_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match load_kernel_columns(&conn, "SELECT 1 AS column_name") {
+            Ok(cols) => anyhow::bail!(
+                "malformed kernel-column row should not hydrate successfully: {cols:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("ncu-command", crate::SqlPhase::Read, KERNEL_COLUMN_SCAN_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_selected_kernel_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_selected_kernel(&conn, kernel_row_id(), "SELECT * FROM") {
+            Ok(row) => anyhow::bail!(
+                "malformed kernel lookup SQL should not hydrate successfully: {row:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("ncu-command", crate::SqlPhase::Prepare, KERNEL_LOOKUP_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_selected_kernel_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_selected_kernel(
+            &conn,
+            kernel_row_id(),
+            "SELECT ? AS start_ns, ? AS end_ns",
+        ) {
+            Ok(row) => {
+                anyhow::bail!("unbound kernel lookup SQL should not hydrate successfully: {row:?}")
+            }
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("ncu-command", crate::SqlPhase::Query, KERNEL_LOOKUP_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_selected_kernel_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = selected_kernel_hydration_sql("'not-a-start'");
+
+        let err = match hydrate_selected_kernel(&conn, kernel_row_id(), &sql) {
+            Ok(row) => anyhow::bail!(
+                "malformed kernel lookup row should not hydrate successfully: {row:?}"
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("ncu-command", crate::SqlPhase::Read, KERNEL_LOOKUP_SQL))
+        );
         Ok(())
     }
 }

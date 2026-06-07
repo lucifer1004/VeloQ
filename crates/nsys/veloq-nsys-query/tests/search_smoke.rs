@@ -9,6 +9,7 @@ mod fixture;
 
 use anyhow::Result;
 use std::collections::HashMap;
+use veloq_core::VeloqDiagnostic;
 use veloq_nsys_query::search::SearchRequest;
 use veloq_nsys_query::{EventKind, EventRef, KindFilter};
 
@@ -83,6 +84,26 @@ fn gpu_search_omits_depth_field() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn cpu_sample_search_returns_specific_error_code() -> Result<()> {
+    let trace = fixture::with_cpu_sampling()?;
+    let outcome = veloq_nsys_query::search::run(
+        trace.path(),
+        SearchRequest {
+            kinds: KindFilter::Only(vec![EventKind::CpuSample]),
+            ..Default::default()
+        },
+    );
+    let err = outcome
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("cpu_sample search should error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "nsys.query.search-cpu-sample-unsupported"
+    );
+    Ok(())
+}
+
 /// `--name-regex` drives the StringId pre-filter path (the `name_match_ids`
 /// CTE + the per-kind `demangledName`/`shortName` membership predicate).
 /// It must return exactly the rows whose resolved name matches — the
@@ -91,7 +112,7 @@ fn gpu_search_omits_depth_field() -> Result<()> {
 #[test]
 fn name_regex_prefilter_matches_resolved_names() -> Result<()> {
     let trace = fixture::minimal_gpu()?;
-    let run = |re: &str| -> Result<_> {
+    let run = |re: &str| {
         veloq_nsys_query::search::run(
             trace.path(),
             SearchRequest {

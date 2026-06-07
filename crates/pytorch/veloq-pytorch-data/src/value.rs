@@ -44,9 +44,32 @@ pub(crate) fn value_to_i64(value: &Value) -> Option<i64> {
 }
 
 pub(crate) fn value_to_ns(value: &Value) -> Option<i64> {
-    value_to_i64(value)
-        .map(|value| value.saturating_mul(1_000))
-        .or_else(|| value.as_f64().map(|value| (value * 1_000.0) as i64))
+    let number = value.as_number()?;
+    if let Some(value) = number.as_i64() {
+        return Some(value.saturating_mul(1_000));
+    }
+    if let Some(value) = number.as_u64() {
+        return Some(
+            i64::try_from(value)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1_000),
+        );
+    }
+    number.as_f64().and_then(f64_us_to_ns)
+}
+
+fn f64_us_to_ns(value: f64) -> Option<i64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let ns = (value * 1_000.0).round();
+    if ns >= i64::MAX as f64 {
+        Some(i64::MAX)
+    } else if ns <= i64::MIN as f64 {
+        Some(i64::MIN)
+    } else {
+        Some(ns as i64)
+    }
 }
 
 pub(crate) fn int_from_args(args: &BTreeMap<String, Value>, keys: &[&str]) -> Option<i64> {
@@ -71,4 +94,17 @@ pub(crate) fn value_string_contains(value: &Value, needle: &str) -> bool {
     value_to_string(value)
         .map(|text| text.to_ascii_lowercase().contains(needle))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn value_to_ns_preserves_fractional_microseconds() {
+        assert_eq!(value_to_ns(&json!(1.5)), Some(1_500));
+        assert_eq!(value_to_ns(&json!(0.125)), Some(125));
+        assert_eq!(value_to_ns(&json!(2)), Some(2_000));
+    }
 }

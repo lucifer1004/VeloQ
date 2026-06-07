@@ -10,12 +10,11 @@
 //! The binary's own `veloq_version` lives in `auxiliary` since it
 //! isn't a per-row attribute.
 
-use anyhow::Result;
 use clap::{ArgMatches, Command};
 use serde::Serialize;
-use veloq_core::ProfileSource;
+use veloq_core::{OutputFormat, ProfileSource};
 
-use super::{META_SOURCE, emit_or_error};
+use super::{META_SOURCE, MetaResult, emit_or_error};
 
 const VERB: &str = "sources";
 
@@ -47,7 +46,11 @@ pub fn cli() -> Command {
     Command::new(VERB).about("List registered profile sources and their wire-format versions")
 }
 
-pub fn run(_matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<i32> {
+pub fn run(
+    _matches: &ArgMatches,
+    sources: &[Box<dyn ProfileSource>],
+    fmt: OutputFormat,
+) -> MetaResult<i32> {
     let rows: Vec<SourceRow> = sources
         .iter()
         .map(|s| SourceRow {
@@ -65,5 +68,5 @@ pub fn run(_matches: &ArgMatches, sources: &[Box<dyn ProfileSource>]) -> Result<
             veloq_version: META_SOURCE.version,
         },
     };
-    Ok(emit_or_error(VERB, None, None, payload))
+    Ok(emit_or_error(fmt, VERB, None, None, payload))
 }

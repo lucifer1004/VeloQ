@@ -205,6 +205,18 @@ impl DurationFilter {
         }
     }
 
+    pub fn matches(&self, duration_ns: i64) -> bool {
+        match *self {
+            DurationFilter::Gt(ns) => duration_ns > ns,
+            DurationFilter::Gte(ns) => duration_ns >= ns,
+            DurationFilter::Lt(ns) => duration_ns < ns,
+            DurationFilter::Lte(ns) => duration_ns <= ns,
+            DurationFilter::Range { min_ns, max_ns } => {
+                duration_ns >= min_ns && duration_ns <= max_ns
+            }
+        }
+    }
+
     pub fn parse(s: &str) -> Result<Self, TimeParseError> {
         let s = s.trim();
         if s.is_empty() {
@@ -395,6 +407,23 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    #[test]
+    fn duration_filter_matches_typed_values() {
+        assert!(DurationFilter::Gt(10).matches(11));
+        assert!(!DurationFilter::Gt(10).matches(10));
+        assert!(DurationFilter::Gte(10).matches(10));
+        assert!(DurationFilter::Lt(10).matches(9));
+        assert!(!DurationFilter::Lt(10).matches(10));
+        assert!(DurationFilter::Lte(10).matches(10));
+        assert!(
+            DurationFilter::Range {
+                min_ns: 10,
+                max_ns: 20
+            }
+            .matches(15)
+        );
     }
 
     #[test]

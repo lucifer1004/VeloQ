@@ -3,9 +3,10 @@
 //! return one [`CorrelatedEntry`] for the caller (typically the
 //! walker, which then caches it under `<sha>.correlated.json`).
 
-use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+use crate::error::NcuSourceResult;
 
 use super::cuobjdump::parse_ptx_lines;
 use super::nvdisasm::{parse_emit_json, parse_line_annotations};
@@ -21,12 +22,14 @@ use super::types::{CorrelatedEntry, KernelDisasm, PtxLine, SourceIndexRow};
 /// subsets in the response based on `ReportOptions.correlate`.
 /// `cubin_sha` and `sm` are left as the caller's defaults (empty /
 /// `None`) — the caller fills those in from the cubin it extracted.
-pub fn acquire_correlated(cubin_path: &Path, instruction_stride: u64) -> Result<CorrelatedEntry> {
+pub fn acquire_correlated(
+    cubin_path: &Path,
+    instruction_stride: u64,
+) -> NcuSourceResult<CorrelatedEntry> {
     let json_out = run_tool("nvdisasm", cubin_path, &["--emit-json"])?;
     let text_out = run_tool("nvdisasm", cubin_path, &["--print-line-info"])?;
     let line_map = parse_line_annotations(&text_out.stdout);
-    let kernels = parse_emit_json(&json_out.stdout, &line_map, instruction_stride)
-        .context("parsing nvdisasm --emit-json output")?;
+    let kernels = parse_emit_json(&json_out.stdout, &line_map, instruction_stride)?;
     let source_lineinfo_present = kernels
         .iter()
         .flat_map(|k| k.instructions.iter())

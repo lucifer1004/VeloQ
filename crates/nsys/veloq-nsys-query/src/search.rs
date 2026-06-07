@@ -1,21 +1,30 @@
 //! `veloq search <trace> ...` — filter events into a list of `row_id`s
 //! plus a few headline columns. Designed as the `inspect` entry-point.
 
-use anyhow::{Context, Result};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use veloq_core::{
-    Direction, SortKeyDef, SortKeySpec, SortSpec,
+    Direction, NameFilterRef, SortKeyDef, SortKeySpec, SortSpec,
     time::{DurationFilter, TimeWindow},
 };
+use veloq_nsys_data::NvtxNesting;
 
-use crate::column_map::{self, ColumnMap, maybe_col, opt_string};
+use crate::column_map::{self, ColumnMap, maybe_col};
 use crate::event_ref::{
     EventRefBase, EventRefKernel, EventRefMemcpy, EventRefMemset, EventRefNvtx,
 };
-use crate::{EventKind, EventRef, KindFilter, RowId};
+use crate::query_sql::{
+    event_semantics::EventSemantics,
+    exec::{SqlLabel, query_rows},
+    sort::order_by,
+};
+use crate::{EventKind, EventRef, KindFilter, NsysQueryError, NsysQueryResult, RowId};
+use veloq_query::duckdb::list as duckdb_list;
+use veloq_query::sql::{
+    name, total_matched_bigint_expr, where_clause as build_where_clause, window,
+};
 
 // =============================================================================
 // Per-kind headline columns
@@ -76,6 +85,9 @@ const COL_COPY_KIND: usize = 20;
 const COL_MEMSET_VALUE: usize = 21;
 const COL_EVENT_TYPE: usize = 22;
 const COL_DOMAIN_ID: usize = 23;
+
+const SEARCH_RANK_SQL: &str = "rank";
+const SEARCH_HYDRATE_SQL: &str = "hydrate";
 
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
@@ -192,13 +204,13 @@ impl SortKey {
 
 /// Build the SQL `ORDER BY` body for search, using
 /// `veloq_core::sort::build_order_by` for the shared format.
-fn sort_sql(spec: &SortSpec) -> anyhow::Result<String> {
-    let mut resolved: Vec<(&'static str, Direction)> = Vec::new();
-    for f in spec.fields() {
-        let (key, dir) = SortKey::from_field(f)?;
-        resolved.push((key.primary_column(), dir));
-    }
-    Ok(veloq_core::sort::build_order_by(&resolved, "row_id_num"))
+fn sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
+    order_by::<SortKey>(
+        spec,
+        SortKey::primary_column,
+        NsysQueryError::search_sort_invalid,
+        "row_id_num",
+    )
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -218,8 +230,14 @@ pub struct SearchResponse {
     pub rows: Vec<EventRef>,
 }
 
-pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse> {
+pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<SearchResponse> {
     let (trace, abs_window) = crate::open_scoped(path.as_ref(), req.limit, req.time_window)?;
+
+    if let KindFilter::Only(kinds) = &req.kinds
+        && kinds.contains(&EventKind::CpuSample)
+    {
+        return Err(NsysQueryError::SearchCpuSampleUnsupported);
+    }
 
     // Shared `--device` / `--stream` policy (see [`crate::kind_policy`]
     // for the rule and the wording rationale).
@@ -278,21 +296,12 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
     let mut where_parts: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
-    if req.name_glob.is_some() && req.name_regex.is_some() {
-        anyhow::bail!("`--name` and `--name-regex` are mutually exclusive; pick one");
-    }
-    if let Some(glob) = &req.name_glob {
-        // ESCAPE takes exactly one character in DuckDB. Both Rust source
-        // and SQL need a single backslash, hence the doubled escape here.
-        where_parts.push(r"name LIKE ? ESCAPE '\'".to_string());
-        params.push(Value::Text(crate::search_glob_to_like(glob)));
-    }
-    if let Some(re) = &req.name_regex {
-        // DuckDB's regexp_matches is PCRE-flavoured. We pass the
-        // pattern verbatim; no special escaping needed beyond what
-        // the user already wrote.
-        where_parts.push("regexp_matches(name, ?)".to_string());
-        params.push(Value::Text(re.clone()));
+    let name_filter =
+        NameFilterRef::from_optional(req.name_glob.as_deref(), req.name_regex.as_deref())
+            .map_err(|_| NsysQueryError::NameFilterConflict)?;
+    if let Some(fragment) = name::predicate("name", name_filter) {
+        where_parts.push(fragment.sql);
+        params.extend(fragment.params);
     }
 
     crate::kind_policy::LocationFilter {
@@ -308,11 +317,11 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
         }
     }
 
-    if let Some((s, e)) = abs_window {
-        // overlap predicate: event_start < window_end AND event_end > window_start
-        where_parts.push("start_ns < ? AND (start_ns + duration_ns) > ?".to_string());
-        params.push(Value::BigInt(e));
-        params.push(Value::BigInt(s));
+    if let Some(fragment) =
+        window::overlap_filter_expr("start_ns", "(start_ns + duration_ns)", abs_window)
+    {
+        where_parts.push(fragment.sql);
+        params.extend(fragment.params);
     }
 
     // duration sanity: drop events with non-positive duration (instant
@@ -370,13 +379,16 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
     let use_prefilter = name_match_cte.is_some();
 
     let mut rank_subqueries = Vec::with_capacity(kinds.len());
+    let mut rank_subquery_params = Vec::new();
     for k in &kinds {
-        rank_subqueries.push(per_kind_rank_select(
+        let fragment = crate::query_sql::event_scan::search_rank_select(
             *k,
             nvtx_scope,
             include_name,
             use_prefilter,
-        )?);
+        )?;
+        rank_subqueries.push(fragment.sql);
+        rank_subquery_params.extend(fragment.params);
     }
     let rank_union = rank_subqueries.join(" UNION ALL ");
 
@@ -399,12 +411,13 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
         r#"
         {attribution_prefix}
         SELECT kind, row_id_num,
-               CAST(COUNT(*) OVER () AS BIGINT) AS total_matched
+               {total_matched}
         FROM ({rank_union})
         {where_clause}
         ORDER BY {order_by}
         LIMIT ?
-        "#
+        "#,
+        total_matched = total_matched_bigint_expr(),
     );
 
     // Bind order matches SQL position: pre-filter CTE param (if any),
@@ -416,29 +429,12 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
     if let Some(att) = &attribution {
         rank_params.extend(att.params.iter().cloned());
     }
+    rank_params.extend(rank_subquery_params);
     rank_params.extend(params.iter().cloned());
     rank_params.push(Value::BigInt(req.limit as i64));
 
     let conn = trace.conn();
-    let mut survivors: Vec<(EventKind, i64)> = Vec::with_capacity(req.limit);
-    let mut total_matched: i64 = 0;
-    {
-        let mut stmt = conn
-            .prepare(&rank_sql)
-            .context("failed to prepare search rank SQL")?;
-        let bound = crate::bind(&rank_params);
-        let mut rows = stmt.query(bound.as_slice())?;
-        while let Some(row) = rows.next()? {
-            let kind_str: String = row.get(0)?;
-            let kind = EventKind::parse(&kind_str)
-                .with_context(|| format!("unrecognised kind `{kind_str}` from SQL"))?;
-            let rowid_num: i64 = row.get(1)?;
-            // `total_matched` is identical on every row (window over the
-            // unbounded partition); the last write wins.
-            total_matched = row.get(2)?;
-            survivors.push((kind, rowid_num));
-        }
-    }
+    let (survivors, total_matched) = hydrate_ranked_survivors(conn, &rank_sql, &rank_params)?;
 
     // NVTX nesting is computed at most once per search call. Build it
     // for either reason: NVTX hits in the result set need their `depth`
@@ -450,7 +446,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
         Some(
             trace
                 .nvtx_nesting()
-                .context("computing NVTX nesting depth for search")?,
+                .map_err(NsysQueryError::nvtx_nesting_load)?,
         )
     } else {
         None
@@ -472,8 +468,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
     // so the wide columns/joins touch only the rows we keep. Filtering
     // per kind (not over the union) avoids cross-kind rowid collisions —
     // a kernel and a memcpy can share a per-table rowid.
-    let cols = column_map::load_standard(conn)
-        .context("loading schema column map for search subqueries")?;
+    let cols = column_map::load_standard(conn)?;
     let mut wide_subqueries = Vec::new();
     for k in &kinds {
         let ids: Vec<i64> = survivors
@@ -509,96 +504,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
         "#
     );
 
-    let mut by_id: HashMap<RowId, EventRef> = HashMap::with_capacity(survivors.len());
-    let mut stmt = conn.prepare(&sql).context("failed to prepare search SQL")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let kind_str: String = row.get(COL_KIND)?;
-        let kind = EventKind::parse(&kind_str)
-            .with_context(|| format!("unrecognised kind `{kind_str}` from SQL"))?;
-        let rowid_num: i64 = row.get(COL_ROW_ID_NUM)?;
-        let name: String = row.get(COL_NAME)?;
-        let start_ns: i64 = row.get(COL_START_NS)?;
-        let duration_ns: i64 = row.get(COL_DURATION_NS)?;
-        let device_id: Option<i32> = row.get(COL_DEVICE_ID)?;
-        let stream_id: Option<i64> = row.get(COL_STREAM_ID)?;
-        let global_tid: Option<i64> = row.get(COL_GLOBAL_TID)?;
-
-        // Populate `depth` only for NVTX hits, and only when we actually
-        // computed the nesting map. Lookup miss (e.g. an instant marker
-        // whose row predates the nesting scan, though `compute` covers
-        // those) falls back to `None` rather than spelling a default.
-        let depth = match (kind, nesting.as_ref()) {
-            (EventKind::Nvtx, Some(map)) => map.get(&rowid_num).map(|e| e.depth),
-            _ => None,
-        };
-
-        let row_id = RowId::new(kind, rowid_num);
-        let base = EventRefBase {
-            key: row_id.to_string(),
-            row_id,
-            name,
-            start_ns,
-            duration_ns,
-            device_id,
-            stream_id,
-            global_tid,
-            depth,
-            // `nvtx_context` is populated by the `--with-nvtx`
-            // post-decoration pass below; left None on construction.
-            nvtx_context: None,
-        };
-
-        let event_ref = match kind {
-            EventKind::Kernel => {
-                let grid = build_xyz(row, COL_GRID_X, COL_GRID_Y, COL_GRID_Z)?;
-                let block = build_xyz(row, COL_BLOCK_X, COL_BLOCK_Y, COL_BLOCK_Z)?;
-                let registers_per_thread = row.get(COL_REGISTERS_PER_THREAD)?;
-                let static_shared_memory = row.get(COL_STATIC_SHARED_MEMORY)?;
-                let dynamic_shared_memory = row.get(COL_DYNAMIC_SHARED_MEMORY)?;
-                let demangled_name = opt_string(row, COL_DEMANGLED_NAME)?;
-                let mangled_name = opt_string(row, COL_MANGLED_NAME)?;
-                EventRef::Kernel(EventRefKernel {
-                    base,
-                    grid,
-                    block,
-                    registers_per_thread,
-                    static_shared_memory,
-                    dynamic_shared_memory,
-                    demangled_name,
-                    mangled_name,
-                })
-            }
-            EventKind::Memcpy => {
-                let bytes: Option<i64> = row.get(COL_BYTES)?;
-                let copy_kind: Option<i64> = row.get(COL_COPY_KIND)?;
-                let copy_kind_name = copy_kind.map(crate::kind_sql::copy_kind_label);
-                EventRef::Memcpy(EventRefMemcpy {
-                    base,
-                    bytes,
-                    copy_kind,
-                    copy_kind_name,
-                })
-            }
-            EventKind::Memset => {
-                let bytes: Option<i64> = row.get(COL_BYTES)?;
-                let value: Option<i64> = row.get(COL_MEMSET_VALUE)?;
-                EventRef::Memset(EventRefMemset { base, bytes, value })
-            }
-            EventKind::Nvtx => {
-                let event_type: Option<i64> = row.get(COL_EVENT_TYPE)?;
-                let domain_id: Option<i64> = row.get(COL_DOMAIN_ID)?;
-                EventRef::Nvtx(EventRefNvtx {
-                    base,
-                    event_type,
-                    domain_id,
-                })
-            }
-            // Non-extended kinds carry just the shared base.
-            _ => EventRef::from_base(kind, base)?,
-        };
-        by_id.insert(row_id, event_ref);
-    }
+    let mut by_id = hydrate_search_rows(conn, &sql, survivors.len(), nesting.as_ref())?;
 
     // Re-apply the stage-1 ordering: stage 2 fetched survivors by rowid
     // (arbitrary order), so walk the ranked survivor list and pull each
@@ -620,8 +526,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
         && let Some(nesting_map) = nesting.as_ref()
     {
         let row_ids: Vec<crate::RowId> = events.iter().map(|e| e.base().row_id).collect();
-        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, &row_ids, nesting_map)
-            .context("batched NVTX reverse attribution for search")?;
+        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, &row_ids, nesting_map)?;
         for ev in &mut events {
             let row_id = ev.base().row_id;
             if let Some(ctx) = contexts.get(&row_id) {
@@ -639,17 +544,201 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> Result<SearchResponse
     })
 }
 
+fn hydrate_ranked_survivors(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<(Vec<(EventKind, i64)>, i64)> {
+    let rows = query_rows(
+        conn,
+        sql,
+        params,
+        SqlLabel::new("search", SEARCH_RANK_SQL),
+        search_rank_sql_row,
+    )?;
+    duckdb_list::split_rows_and_total::<i64, _, _, _>(
+        rows,
+        duckdb_list::TotalCarrier::First,
+        |row| row.total_matched,
+        duckdb_list::infallible_count_error,
+        |row| Ok((parse_search_sql_kind(&row.kind)?, row.rowid_num)),
+    )
+}
+
+struct SearchRankSqlRow {
+    kind: String,
+    rowid_num: i64,
+    total_matched: i64,
+}
+
+fn search_rank_sql_row(row: &duckdb::Row<'_>) -> Result<SearchRankSqlRow, duckdb::Error> {
+    Ok(SearchRankSqlRow {
+        kind: row.get(0)?,
+        rowid_num: row.get(1)?,
+        total_matched: row.get(2)?,
+    })
+}
+
+fn hydrate_search_rows(
+    conn: &duckdb::Connection,
+    sql: &str,
+    survivor_count: usize,
+    nesting: Option<&NvtxNesting>,
+) -> NsysQueryResult<HashMap<RowId, EventRef>> {
+    let mut by_id: HashMap<RowId, EventRef> = HashMap::with_capacity(survivor_count);
+    let rows = query_rows(
+        conn,
+        sql,
+        &[],
+        SqlLabel::new("search", SEARCH_HYDRATE_SQL),
+        search_sql_row,
+    )?;
+    for row in rows {
+        let (row_id, event_ref) = event_ref_from_sql_row(row, nesting)?;
+        by_id.insert(row_id, event_ref);
+    }
+    Ok(by_id)
+}
+
+struct SearchSqlRow {
+    kind: String,
+    rowid_num: i64,
+    name: String,
+    start_ns: i64,
+    duration_ns: i64,
+    device_id: Option<i32>,
+    stream_id: Option<i64>,
+    global_tid: Option<i64>,
+    grid_x: Option<i64>,
+    grid_y: Option<i64>,
+    grid_z: Option<i64>,
+    block_x: Option<i64>,
+    block_y: Option<i64>,
+    block_z: Option<i64>,
+    registers_per_thread: Option<i64>,
+    static_shared_memory: Option<i64>,
+    dynamic_shared_memory: Option<i64>,
+    demangled_name: Option<String>,
+    mangled_name: Option<String>,
+    bytes: Option<i64>,
+    copy_kind: Option<i64>,
+    memset_value: Option<i64>,
+    event_type: Option<i64>,
+    domain_id: Option<i64>,
+}
+
+fn search_sql_row(row: &duckdb::Row<'_>) -> Result<SearchSqlRow, duckdb::Error> {
+    Ok(SearchSqlRow {
+        kind: row.get(COL_KIND)?,
+        rowid_num: row.get(COL_ROW_ID_NUM)?,
+        name: row.get(COL_NAME)?,
+        start_ns: row.get(COL_START_NS)?,
+        duration_ns: row.get(COL_DURATION_NS)?,
+        device_id: row.get(COL_DEVICE_ID)?,
+        stream_id: row.get(COL_STREAM_ID)?,
+        global_tid: row.get(COL_GLOBAL_TID)?,
+        grid_x: row.get(COL_GRID_X)?,
+        grid_y: row.get(COL_GRID_Y)?,
+        grid_z: row.get(COL_GRID_Z)?,
+        block_x: row.get(COL_BLOCK_X)?,
+        block_y: row.get(COL_BLOCK_Y)?,
+        block_z: row.get(COL_BLOCK_Z)?,
+        registers_per_thread: row.get(COL_REGISTERS_PER_THREAD)?,
+        static_shared_memory: row.get(COL_STATIC_SHARED_MEMORY)?,
+        dynamic_shared_memory: row.get(COL_DYNAMIC_SHARED_MEMORY)?,
+        demangled_name: row.get(COL_DEMANGLED_NAME)?,
+        mangled_name: row.get(COL_MANGLED_NAME)?,
+        bytes: row.get(COL_BYTES)?,
+        copy_kind: row.get(COL_COPY_KIND)?,
+        memset_value: row.get(COL_MEMSET_VALUE)?,
+        event_type: row.get(COL_EVENT_TYPE)?,
+        domain_id: row.get(COL_DOMAIN_ID)?,
+    })
+}
+
+fn event_ref_from_sql_row(
+    row: SearchSqlRow,
+    nesting: Option<&NvtxNesting>,
+) -> NsysQueryResult<(RowId, EventRef)> {
+    let kind = parse_search_sql_kind(&row.kind)?;
+    // Populate `depth` only for NVTX hits, and only when we actually
+    // computed the nesting map. Lookup miss (e.g. an instant marker
+    // whose row predates the nesting scan, though `compute` covers
+    // those) falls back to `None` rather than spelling a default.
+    let depth = match (kind, nesting) {
+        (EventKind::Nvtx, Some(map)) => map.get(&row.rowid_num).map(|e| e.depth),
+        _ => None,
+    };
+
+    let row_id = RowId::new(kind, row.rowid_num);
+    let base = EventRefBase {
+        key: row_id.to_string(),
+        row_id,
+        name: row.name,
+        start_ns: row.start_ns,
+        duration_ns: row.duration_ns,
+        device_id: row.device_id,
+        stream_id: row.stream_id,
+        global_tid: row.global_tid,
+        depth,
+        // `nvtx_context` is populated by the `--with-nvtx`
+        // post-decoration pass below; left None on construction.
+        nvtx_context: None,
+    };
+
+    let event_ref = match kind {
+        EventKind::Kernel => EventRef::Kernel(EventRefKernel {
+            base,
+            grid: build_xyz(row.grid_x, row.grid_y, row.grid_z),
+            block: build_xyz(row.block_x, row.block_y, row.block_z),
+            registers_per_thread: row.registers_per_thread,
+            static_shared_memory: row.static_shared_memory,
+            dynamic_shared_memory: row.dynamic_shared_memory,
+            demangled_name: row.demangled_name,
+            mangled_name: row.mangled_name,
+        }),
+        EventKind::Memcpy => {
+            let copy_kind_name = row.copy_kind.map(crate::kind_sql::copy_kind_label);
+            EventRef::Memcpy(EventRefMemcpy {
+                base,
+                bytes: row.bytes,
+                copy_kind: row.copy_kind,
+                copy_kind_name,
+            })
+        }
+        EventKind::Memset => EventRef::Memset(EventRefMemset {
+            base,
+            bytes: row.bytes,
+            value: row.memset_value,
+        }),
+        EventKind::Nvtx => EventRef::Nvtx(EventRefNvtx {
+            base,
+            event_type: row.event_type,
+            domain_id: row.domain_id,
+        }),
+        // Non-extended kinds carry just the shared base.
+        _ => EventRef::from_base(kind, base)?,
+    };
+    Ok((row_id, event_ref))
+}
+
+fn parse_search_sql_kind(kind: &str) -> NsysQueryResult<EventKind> {
+    let Some(kind) = EventKind::parse(kind) else {
+        return Err(NsysQueryError::internal_sql_kind_tag_invalid(
+            "search", kind,
+        ));
+    };
+    Ok(kind)
+}
+
 /// Read three columns at `xi`/`yi`/`zi` into an `Option<[i64; 3]>`.
 /// All three present → `Some(...)`; any NULL → `None`. Used to
 /// assemble kernel `grid`/`block` triples in the row builder.
-fn build_xyz(row: &duckdb::Row, xi: usize, yi: usize, zi: usize) -> Result<Option<[i64; 3]>> {
-    let x: Option<i64> = row.get(xi)?;
-    let y: Option<i64> = row.get(yi)?;
-    let z: Option<i64> = row.get(zi)?;
-    Ok(match (x, y, z) {
+fn build_xyz(x: Option<i64>, y: Option<i64>, z: Option<i64>) -> Option<[i64; 3]> {
+    match (x, y, z) {
         (Some(x), Some(y), Some(z)) => Some([x, y, z]),
         _ => None,
-    })
+    }
 }
 
 fn per_kind_select(
@@ -657,11 +746,12 @@ fn per_kind_select(
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
     cols: &ColumnMap,
     rowid_filter: Option<&[i64]>,
-) -> Result<String> {
-    let table = kind.table();
-    let label = kind.as_str();
-    let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
-    let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
+) -> NsysQueryResult<String> {
+    let sem = EventSemantics::new(kind);
+    let table = sem.table();
+    let label = sem.label();
+    let dev = sem.device_expr();
+    let stm = sem.stream_expr();
     // Predicates pushed into this kind's scan ahead of the StringIds
     // joins: the NVTX attribution constraint (when `--nvtx` is active and
     // the kind is attributable — Kernel/Memcpy/Memset/Sync/Runtime) and,
@@ -669,13 +759,15 @@ fn per_kind_select(
     // base columns, so DuckDB pushes them down to the scan, keeping the
     // joins off every non-matching row.
     let mut base_preds: Vec<String> = Vec::new();
-    if let Some(p) = attribution_pred(kind, nvtx_scope) {
+    if nvtx_scope.is_attributed()
+        && let Some(p) = sem.attribution_filter("t")
+    {
         base_preds.push(p);
     }
     if let Some(ids) = rowid_filter {
         base_preds.push(rowid_in_list(ids));
     }
-    let where_clause = build_where(&base_preds);
+    let where_clause = build_where_clause(&base_preds);
     let global_tid = veloq_nsys_data::sql_expr::u64_bits_to_i64("t.globalTid");
     Ok(match kind {
         EventKind::Kernel => {
@@ -685,8 +777,8 @@ fn per_kind_select(
             // registers / shared memory / mangled are probed via
             // `maybe_col` so older NSys schemas degrade to NULL.
             const T: &str = "CUPTI_ACTIVITY_KIND_KERNEL";
-            let name_expr = crate::kind_sql::display_name_expr(kind);
-            let joins = crate::kind_sql::name_joins(kind);
+            let name_expr = sem.display_name_expr();
+            let joins = sem.name_joins();
             let reg = maybe_col(cols, T, "registersPerThread");
             let smem_static = maybe_col(cols, T, "staticSharedMemory");
             let smem_dyn = maybe_col(cols, T, "dynamicSharedMemory");
@@ -729,8 +821,8 @@ fn per_kind_select(
             // Memcpy — bytes + copyKind are mandatory in the CUPTI
             // table. Name comes from kind_sql so the copyKind →
             // label CASE stays single-sourced.
-            let name_expr = crate::kind_sql::display_name_expr(kind);
-            let joins = crate::kind_sql::name_joins(kind);
+            let name_expr = sem.display_name_expr();
+            let joins = sem.name_joins();
             format!(
                 r#"
                 SELECT
@@ -757,8 +849,8 @@ fn per_kind_select(
             // optional on older NSys schemas, so it goes through
             // maybe_col.
             const T: &str = "CUPTI_ACTIVITY_KIND_MEMSET";
-            let name_expr = crate::kind_sql::display_name_expr(kind);
-            let joins = crate::kind_sql::name_joins(kind);
+            let name_expr = sem.display_name_expr();
+            let joins = sem.name_joins();
             let val = maybe_col(cols, T, "value");
             format!(
                 r#"
@@ -785,8 +877,8 @@ fn per_kind_select(
             // Sync/Graph — base-only kinds that still need
             // kind_sql-driven naming + joins, but have no
             // per-kind headline payload.
-            let name_expr = crate::kind_sql::display_name_expr(kind);
-            let joins = crate::kind_sql::name_joins(kind);
+            let name_expr = sem.display_name_expr();
+            let joins = sem.name_joins();
             format!(
                 r#"
                 SELECT
@@ -852,7 +944,7 @@ fn per_kind_select(
             // (drops instant markers) and ANDs with any rowid filter.
             let mut preds = base_preds.clone();
             preds.push(r#"t."end" IS NOT NULL"#.to_string());
-            let where_clause = build_where(&preds);
+            let where_clause = build_where_clause(&preds);
             format!(
                 r#"
                 SELECT
@@ -897,7 +989,7 @@ fn per_kind_select(
             // Both creation sub-types fall under the single graph_event
             // kind; agents pick a sub-type via `--name graph_creation`
             // or `--name graph_exec_creation`.
-            let name_expr = crate::kind_sql::display_name_expr(kind);
+            let name_expr = sem.display_name_expr();
             format!(
                 r#"
                 SELECT
@@ -921,7 +1013,7 @@ fn per_kind_select(
             // CUDA_EVENT rows have a single `timestamp` column (no
             // end). Project duration_ns = 0 and rely on the duration-
             // filter exemption (below) to keep them searchable.
-            let name_expr = crate::kind_sql::display_name_expr(kind);
+            let name_expr = sem.display_name_expr();
             format!(
                 r#"
                 SELECT
@@ -943,7 +1035,7 @@ fn per_kind_select(
         }
         EventKind::Overhead => {
             // Has start/end + globalTid; no deviceId/streamId.
-            let name_expr = crate::kind_sql::display_name_expr(kind);
+            let name_expr = sem.display_name_expr();
             format!(
                 r#"
                 SELECT
@@ -969,142 +1061,10 @@ fn per_kind_select(
         // a clear redirect if a future caller routes around the
         // upstream allow-list (e.g. a library consumer hand-building
         // a request).
-        EventKind::CpuSample => anyhow::bail!(
-            "internal: search doesn't surface cpu_sample rows; \
-             use `veloq metrics --type cpu-sampling` or \
-             `veloq inspect cpu_sample:<id>` instead"
-        ),
-    })
-}
-
-/// Thin per-kind projection for stage-1 ranking: rowid plus the columns
-/// the sort/filter touch — `name` only when `include_name`. Mirrors
-/// [`per_kind_select`]'s start/duration/device/stream/name and intrinsic
-/// filters per kind exactly, so the ranked set matches what stage 2
-/// re-materializes — but without the headline columns or (when a name
-/// isn't read) any StringIds join.
-fn per_kind_rank_select(
-    kind: EventKind,
-    nvtx_scope: crate::nvtx_attribution::NvtxScope,
-    include_name: bool,
-    use_prefilter: bool,
-) -> Result<String> {
-    if matches!(kind, EventKind::CpuSample) {
-        anyhow::bail!(
-            "internal: search doesn't surface cpu_sample rows; \
-             use `veloq metrics --type cpu-sampling` or \
-             `veloq inspect cpu_sample:<id>` instead"
-        );
-    }
-    let table = kind.table();
-    let label = kind.as_str();
-    let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
-    let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
-
-    // device/stream carry only on the GPU kinds (matches per_kind_select).
-    let (dev_expr, stm_expr) = match kind {
-        EventKind::Kernel
-        | EventKind::Memcpy
-        | EventKind::Memset
-        | EventKind::Sync
-        | EventKind::Graph
-        | EventKind::CudaEvent => (dev, stm),
-        _ => ("CAST(NULL AS INTEGER)", "CAST(NULL AS BIGINT)"),
-    };
-    // CUDA_EVENT rows have only a `timestamp` (no end); everything else is
-    // a start/end span.
-    let (start_expr, dur_expr) = match kind {
-        EventKind::CudaEvent => ("t.timestamp", "0"),
-        _ => ("t.start", r#"(t."end" - t.start)"#),
-    };
-
-    // Name expression + its joins, only when a name filter/sort reads it.
-    // Each resolves to the SAME value per_kind_select projects, so
-    // filtering/ordering on it is identical.
-    let (name_proj, name_joins) = if include_name {
-        let expr = match kind {
-            // per_kind_select hand-rolls NVTX's name with the
-            // '<unnamed nvtx>' fallback (display_name_expr uses a
-            // different literal); match it here for an identical value.
-            EventKind::Nvtx => "COALESCE(t.text, s_text.value, '<unnamed nvtx>')".to_string(),
-            _ => crate::kind_sql::display_name_expr(kind).to_string(),
-        };
-        (
-            format!(", {expr} AS name"),
-            crate::kind_sql::name_joins(kind),
-        )
-    } else {
-        (String::new(), "")
-    };
-
-    // Same constraints per_kind_select applies (attribution when scoped,
-    // the NVTX end-not-null intrinsic), so the ranked rowids are exactly
-    // the ones stage 2 can re-fetch.
-    let mut preds: Vec<String> = Vec::new();
-    if let Some(p) = attribution_pred(kind, nvtx_scope) {
-        preds.push(p);
-    }
-    if matches!(kind, EventKind::Nvtx) {
-        preds.push(r#"t."end" IS NOT NULL"#.to_string());
-    }
-    // Name pre-filter (see the `name_match_ids` CTE in `run`): a pushed-
-    // down superset of "this row's resolved name matches the pattern",
-    // referencing only the raw id columns so DuckDB prunes the scan before
-    // the StringIds joins. A `NULL` id component means the COALESCE falls
-    // through to the next source (or the literal fallback), so those rows
-    // must pass the pre-filter and are settled by the authoritative outer
-    // `name LIKE/regexp` filter. Only the StringId-named kinds get this.
-    if use_prefilter {
-        match kind {
-            EventKind::Kernel => preds.push(
-                "(t.demangledName IN (SELECT id FROM name_match_ids) \
-                 OR t.shortName IN (SELECT id FROM name_match_ids) \
-                 OR t.demangledName IS NULL OR t.shortName IS NULL)"
-                    .to_string(),
-            ),
-            EventKind::Runtime | EventKind::Osrt => preds.push(
-                "(t.nameId IN (SELECT id FROM name_match_ids) OR t.nameId IS NULL)".to_string(),
-            ),
-            _ => {}
+        EventKind::CpuSample => {
+            return Err(NsysQueryError::SearchCpuSampleUnsupported);
         }
-    }
-    let where_clause = build_where(&preds);
-
-    Ok(format!(
-        r#"
-        SELECT
-            '{label}' AS kind,
-            t.rowid AS row_id_num,
-            {start_expr} AS start_ns,
-            {dur_expr} AS duration_ns,
-            {dev_expr} AS device_id,
-            {stm_expr} AS stream_id{name_proj}
-        FROM nsight.{table} t {name_joins}
-        {where_clause}
-        "#
-    ))
-}
-
-/// NVTX attribution predicate for one kind: when `--nvtx` scoping is
-/// active and the kind is attributable (Kernel/Memcpy/Memset/Sync/
-/// Runtime), constrain its scan to the rowids the attribution CTE
-/// resolved. Non-attributable kinds — and the unscoped case — get `None`.
-fn attribution_pred(
-    kind: EventKind,
-    nvtx_scope: crate::nvtx_attribution::NvtxScope,
-) -> Option<String> {
-    if !nvtx_scope.is_attributed() {
-        return None;
-    }
-    let view = match kind {
-        EventKind::Kernel => crate::nvtx_attribution::KERNEL_VIEW,
-        EventKind::Memcpy => crate::nvtx_attribution::MEMCPY_VIEW,
-        EventKind::Memset => crate::nvtx_attribution::MEMSET_VIEW,
-        EventKind::Sync => crate::nvtx_attribution::SYNC_VIEW,
-        EventKind::Runtime => crate::nvtx_attribution::RUNTIME_VIEW,
-        _ => return None,
-    };
-    Some(format!("t.rowid IN (SELECT rowid FROM {view})"))
+    })
 }
 
 /// `t.rowid IN (...)` over an explicit set of survivor rowids. Rowids are
@@ -1123,15 +1083,6 @@ fn rowid_in_list(ids: &[i64]) -> String {
     format!("t.rowid IN ({joined})")
 }
 
-/// Join predicates into a `WHERE` clause, or the empty string if none.
-fn build_where(preds: &[String]) -> String {
-    if preds.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", preds.join(" AND "))
-    }
-}
-
 /// Does this sort spec read the `name` column? Stage 1 only projects
 /// (and joins for) `name` when a filter or a sort actually needs it.
 fn sort_uses_name(spec: &SortSpec) -> bool {
@@ -1142,13 +1093,174 @@ fn sort_uses_name(spec: &SortSpec) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::search_glob_to_like;
+    use super::*;
+    use anyhow::Result;
+    use veloq_core::VeloqDiagnostic;
+    use veloq_core::query::glob_sql_like;
 
     #[test]
     fn glob_translation() {
-        assert_eq!(search_glob_to_like("foo*bar"), "foo%bar");
-        assert_eq!(search_glob_to_like("ker?el"), "ker_el");
+        assert_eq!(glob_sql_like("foo*bar"), "foo%bar");
+        assert_eq!(glob_sql_like("ker?el"), "ker_el");
         // SQL specials inside the glob get escaped so they're literal:
-        assert_eq!(search_glob_to_like("100%_case"), "100\\%\\_case");
+        assert_eq!(glob_sql_like("100%_case"), "100\\%\\_case");
+    }
+
+    #[test]
+    fn hydrate_ranked_survivors_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_ranked_survivors(&conn, "SELECT * FROM", &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed search rank SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("search", crate::SqlPhase::Prepare, SEARCH_RANK_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_ranked_survivors_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT ? AS kind, 1::BIGINT AS row_id_num, 1::BIGINT AS total_matched";
+
+        let err = match hydrate_ranked_survivors(&conn, sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "unbound search rank SQL should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_ranked_survivors_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql =
+            "SELECT 'kernel' AS kind, 'not-a-rowid' AS row_id_num, 1::BIGINT AS total_matched";
+
+        let err = match hydrate_ranked_survivors(&conn, sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "malformed search rank row should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_ranked_survivors_kind_tag_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql =
+            "SELECT 'not_a_kind' AS kind, 1::BIGINT AS row_id_num, 1::BIGINT AS total_matched";
+
+        let err = match hydrate_ranked_survivors(&conn, sql, &[]) {
+            Ok(rows) => anyhow::bail!(
+                "unknown search rank kind should not hydrate successfully: {} rows",
+                rows.0.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.internal.sql-kind-tag-invalid");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::InternalSqlKindTagInvalid { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_search_rows_prepare_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_search_rows(&conn, "SELECT * FROM", 1, None) {
+            Ok(rows) => anyhow::bail!(
+                "malformed search hydrate SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-prepare");
+        assert_eq!(
+            err.sql_parts(),
+            Some(("search", crate::SqlPhase::Prepare, SEARCH_HYDRATE_SQL))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_search_rows_query_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+
+        let err = match hydrate_search_rows(&conn, "SELECT ? AS kind", 1, None) {
+            Ok(rows) => anyhow::bail!(
+                "unbound search hydrate SQL should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-query");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Query,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn hydrate_search_rows_read_error_is_typed() -> Result<()> {
+        let conn = duckdb::Connection::open_in_memory()?;
+        let sql = "SELECT 'kernel' AS kind, 'not-a-rowid' AS row_id_num";
+
+        let err = match hydrate_search_rows(&conn, sql, 1, None) {
+            Ok(rows) => anyhow::bail!(
+                "malformed search hydrate row should not hydrate successfully: {} rows",
+                rows.len()
+            ),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.code().as_str(), "nsys.query.sql-read");
+        assert!(matches!(
+            err,
+            crate::NsysQueryError::Sql {
+                phase: crate::SqlPhase::Read,
+                ..
+            }
+        ));
+        Ok(())
     }
 }

@@ -6,14 +6,18 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
+description = "PyTorch/Kineto query verbs and response payloads for VeloQ."
+include = ["src/**/*.rs"]
 
 [dependencies]
-anyhow.workspace = true
+duckdb.workspace = true
 regex.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 veloq-core.workspace = true
+veloq-query.workspace = true
 veloq-pytorch-data.workspace = true
 
 [dev-dependencies]
