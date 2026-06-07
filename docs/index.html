@@ -6,7 +6,7 @@
     <title>VeloQ — agent-friendly profile-query CLI</title>
     <meta
       name="description"
-      content="VeloQ is an agent-friendly profile-query CLI for Nsight Systems timelines and Nsight Compute kernel reports. Pure CLI in, versioned JSON contract out. No GUI required."
+      content="VeloQ is an agent-friendly profile-query CLI for Nsight Systems timelines, Nsight Compute kernel reports, and PyTorch/Kineto Chrome traces. Pure CLI in, versioned JSON contract out. No GUI required."
     />
     <meta name="theme-color" content="#0b0e14" />
 
@@ -20,7 +20,7 @@
     />
     <meta
       property="og:description"
-      content="Pure CLI in / JSON contract out. Nsight Systems + Nsight Compute, one binary, one versioned envelope, one shot per call."
+      content="Pure CLI in / JSON contract out. Nsight Systems + Nsight Compute + PyTorch/Kineto, one binary, one versioned envelope, one shot per call."
     />
     <meta property="og:url" content="https://lucifer1004.github.io/veloq/" />
     <meta
@@ -603,7 +603,8 @@
           <p class="lede">
             An <strong>agent-friendly</strong> profile-query CLI for
             <strong>Nsight Systems</strong> timelines and
-            <strong>Nsight Compute</strong> kernel reports — one binary, one
+            <strong>Nsight Compute</strong> kernel reports plus
+            <strong>PyTorch/Kineto</strong> Chrome traces — one binary, one
             versioned JSON envelope, one shot per call. Built so a coding agent
             (or a shell script) can reason about GPU profiles without ever
             opening a GUI.
@@ -638,7 +639,7 @@
             <p class="kicker">why VeloQ</p>
             <h2>Built for the way agents read profiles</h2>
             <p>
-              Not raw speed — veloq reads <code>nsys export</code> output, it
+              Not raw speed — VeloQ reads <code>nsys export</code> output, it
               doesn't replace <code>nsys</code>/<code>ncu</code>. It wins on the
               axes that matter to a program consuming the result.
             </p>
@@ -793,8 +794,9 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
             <h2>One tool, one envelope, many verbs</h2>
             <p>
               NSys verbs are hoisted to the top level (also under
-              <code>veloq nsys …</code>); NCU verbs live under
-              <code>veloq ncu …</code>.
+              <code>veloq nsys ...</code>); NCU and PyTorch/Kineto verbs live
+              under <code>veloq ncu ...</code> and
+              <code>veloq pytorch ...</code>.
             </p>
           </div>
 
@@ -826,6 +828,19 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
               ><span class="chip">source-metrics</span>
               <span class="chip">warp-stalls</span
               ><span class="chip">schema</span>
+            </div>
+          </div>
+
+          <div class="verbset">
+            <p class="vlabel">// PyTorch/Kineto</p>
+            <div class="chips">
+              <span class="chip">summary</span><span class="chip">search</span
+              ><span class="chip">inspect</span><span class="chip">stats</span
+              ><span class="chip">correlate</span
+              ><span class="chip">timeline</span
+              ><span class="chip">slices</span
+              ><span class="chip">collectives</span
+              ><span class="chip">prep</span><span class="chip">schema</span>
             </div>
           </div>
 
@@ -872,8 +887,9 @@ cargo build --release -p veloq   <span class="c"># → target/release/veloq</spa
               >/plugin marketplace add
               https://github.com/lucifer1004/veloq.git</code
             >
-            then <code>/plugin install veloq-profile-analysis@veloq</code>. Full
-            docs in the
+            then <code>/plugin install veloq-profile-analysis@veloq</code>.
+            The plugin installs skills only; they still require the VeloQ CLI
+            for evidence extraction. Full docs in the
             <a href="https://github.com/lucifer1004/veloq#readme">README</a>.
           </p>
         </div>

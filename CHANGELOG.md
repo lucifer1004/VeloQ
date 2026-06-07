@@ -43,13 +43,13 @@ Initial public release.
   `source-metrics` (per source-line counter attribution), `warp-stalls`, and
   `schema`.
 - **Shared contract** — a common envelope and a pluggable `ProfileSource`
-  trait across both sources; every list response uses canonical `data.rows[]`
-  with a stable per-row `key`, NSys trace responses carry top-level
+  trait across the NSys and NCU sources; every list response uses canonical
+  `data.rows[]` with a stable per-row `key`, NSys trace responses carry top-level
   `trace_span` for per-second normalization, and errors come back through the
   same envelope shape with a non-zero exit code. The `inspect` not-found row
   uses the discriminator `type: "not_found"` consistently across both the NSys
   and NCU sources.
-- **Root meta verbs** — `info`, `sources`, `clean`, `recipes`, and `self-update`. All veloq-generated
+- **Root meta verbs** — `info`, `sources`, `clean`, `recipes`, and `self-update`. All VeloQ-generated
   products live under one `<report>.veloq/` artifact root with content/mtime
   cache invalidation.
 - **Distribution** — `scripts/install.sh` installs the binary plus the

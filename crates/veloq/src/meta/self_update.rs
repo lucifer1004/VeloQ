@@ -2,13 +2,14 @@
 //! Claude Code skills to the latest GitHub release.
 //!
 //! A release ships both the binary (per-target archives) and a
-//! `veloq-skills.tar.gz` of `.claude/skills/{nsys,ncu}-profile-analysis`.
+//! `veloq-skills.tar.gz` of the bundled profile-analysis skills.
 //! `scripts/install.sh` installs both; this verb keeps them in lockstep so
 //! a self-updated binary doesn't leave stale skills behind.
 //!
 //! - default: update binary + skills.
 //! - `--no-binary` / `--no-skills`: update just one half (mirrors
-//!   `install.sh`'s flags).
+//!   `install.sh`'s flags). Skills-only refreshes are for users who manage
+//!   the VeloQ CLI separately; the skills still require the CLI on `PATH`.
 //! - `--skills-dir <path>`: install skills under a different root — a
 //!   project-local `.claude`, an agent-agnostic `.agents`, etc. `skills/` is
 //!   appended unless already present, so the agent root or the full skills
@@ -60,7 +61,7 @@ struct SelfUpdatePayload {
 
 pub fn cli() -> Command {
     Command::new(VERB)
-        .about("Update the veloq binary and bundled skills to the latest GitHub release")
+        .about("Update the VeloQ binary and bundled skills to the latest GitHub release")
         .arg(
             Arg::new("check")
                 .long("check")
@@ -71,7 +72,7 @@ pub fn cli() -> Command {
             Arg::new("no-binary")
                 .long("no-binary")
                 .action(ArgAction::SetTrue)
-                .help("Update only the bundled skills, not the binary"),
+                .help("Update only the bundled skills; keep the binary manager you already use"),
         )
         .arg(
             Arg::new("no-skills")
@@ -197,7 +198,7 @@ fn perform_binary_update(current: &str) -> MetaResult<bool> {
     Ok(!matches!(status, self_update::Status::UpToDate(_)))
 }
 
-/// Download `veloq-skills.tar.gz` for `version` and install the two skills
+/// Download `veloq-skills.tar.gz` for `version` and install the bundled skills
 /// under the Claude Code skills directory, overwriting any prior copy.
 /// Returns the skills directory.
 fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> MetaResult<PathBuf> {

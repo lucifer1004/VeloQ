@@ -60,6 +60,34 @@ related_verbs = ["slices"]
 trace_shape = ["has_nvtx"]
 
 [[recipe]]
+id = "nvtx-evidence-first"
+title = "Validate unstable NVTX structure before higher-level analysis"
+body = """
+# Start with an inventory of full NVTX paths. Prefer paths over leaf
+# names when traces reuse the same label in different phases.
+veloq slices <trace> --aggregate --group-by path \\
+  --sort instances:desc --limit 50
+
+# Cross-check GPU contribution under candidate paths. If counts or
+# dominant paths differ by device/window, treat occurrence alignment
+# as an explicit assumption rather than an inferred fact.
+veloq stats <trace> --type kernel --group-by nvtx-path --limit 20
+
+# Inspect candidate range instances chronologically before assigning
+# occurrence ids for iteration, phase, or pipeline-parallel analysis.
+veloq slices <trace> --name-regex '<candidate-regex>' \\
+  --sort start:asc --limit 200
+
+# For a kernel/category of interest, attach the active NVTX context
+# and verify that event-level attribution matches the candidate range.
+veloq search <trace> --type kernel --name '<kernel-pattern>' \\
+  --with-nvtx --limit 20
+"""
+keywords = ["nvtx", "evidence", "occurrence", "pipeline", "iteration"]
+related_verbs = ["slices", "stats", "search"]
+trace_shape = ["has_nvtx", "has_kernels"]
+
+[[recipe]]
 id = "single-device-view"
 title = "Restrict every list verb to one device on a multi-device trace"
 body = """

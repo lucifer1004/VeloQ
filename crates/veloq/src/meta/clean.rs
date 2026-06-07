@@ -1,8 +1,8 @@
-//! `veloq clean <trace>` — remove veloq-generated products for one
+//! `veloq clean <trace>` — remove VeloQ-generated products for one
 //! report.
 //!
 //! The command removes only the shared `<trace>.veloq/` artifact root
-//! defined by `veloq-core`. Passing veloq's generated
+//! defined by `veloq-core`. Passing VeloQ's generated
 //! `<report>.veloq/parquetdir/` child cleans its parent artifact root.
 //! It does not remove direct `_pqtdir/` inputs, `.nsys-rep` files,
 //! `.ncu-rep` files, or any legacy sidecar names.
@@ -47,7 +47,7 @@ impl ArtifactStats {
 
 pub fn cli() -> Command {
     Command::new(VERB)
-        .about("Remove veloq-generated cache products for one report")
+        .about("Remove VeloQ-generated cache products for one report")
         .arg(
             Arg::new("trace")
                 .required(true)

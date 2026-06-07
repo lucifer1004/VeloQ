@@ -35,7 +35,7 @@ back through the same envelope shape with a non-zero exit code.
 
 NSys traces are read through `nsys export -t parquetdir`. **Minimum
 required nsys version is 2024.6** (the release that introduced the
-`parquetdir` `--type`). All veloq-generated products live under one
+`parquetdir` `--type`). All VeloQ-generated products live under one
 `<report>.veloq/` artifact root; the NSys parquet cache is its
 `parquetdir/` child with ctime invalidation.
 
@@ -73,8 +73,11 @@ Installs the `veloq` binary under `~/.local/bin` and the Claude Code
 profile-analysis skills (`nsys-profile-analysis`, `ncu-profile-analysis`,
 `pytorch-profile-analysis`) under
 `~/.claude/skills/`. Pass `--no-skills` to install just the
-binary, or `--no-binary` to refresh the skills against the latest
-release. `--bin-dir <path>` overrides the binary install location.
+binary, or `--no-binary` to refresh the skills when you manage the
+VeloQ CLI separately. The skills are VeloQ-backed: they can be
+installed separately, but profile evidence extraction still requires a
+`veloq` binary on `PATH`. `--bin-dir <path>` overrides the binary
+install location.
 
 For Windows, use `cargo binstall veloq` below or grab
 `veloq-x86_64-windows.exe` from the
@@ -91,7 +94,7 @@ cargo binstall veloq
 
 `cargo binstall` installs only the executable. To fetch the bundled
 skills from the latest release without replacing the binstall-managed
-binary, run:
+VeloQ binary, run:
 
 ```bash
 veloq self-update --no-binary
@@ -114,8 +117,9 @@ VeloQ ships a one-plugin marketplace listing under
 /plugin install veloq-profile-analysis@veloq
 ```
 
-The plugin install handles the profile-analysis skills; install the `veloq`
-binary separately via `cargo binstall veloq` or
+The plugin install handles the profile-analysis skills only. Those
+skills require the VeloQ CLI for evidence extraction, so install the
+`veloq` binary separately via `cargo binstall veloq` or
 `scripts/install.sh --no-skills`.
 
 ### Updating
@@ -124,7 +128,7 @@ binary separately via `cargo binstall veloq` or
 veloq self-update                              # binary AND bundled skills
 veloq self-update --check                      # is a newer release out? (JSON)
 veloq self-update --no-skills                  # binary only
-veloq self-update --no-binary                  # skills only
+veloq self-update --no-binary                  # skills only; keep your binary manager
 veloq self-update --skills-dir .agents          # install skills to .agents/skills/
 ```
 
@@ -277,7 +281,7 @@ Every successful JSON call returns the source-qualified v1 envelope:
 - `schema` — envelope-format version. Bumps on every breaking
   envelope-shape change.
 - `source.kind` — which profile backend produced the response
-  (`"nsys"`, `"ncu"`, or `"VeloQ"` for meta verbs).
+  (`"nsys"`, `"ncu"`, `"pytorch"`, or `"veloq"` for meta verbs).
 - `source.version` — per-source wire-format version. Bumps
   independently from the envelope when the source's payload shapes
   change. Currently NSys reports `v1` (the NVTX domain dimension on

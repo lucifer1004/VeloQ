@@ -56,7 +56,7 @@ struct InfoPayload {
     /// query-can-run) predicate. Same shape as
     /// `summary.auxiliary.capabilities`. Populated only when
     /// `detected_source == "nsys"`, the trace exists on disk, and
-    /// the path is a direct `_pqtdir/` or veloq's generated
+    /// the path is a direct `_pqtdir/` or VeloQ's generated
     /// `<report>.veloq/parquetdir/` alias.
     #[serde(skip_serializing_if = "Option::is_none")]
     capabilities: Option<CapabilityFlags>,

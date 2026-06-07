@@ -1,6 +1,6 @@
 ---
 name: ncu-profile-analysis
-description: "Analyze Nsight Compute kernel reports and kernel-internal performance bottlenecks. Use for `.ncu-rep` files, Nsight Compute / ncu reports, low occupancy, warp stalls, memory throughput, instruction mix, source/SASS/PTX correlation, rule findings, per-source-line metric attribution, or CSV/table export of report metrics. This is a profiling-workflow skill first: classify the kernel bottleneck, then use `veloq ncu` to extract report evidence, and know when to switch to native NCU, NSys, compiler/source inspection, or recapture. Do not use for Nsight Systems timeline traces; use nsys-profile-analysis for `.nsys-rep` files or `_pqtdir/` parquet directories."
+description: "Analyze Nsight Compute `.ncu-rep` kernel reports using the VeloQ CLI. Use for occupancy, warp stalls, memory/instruction bottlenecks, rule findings, source/SASS/PTX correlation, and metric CSV/table export."
 ---
 
 # Nsight Compute Profile Analysis
@@ -11,6 +11,10 @@ internally; NSys explains what ran when. Use `veloq ncu` as the
 evidence extractor for report data, then decide whether the evidence
 points to occupancy, memory, scheduler, instruction, launch, or
 source-line work.
+
+This is not a standalone native-NCU runbook. The skill can be installed
+separately from the binary, but analysis requires the VeloQ CLI on
+`PATH`; if `veloq` is missing, install it before continuing.
 
 ## Tool Boundary
 
@@ -157,7 +161,7 @@ full` at capture time).
    and use native `ncu` recapture/export workflows; see
    [references/limitations.md](references/limitations.md).
 
-Detailed kernel-analysis recipes:
+Detailed kernel-analysis workflow notes:
 [references/workflow.md](references/workflow.md)
 
 ## CSV/table totals and disassembly

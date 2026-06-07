@@ -1305,8 +1305,7 @@ fn cold_summary_emits_trace_span_on_first_run() -> Result<()> {
 }
 
 #[cfg(unix)]
-#[test]
-fn cold_nsys_rep_export_keeps_child_output_off_stdout() -> Result<()> {
+fn run_cold_nsys_rep_with_fake_export(command: &str) -> Result<Output> {
     use std::os::unix::fs::PermissionsExt;
 
     let (trace_dir, direct_pqtdir) = build_minimal_trace()?;
@@ -1363,8 +1362,8 @@ done
     paths.extend(std::env::split_paths(&old_path));
     let path_env: std::ffi::OsString = std::env::join_paths(paths)?;
     let trace_path = report.to_string_lossy().to_string();
-    let out = run_veloq_with_env(
-        ["summary", &trace_path],
+    run_veloq_with_env(
+        [command, &trace_path],
         [
             (std::ffi::OsString::from("PATH"), path_env),
             (
@@ -1372,10 +1371,14 @@ done
                 direct_pqtdir.as_os_str().to_os_string(),
             ),
         ],
-    )?;
+    )
+}
+
+#[cfg(unix)]
+fn assert_child_output_stays_off_stdout(out: &Output, command: &str) -> Result<()> {
     assert!(
         out.status.success(),
-        "cold summary failed: stderr={}",
+        "{command} failed: stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
 
@@ -1384,12 +1387,9 @@ done
         !stdout.contains("fake stdout progress"),
         "child stdout must not contaminate JSON stdout: {stdout}"
     );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("summary stdout must be valid JSON")?;
-    assert_eq!(
-        v.get("command").and_then(Value::as_str),
-        Some("nsys.summary"),
-    );
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .with_context(|| format!("{command} stdout must be valid JSON"))?;
+    assert_eq!(v.get("command").and_then(Value::as_str), Some(command),);
 
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -1401,6 +1401,20 @@ done
         "captured child stderr should stay on veloq stderr: {stderr}"
     );
     Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_nsys_rep_summary_export_keeps_child_output_off_stdout() -> Result<()> {
+    let out = run_cold_nsys_rep_with_fake_export("summary")?;
+    assert_child_output_stays_off_stdout(&out, "nsys.summary")
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_nsys_rep_prep_export_keeps_child_output_off_stdout() -> Result<()> {
+    let out = run_cold_nsys_rep_with_fake_export("prep")?;
+    assert_child_output_stays_off_stdout(&out, "nsys.prep")
 }
 
 #[test]

@@ -2,19 +2,20 @@
 # veloq installer — run with: curl -fsSL <url>/install.sh | bash
 #
 # Installs:
-#   1. The veloq binary into ~/.local/bin (or --bin-dir).
+#   1. The VeloQ binary into ~/.local/bin (or --bin-dir).
 #   2. Claude Code profile-analysis skills (nsys-profile-analysis,
 #      ncu-profile-analysis, pytorch-profile-analysis) into ~/.claude/skills/.
 #
 # Re-run safe: existing files are overwritten. Use --no-binary or
-# --no-skills to update one half without touching the other.
+# --no-skills to update one half without touching the other. The
+# skills require a VeloQ CLI on PATH for evidence extraction.
 #
 # Options:
 #   --bin-dir <path>    Install binary to this directory (default: ~/.local/bin)
 #   --skills-dir <path> Install skills under this dir (default: ~/.claude); `skills/`
 #                       is appended if absent, so pass an agent root (.agents, ~/.claude)
 #                       or a full skills dir
-#   --no-binary         Skip the binary download (skills only)
+#   --no-binary         Skip the binary download (skills only; manage VeloQ separately)
 #   --no-skills         Skip the Claude Code skill install (binary only)
 #   --help              Show this help and exit
 #

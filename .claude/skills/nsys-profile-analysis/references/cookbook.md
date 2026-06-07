@@ -1,8 +1,11 @@
 # NSys Cookbook
 
-Concise recipes for common Nsight Systems investigations. Assume `T`
-is the trace path. Use `veloq <cmd> --help` for full flags and response
-shape.
+Extended examples for common Nsight Systems investigations. The
+canonical workflow catalog is `veloq recipes`: run `veloq recipes` for
+the registry and `veloq recipes <id>` for the command sequence. This
+cookbook adds jq post-processing, interpretation notes, and longer
+variants. Assume `T` is the trace path. Use `veloq <cmd> --help` for
+full flags and response shape.
 
 Related references:
 
@@ -26,9 +29,10 @@ veloq stats T --limit 20
 veloq timeline T --interval 100ms --limit 200
 ```
 
-Use the top-level workflow in `../SKILL.md` to choose the next
-recipe. Envelope shape (`data.rows[]+key`, `data.auxiliary`,
-`trace_span`) is in [`../SKILL.md`](../SKILL.md).
+Use the top-level workflow in `../SKILL.md` plus `veloq recipes` to
+choose the canonical recipe before borrowing extended examples here.
+Envelope shape (`data.rows[]+key`, `data.auxiliary`, `trace_span`) is
+in [`../SKILL.md`](../SKILL.md).
 
 ## Kernel Hotspots
 

@@ -1,6 +1,6 @@
 ---
 name: nsys-profile-analysis
-description: "Analyze Nsight Systems timeline profiles and CUDA execution behavior. Use for `.nsys-rep` traces or pre-exported `_pqtdir/` parquet directories, GPU idle gaps, kernel launch causes, CPU↔GPU correlation, NVTX-attributed iteration analysis, CUDA graph timelines, GPU/NIC PM-counter time series, CPU sampling, scheduler events, kernel/transfer overlap and concurrency (cross-stream, same-stream PDL, compute/copy), and questions about what ran when. This is a profiling-workflow skill first: decide the investigation path, then use `veloq` to extract evidence. Do not use for Nsight Compute `.ncu-rep` kernel-internal bottleneck reports; use ncu-profile-analysis."
+description: "Analyze Nsight Systems `.nsys-rep` or `_pqtdir/` timeline traces using the VeloQ CLI. Use for GPU idle gaps, launch causes, CPU/GPU correlation, NVTX, CUDA graphs, metrics, sampling, and overlap/concurrency."
 ---
 
 # Nsight Systems Profile Analysis
@@ -10,6 +10,10 @@ when it ran, how CPU work caused GPU work, where idle gaps appear, and
 whether capture-time metric streams are trustworthy. Use `veloq` as
 the evidence extractor for exported NSys traces, not as the starting
 point for deciding what question to ask.
+
+This is not a standalone native-NSys runbook. The skill can be installed
+separately from the binary, but analysis requires the VeloQ CLI on
+`PATH`; if `veloq` is missing, install it before continuing.
 
 Use this skill only for Nsight Systems timeline traces. For Nsight
 Compute `.ncu-rep` kernel reports, use the separate
@@ -55,22 +59,20 @@ canonical workflow, `veloq recipes <id>` prints the body.
 
 ## Canonical workflows (recipes)
 
-`veloq recipes` is the SSOT for guided investigations. Each recipe
-ships the literal command(s); call `veloq recipes <id>` instead of
-inlining commands from this skill file.
+`veloq recipes` is the SSOT for guided investigations. Do not keep a
+parallel recipe list in this skill: new and changed workflows live in
+the compiled registry and are surfaced through `veloq recipes`,
+`veloq info`'s `applicable_recipes`, and per-verb `--help`.
 
-| Recipe id                  | Use when                                                         |
-| -------------------------- | ---------------------------------------------------------------- |
-| `nvtx-breakdown`           | Need per-kernel GPU attribution under one NVTX range             |
-| `nvtx-iteration-compare`   | Comparing wall-time across NVTX iterations                       |
-| `single-device-view`       | Multi-device trace; one device at a time                         |
-| `gpu-idle-audit`           | Hunting GPU idle bubbles (device/stream/trace scope)             |
-| `cold-kernel-hotspot`      | Finding the hottest kernel + queueing an NCU rerun               |
-| `cpu-side-bottleneck`      | CPU-side CUDA / OSRT call hotspots                               |
-| `multi-gpu-overlap`        | Kernel/transfer overlap per device (`concurrency`) + time-series |
-| `memcpy-asymmetry`         | Host-to-device vs. device-to-host bandwidth imbalance            |
-| `nvtx-context-attribution` | "Which NVTX range was active when this event ran?"               |
-| `prep-then-query`          | Pre-export a `.nsys-rep` so subsequent verbs hit the warm path   |
+Agent workflow:
+
+1. Run `veloq info <trace>` and read `data.applicable_recipes` when
+   the trace is warm enough to expose capability predicates.
+2. Run `veloq recipes` only when you need the full catalog.
+3. Run `veloq recipes <id>` for the selected workflow and use its
+   body as the canonical command sequence.
+4. Use [references/cookbook.md](references/cookbook.md) only for
+   extended examples, jq post-processing, and interpretation notes.
 
 Per-verb `--help` also surfaces the recipes that touch that verb,
 above the response schema reference.
@@ -208,7 +210,7 @@ trust signals**: see [references/capabilities.md](references/capabilities.md)
 | What questions can this trace answer (capability bits, trust signals)                             | [references/capabilities.md](references/capabilities.md)     |
 | Time-window / NVTX attribution semantics                                                          | [references/time-and-nvtx.md](references/time-and-nvtx.md)   |
 | Per-EventKind sub-shapes for `inspect`                                                            | [references/inspect-shapes.md](references/inspect-shapes.md) |
-| Cross-cutting recipes (iter regression, sync stalls, CUDA graph drilldown, hotspot, bandwidth, …) | [references/cookbook.md](references/cookbook.md)             |
+| Extended examples, jq snippets, and interpretation notes                                          | [references/cookbook.md](references/cookbook.md)             |
 | Edge cases, capture-time prerequisites, "VeloQ can't do X"                                        | [references/limitations.md](references/limitations.md)       |
 
 ## Profiling Workflow
@@ -222,7 +224,7 @@ Start by classifying the symptom, then gather the minimum evidence:
 | Poor overlap / "are my streams concurrent" | `concurrency` → per-device `overlap_ns` / `max_concurrency`, per-stream overlap (same-stream PDL), and `compute_vs_copy` (is copy hidden behind compute). Extraction-only; compute ratios in jq                                                                                                                                           |
 | CPU blocked on GPU                         | `stats --type sync` → `search --type sync --sort duration:desc` → `correlate sync:N`                                                                                                                                                                                                                                                      |
 | Iteration-to-iteration regression          | Require NVTX. `slices --name ...` → compare root ranges → scoped `stats --nvtx ...`. For nested same-name ranges use `stats --group-by nvtx-path` or `slices --aggregate --group-by path`. For per-kernel attribution: `inspect kernel:N` (default-on `nvtx_context.iter_index`) or `search --type kernel --with-nvtx` for a batched view |
-| CUDA Graph behavior                        | Probe graph capability bits → graph or graph-node recipes in cookbook                                                                                                                                                                                                                                                                     |
+| CUDA Graph behavior                        | Probe graph capability bits → `veloq recipes graph-replay-survey` or `graph-replay-hotspots`; use cookbook only for extra interpretation                                                                                                                                                                                                  |
 | GPU utilization / bandwidth over time      | Require metric capture. `metrics --type gpu`; trust only after checking `coverage`                                                                                                                                                                                                                                                        |
 | CPU host bottleneck                        | Require sampling/sched capture. `metrics --type cpu-sampling --group-by symbol\|stack` or `--type cpu-sched`, then `inspect <rows[].sample_row_id>` for a representative callchain                                                                                                                                                        |
 | Kernel is internally inefficient           | Use NSys to identify `kernel:N`, generate a rerun with `ncu-command`, then switch to `ncu-profile-analysis` / native NCU                                                                                                                                                                                                                  |
@@ -244,8 +246,8 @@ For a broad first pass:
    can generate the native `ncu` command, but the NCU capture and
    analysis are separate steps.
 
-Concrete recipes for each path:
-[references/cookbook.md](references/cookbook.md)
+Canonical command sequences live in `veloq recipes`; extended examples
+and jq snippets live in [references/cookbook.md](references/cookbook.md).
 
 ## References
 
@@ -258,7 +260,7 @@ Concrete recipes for each path:
   [references/inspect-shapes.md](references/inspect-shapes.md)
 - Edge cases, capture-time prerequisites, "VeloQ can't do X" →
   [references/limitations.md](references/limitations.md)
-- Cookbook of cross-cutting workflows →
+- Extended examples and jq snippets →
   [references/cookbook.md](references/cookbook.md)
 - Official NVIDIA Nsight Systems User Guide →
   https://docs.nvidia.com/nsight-systems/UserGuide/index.html

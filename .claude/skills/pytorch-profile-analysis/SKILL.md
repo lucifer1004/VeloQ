@@ -1,6 +1,6 @@
 ---
 name: pytorch-profile-analysis
-description: "Analyze single-file PyTorch/Kineto profiler Chrome traces. Use for `.pt.trace.json` / `.pt.trace.json.gz` files, CPU op to CUDA runtime/driver/kernel correlation, ProfilerStep and user annotation slicing, memory/shape grouping, and single-trace NCCL/communication evidence. Directory inputs and cross-rank collective skew are not shipped in PyTorch v0. This is a profiling-workflow skill first: decide the investigation path, then use `veloq pytorch` to extract evidence. Do not use for Nsight Systems `.nsys-rep` traces or Nsight Compute `.ncu-rep` reports."
+description: "Analyze single-file PyTorch/Kineto `.pt.trace.json(.gz)` Chrome traces using the VeloQ CLI. Use for CPU/CUDA/kernel correlation, ProfilerStep/annotation slicing, memory/shape grouping, and single-trace NCCL evidence."
 ---
 
 # PyTorch Profile Analysis
@@ -15,6 +15,10 @@ veloq pytorch correlate T kernel:91
 veloq pytorch slices T --aggregate --group-by step
 veloq pytorch collectives T
 ```
+
+This is not a standalone raw-Kineto runbook. The skill can be installed
+separately from the binary, but analysis requires the VeloQ CLI on
+`PATH`; if `veloq` is missing, install it before continuing.
 
 ## Tool Boundary
 

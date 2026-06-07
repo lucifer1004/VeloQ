@@ -135,7 +135,7 @@ memory-bound by SOL classification — on a compute-bound kernel
 a low L2 hit-rate isn't actionable. The sectors-per-request
 tier doesn't correspond to an NCU rule cutoff and was set from
 the observation that DRAM-coalesced loads sit at 1–2 sectors
-per request on the local fixtures.
+per request on representative coalesced-load examples.
 
 Some metric names change across architectures (e.g. shared
 bank-conflict counters); see
