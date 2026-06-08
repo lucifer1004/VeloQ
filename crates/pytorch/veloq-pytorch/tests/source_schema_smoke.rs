@@ -50,19 +50,46 @@ fn stable_command_surface_matches_rfc_0007() {
 
 #[test]
 fn schema_targets_are_registered() -> Result<()> {
-    for target in [
-        "summary",
-        "search",
-        "inspect",
-        "stats",
-        "correlate",
-        "timeline",
-        "slices",
-        "collectives",
-        "prep",
-    ] {
-        let schema = veloq_pytorch::schema::schema_value_for(target)?;
-        assert!(schema.is_object(), "{target} schema should be an object");
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        let schema = veloq_pytorch::schema::schema_value_for(target.name)?;
+        assert!(
+            schema.is_object(),
+            "{} schema should be an object",
+            target.name
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_target_arg_help_lists_every_registry_target() -> Result<()> {
+    let source = PytorchSource;
+    let schema = source
+        .cli()
+        .find_subcommand("schema")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("schema subcommand not found"))?;
+    let long_about = schema
+        .get_long_about()
+        .map(|about| about.to_string())
+        .unwrap_or_default();
+    let help = schema
+        .get_arguments()
+        .find(|arg| arg.get_id() == "target")
+        .and_then(clap::Arg::get_help)
+        .map(|help| help.to_string())
+        .unwrap_or_default();
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        assert!(
+            help.contains(target.name),
+            "schema target arg help missing `{}`",
+            target.name
+        );
+        assert!(
+            long_about.contains(target.name),
+            "schema long_about missing `{}`",
+            target.name
+        );
     }
     Ok(())
 }
@@ -73,6 +100,14 @@ fn unknown_schema_target_has_command_error_code() -> Result<()> {
         .err()
         .ok_or_else(|| anyhow::anyhow!("expected schema target error"))?;
     assert_eq!(err.code().as_str(), "pytorch.command.unknown-schema-target");
+    let msg = err.to_string();
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        assert!(
+            msg.contains(target.name),
+            "unknown target error should list `{}`",
+            target.name
+        );
+    }
     Ok(())
 }
 

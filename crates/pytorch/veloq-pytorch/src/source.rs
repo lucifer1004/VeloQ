@@ -53,7 +53,7 @@ impl ProfileSource for PytorchSource {
             .about("PyTorch Kineto/Profiler trace query verbs")
             .subcommand_required(true)
             .arg_required_else_help(true);
-        Cmd::augment_subcommands(parent)
+        crate::help::inject_long_about(Cmd::augment_subcommands(parent))
     }
 
     fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {

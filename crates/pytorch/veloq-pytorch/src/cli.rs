@@ -101,7 +101,8 @@ pub enum Cmd {
 
     /// Emit the JSON Schema for one PyTorch response payload.
     Schema {
-        /// One of: summary, search, inspect, stats, correlate, timeline, slices, collectives, prep.
+        /// Subcommand whose response schema to print. The valid target
+        /// list is injected at runtime from `schema_targets::TARGETS`.
         target: String,
     },
 }
