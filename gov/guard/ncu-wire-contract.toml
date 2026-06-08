@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-NCU-WIRE-CONTRACT"
-title = "NCU wire contract"
+title = "contract: NCU wire"
 refs = [
     "RFC-0008",
     "RFC-0008:C-SOURCE-IDENTITY",

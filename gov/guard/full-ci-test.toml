@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-FULL-CI-TEST"
-title = "full ci test"
+title = "release: full ci test"
 
 [check]
 command = "cargo test --profile ci --workspace"

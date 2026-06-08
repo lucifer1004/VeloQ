@@ -23,8 +23,14 @@ version = 2
 # id_strategy = "author-hash"
 
 [verification]
-# Cheap project-wide defaults. RFC-specific and full-CI guards are
-# available under gov/guard/ for work items that need them.
+# Guard layers:
+# - default guards below are cheap enough for routine governed work.
+# - contract guards in gov/guard/*-contract.toml verify RFC/source
+#   behavior and should be selected by related work items.
+# - release guards are GUARD-WORKSPACE-CHECK, GUARD-FULL-CI-CLIPPY,
+#   and GUARD-FULL-CI-TEST. GUARD-WORKSPACE-CHECK intentionally
+#   serves as both the default workspace check and the release check
+#   guard; there is no duplicate GUARD-FULL-CI-CHECK.
 enabled = true
 default_guards = [
     "GUARD-GOVCTL-CHECK",

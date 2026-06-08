@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-ROW-WIRE-CONTRACT"
-title = "row wire contract"
+title = "contract: row wire"
 refs = ["RFC-0003"]
 
 [check]

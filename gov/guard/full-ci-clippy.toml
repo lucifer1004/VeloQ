@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-FULL-CI-CLIPPY"
-title = "full ci clippy"
+title = "release: full ci clippy"
 
 [check]
 command = "cargo clippy --profile ci --workspace --all-targets -- -D warnings"

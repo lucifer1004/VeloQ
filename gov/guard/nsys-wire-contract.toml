@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-NSYS-WIRE-CONTRACT"
-title = "NSys wire contract"
+title = "contract: NSys wire"
 refs = [
     "RFC-0006",
     "RFC-0006:C-SOURCE-IDENTITY",

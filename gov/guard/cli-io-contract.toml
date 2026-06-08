@@ -2,9 +2,12 @@
 
 [govctl]
 id = "GUARD-CLI-IO-CONTRACT"
-title = "cli io contract"
+title = "contract: cli io"
 refs = ["RFC-0002"]
 
 [check]
+# Broad cross-source CLI smoke. Source wire guards use narrower
+# `cli_smoke <source>_` filters; keep this as the dispatcher/envelope
+# contract guard for CLI-wide work.
 command = "cargo test --profile ci -p veloq --test cli_smoke"
 timeout_secs = 900

@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-WORKSPACE-CHECK"
-title = "workspace check"
+title = "default/release: workspace check"
 
 [check]
 command = "cargo check --profile ci --workspace --all-targets"

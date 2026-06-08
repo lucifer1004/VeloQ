@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-FMT"
-title = "fmt"
+title = "default: fmt"
 
 [check]
 command = "cargo fmt --all -- --check"

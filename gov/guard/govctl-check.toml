@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-GOVCTL-CHECK"
-title = "govctl check"
+title = "default: govctl check"
 
 [check]
 command = "govctl check"

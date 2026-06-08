@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-PYTORCH-WIRE-CONTRACT"
-title = "PyTorch wire contract"
+title = "contract: PyTorch wire"
 refs = [
     "RFC-0007",
     "RFC-0007:C-SOURCE-IDENTITY",

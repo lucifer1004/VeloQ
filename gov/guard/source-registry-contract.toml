@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-SOURCE-REGISTRY-CONTRACT"
-title = "source registry contract"
+title = "default contract: source registry"
 refs = ["RFC-0004"]
 
 [check]

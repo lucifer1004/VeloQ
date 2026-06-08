@@ -2,7 +2,7 @@
 
 [govctl]
 id = "GUARD-ARTIFACT-CACHE-CONTRACT"
-title = "artifact cache contract"
+title = "contract: artifact cache"
 refs = ["RFC-0005"]
 
 [check]
