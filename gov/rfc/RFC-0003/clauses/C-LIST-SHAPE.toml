@@ -1,0 +1,30 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-LIST-SHAPE"
+title = "Canonical list shape"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A list-shaped JSON response MUST place its canonical list object under `data`.
+
+The canonical list object MUST contain a `rows` field.
+
+The `rows` field MUST be an array.
+
+The canonical list object MUST contain a `count` field.
+
+The `count` field MUST equal the number of returned rows.
+
+The canonical list object MUST contain a `total_matched` field.
+
+The `total_matched` field MUST represent the number of matched rows before response limiting.
+
+A list-shaped response SHOULD place non-primary supporting data outside `rows`.
+
+A command MUST NOT create a parallel primary list field when canonical `rows` can represent the primary items.
+
+**Rationale:** One row list lets agents write one reader for list verbs. Supporting data remains available without changing the location of primary evidence. `count` and `total_matched` let callers distinguish the returned page from the complete match set without inspecting command-specific fields."""

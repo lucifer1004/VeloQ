@@ -37,16 +37,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const DEFAULT_SOURCE: &str = "nsys";
 
 fn main() {
-    // The registry is the single source of truth for what verbs the
-    // CLI offers. Each source contributes its own `clap::Command`
-    // subtree; we graft them under the top-level parser below. NSys
-    // is the configured default (hoisted to top level) and still has
-    // an explicit `veloq nsys …` namespace; NCU gets `veloq ncu …`.
-    let sources: Vec<Box<dyn ProfileSource>> = vec![
-        Box::new(NsysSource),
-        Box::new(NcuSource),
-        Box::new(PytorchSource),
-    ];
+    let sources = registered_sources();
 
     let parser = build_parser(&sources);
     let matches = match parser.try_get_matches() {
@@ -109,6 +100,20 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// The registry is the single source of truth for what verbs the CLI
+/// offers. Each source contributes its own `clap::Command` subtree;
+/// we graft them under the top-level parser below. NSys is the
+/// configured default (hoisted to top level) and still has an
+/// explicit `veloq nsys ...` namespace; NCU gets `veloq ncu ...` and
+/// PyTorch gets `veloq pytorch ...`.
+fn registered_sources() -> Vec<Box<dyn ProfileSource>> {
+    vec![
+        Box::new(NsysSource),
+        Box::new(NcuSource),
+        Box::new(PytorchSource),
+    ]
 }
 
 fn emit_cli_diagnostic_error<E>(err: &E, fmt: OutputFormat)
@@ -262,4 +267,68 @@ fn dispatch(
         },
     )?;
     default.run(matches, fmt).map_err(CliError::source_run)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    #[test]
+    fn registered_source_kinds_and_namespaces_are_unique() {
+        let sources = registered_sources();
+        let mut kinds = BTreeSet::new();
+        let mut namespaces = BTreeSet::new();
+
+        for source in &sources {
+            let kind = source.kind();
+            assert!(kinds.insert(kind), "duplicate source kind `{kind}`");
+
+            let cli = source.cli();
+            let namespace = cli.get_name();
+            assert_eq!(
+                namespace, kind,
+                "source namespace `{namespace}` must match kind `{kind}`"
+            );
+            assert!(
+                namespaces.insert(namespace.to_string()),
+                "duplicate source namespace `{namespace}`"
+            );
+        }
+
+        assert!(
+            kinds.contains(DEFAULT_SOURCE),
+            "default source `{DEFAULT_SOURCE}` is not registered"
+        );
+    }
+
+    #[test]
+    fn automatic_detection_claims_representative_inputs_once() {
+        let sources = registered_sources();
+        for (path, expected) in [
+            ("trace.nsys-rep", Some("nsys")),
+            ("trace_pqtdir", Some("nsys")),
+            ("report.ncu-rep", Some("ncu")),
+            ("worker0.pt.trace.json", Some("pytorch")),
+            ("worker0.pt.trace.json.gz", Some("pytorch")),
+            ("trace.sqlite", None),
+            ("trace.json", None),
+        ] {
+            let claims: Vec<&str> = sources
+                .iter()
+                .filter(|source| source.detect(Path::new(path)))
+                .map(|source| source.kind())
+                .collect();
+            assert!(
+                claims.len() <= 1,
+                "automatic detection overlap for `{path}`: {claims:?}"
+            );
+            assert_eq!(
+                claims.first().copied(),
+                expected,
+                "unexpected automatic detection claim for `{path}`"
+            );
+        }
+    }
 }

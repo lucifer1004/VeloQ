@@ -1,0 +1,38 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUCCESS-RESPONSE"
+title = "Success response"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A successful JSON response MUST be an object.
+
+A successful JSON response MUST contain a top-level `schema` field.
+
+A successful JSON response MUST contain a top-level `source` field.
+
+A successful JSON response MUST contain a top-level `command` field.
+
+A successful JSON response MUST contain a top-level `data` field.
+
+A successful JSON response MUST NOT contain a top-level `error` field.
+
+The `schema` field MUST identify the envelope schema version.
+
+The `source` field MUST identify the producing source kind.
+
+The `source` field MUST identify the producing source wire version.
+
+The `command` field MUST identify the command that produced the response.
+
+A trace-bearing successful response SHOULD contain a top-level `trace` field.
+
+A successful response MAY omit `trace` when the command does not read a trace.
+
+A source MAY expose a top-level `trace_span` field when that span is meaningful for the source and command.
+
+**Rationale:** The envelope lets agents parse one response family across verbs and sources while preserving enough context to route, normalize, and correlate results."""

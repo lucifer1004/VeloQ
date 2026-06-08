@@ -1,0 +1,20 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-AUXILIARY-DATA"
+title = "Auxiliary data"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A list-shaped response MAY include an `auxiliary` field under the canonical list object.
+
+The `auxiliary` field MAY contain data that supports interpretation of the primary rows.
+
+Auxiliary data MUST NOT replace primary rows when the response is list-shaped.
+
+Auxiliary data SHOULD preserve the same compatibility rules as the surrounding source response.
+
+**Rationale:** Some commands need shared context, bucket metadata, coverage, or summaries. Keeping that data separate from primary rows preserves a simple agent reader."""

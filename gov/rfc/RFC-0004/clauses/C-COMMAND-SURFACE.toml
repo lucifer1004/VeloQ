@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMMAND-SURFACE"
+title = "Command surface"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A source MUST expose its source-specific verbs under its source namespace.
+
+A default source MAY have selected verbs hoisted to the top-level command surface.
+
+A hoisted source verb MUST preserve the same machine-readable command identity as the namespaced invocation.
+
+A source SHOULD document which verbs are source-specific.
+
+A source SHOULD document which verbs participate in shared VeloQ conventions.
+
+**Rationale:** Namespace commands make source ownership explicit. Hoisting can improve ergonomics for the default source, but it must not create a second wire identity for the same verb."""

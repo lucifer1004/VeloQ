@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-KEY"
+title = "Row key identity"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A primary row that represents a comparable entity MUST contain a `key` field.
+
+The `key` field MUST be a string.
+
+A row key MUST be derived from the row's identifying axes.
+
+A row key MUST be stable for equivalent evidence in equivalent profile inputs.
+
+A row key MUST NOT depend on output order.
+
+A row key MUST NOT depend on presentation format.
+
+A row key MAY include source-specific or verb-specific axes when those axes are part of the entity identity.
+
+A verb-specific RFC SHOULD define the concrete row key format for rows that agents are expected to compare across invocations or traces.
+
+**Rationale:** Row keys are the substrate for cross-trace joins and agent-side diffing. Keys should identify evidence, not incidental order or rendering."""

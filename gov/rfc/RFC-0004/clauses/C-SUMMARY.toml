@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies the source-neutral contract for VeloQ profile sources. It refines [[RFC-0001:C-SOURCE-MODEL]] and depends on the CLI I/O and row contracts in [[RFC-0002]] and [[RFC-0003]].
+
+**Scope:** This RFC covers source identity, command namespace, source versioning, trace detection, default-source ergonomics, and source-specific exceptions. It does not specify source-specific payload fields or sidecar schemas.
+
+**Rationale:** VeloQ should grow to support more profile formats without becoming a collection of unrelated CLIs. A source contract keeps source-specific evidence behind one product model."""

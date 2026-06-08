@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies VeloQ's source-neutral lifecycle for generated artifacts and cache reuse. It refines the performance and execution obligations in [[RFC-0001:C-PERFORMANCE-CENTER]] and [[RFC-0001:C-QUERY-EXECUTION]].
+
+**Scope:** This RFC covers generated artifact roots, artifact ownership, freshness semantics, cleanup, cache reuse, concurrency expectations, and publication safety for generated artifacts. It does not define source-specific artifact names or storage schemas.
+
+**Rationale:** VeloQ stays fast by reusing validated derived evidence across stateless invocations. That reuse needs visible lifecycle rules so performance does not become hidden state."""

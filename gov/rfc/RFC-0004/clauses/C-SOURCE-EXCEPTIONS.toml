@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-EXCEPTIONS"
+title = "Source-specific exceptions"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A source MAY define source-specific verbs when its profiler evidence does not fit a shared verb.
+
+A source-specific verb SHOULD preserve the shared CLI I/O contract in [[RFC-0002]].
+
+A source-specific list response SHOULD preserve the canonical list and row identity contract in [[RFC-0003]].
+
+A source-specific exception to shared output or row conventions SHOULD be recorded in a source-specific RFC or in an amendment to the applicable source-neutral RFC.
+
+A source-specific exception MUST be documented for agent consumers.
+
+**Rationale:** Sources differ in what their profilers record. Source-specific verbs are valid, but exceptions should be visible rather than discovered by broken parsers."""

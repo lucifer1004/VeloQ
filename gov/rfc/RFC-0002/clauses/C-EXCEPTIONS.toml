@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-EXCEPTIONS"
+title = "Explicit output exceptions"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Help output MAY use the command-line parser's native human-readable format.
+
+Version output MAY use the command-line parser's native human-readable format.
+
+A command MAY provide an explicit raw-output mode when its purpose is to generate a pipeable artifact rather than a query response.
+
+A raw-output mode MUST be documented as an exception to this RFC.
+
+A raw-output mode SHOULD keep failure output off stdout when stdout is intended to be piped to another program.
+
+No command SHOULD add an output exception without a narrower RFC or amendment that records the exception.
+
+**Rationale:** Some CLI surfaces are intentionally not query responses. Exceptions are allowed, but they must be explicit so agents do not mistake raw text for the normal response contract."""

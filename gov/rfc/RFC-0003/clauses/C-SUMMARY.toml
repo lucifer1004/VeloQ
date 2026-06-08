@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies VeloQ's canonical list contract and row identity rules. It refines [[RFC-0001:C-AGENT-CONTRACT]] and complements the CLI I/O contract in [[RFC-0002]].
+
+**Scope:** This RFC covers list-shaped responses, row keys, row ordering, truncation, empty results, and auxiliary data. It does not prescribe every per-verb key string; source and verb RFCs may define concrete key formats under these rules.
+
+**Rationale:** Agents compare profile results by rows. A stable row contract lets agents join, diff, and summarize VeloQ responses without per-command parsing rules."""

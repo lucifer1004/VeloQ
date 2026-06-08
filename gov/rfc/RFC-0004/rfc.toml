@@ -1,0 +1,35 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0004"
+title = "Profile source contract"
+version = "0.1.0"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-SOURCE-IDENTITY.toml",
+    "clauses/C-SOURCE-VERSION.toml",
+    "clauses/C-TRACE-DETECTION.toml",
+    "clauses/C-COMMAND-SURFACE.toml",
+    "clauses/C-SOURCE-EXCEPTIONS.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

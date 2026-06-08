@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-ORDERING"
+title = "Row ordering"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A command SHOULD document its default row ordering when order affects how agents interpret the first rows.
+
+A command that supports sorting SHOULD define accepted sort keys.
+
+A command that supports sorting SHOULD define how invalid sort keys are reported.
+
+A command SHOULD include deterministic tie-breakers when stable order is important for repeatable agent output.
+
+Row identity MUST NOT be inferred from row position.
+
+**Rationale:** Sorting and limits are useful for token economy, but agents must not confuse row position with identity. Deterministic ordering reduces noisy diffs."""

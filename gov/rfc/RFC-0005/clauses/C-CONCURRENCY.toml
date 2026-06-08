@@ -1,0 +1,20 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-CONCURRENCY"
+title = "Concurrent access"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Concurrent commands SHOULD be able to read fresh generated artifacts safely.
+
+A command that writes a reusable generated artifact MUST NOT expose a partially written artifact as fresh.
+
+A command that rebuilds a generated artifact SHOULD re-check freshness when concurrent writers may have completed the same rebuild.
+
+A source MAY choose a source-specific locking, atomic-write, or idempotent rebuild strategy.
+
+**Rationale:** VeloQ's stateless command model allows multiple shells or agents to query the same profile. Generated artifacts should support that model without requiring a daemon."""

@@ -1,0 +1,34 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0003"
+title = "Canonical list and row identity contract"
+version = "0.1.0"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-LIST-SHAPE.toml",
+    "clauses/C-ROW-KEY.toml",
+    "clauses/C-ROW-ORDERING.toml",
+    "clauses/C-TRUNCATION-AND-EMPTY.toml",
+    "clauses/C-AUXILIARY-DATA.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

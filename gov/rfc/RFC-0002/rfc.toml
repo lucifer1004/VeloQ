@@ -1,0 +1,32 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0002"
+title = "CLI I/O contract"
+version = "0.1.0"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+refs = ["RFC-0001"]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-DEFAULT-MACHINE-OUTPUT.toml",
+    "clauses/C-SUCCESS-RESPONSE.toml",
+    "clauses/C-ERROR-RESPONSE.toml",
+    "clauses/C-STDOUT-STDERR.toml",
+    "clauses/C-FORMAT-PROJECTIONS.toml",
+    "clauses/C-EXCEPTIONS.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

@@ -1,0 +1,28 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-001"
+title = "Add profile source registry guard"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0004"]
+
+[content]
+description = "Add a binary-level regression guard for RFC-0004 source registration: registered source kinds and namespaces must be unique, and representative automatic trace detection inputs must be claimed by at most one source."
+
+[[content.acceptance_criteria]]
+text = "Registry construction is shared by main and tests so the guard covers the real binary source set"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Source registry tests fail on duplicate source kinds, duplicate namespaces, or overlapping automatic detection claims"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "govctl check and the relevant Rust tests pass"
+status = "done"
+category = "chore"
