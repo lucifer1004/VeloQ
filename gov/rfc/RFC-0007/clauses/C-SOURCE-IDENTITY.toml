@@ -1,0 +1,39 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-IDENTITY"
+title = "Source identity"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+PyTorch success responses MUST set `source.kind` to `pytorch`.
+
+PyTorch success responses MUST set `source.version` to `v0` until a future source-version change explicitly replaces the experimental PyTorch wire contract.
+
+PyTorch handled error responses MUST set `source.kind` to `pytorch` when source context is known.
+
+PyTorch handled error responses MUST set `source.version` to `v0` when source context is known.
+
+The PyTorch source namespace MUST be `pytorch`.
+
+A PyTorch source-owned command ID MUST use the `pytorch.<verb>` form.
+
+A PyTorch trace-bearing success response MUST include `trace` when the input path is known.
+
+A PyTorch trace-bearing handled error response MUST include `trace` when the input path is known.
+
+A PyTorch response with `trace_span` MUST set `trace_span.origin_ns` to an integer nanosecond origin.
+
+A PyTorch response with `trace_span` MUST set `trace_span.span_ns` to an integer nanosecond duration.
+
+The PyTorch `schema` command MUST NOT require a trace input.
+
+The PyTorch `schema` command MUST omit `trace` and `trace_span` from its envelope.
+
+A breaking change to a PyTorch source payload after the source is advanced beyond `v0` MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Consumers SHOULD treat PyTorch source version `v0` as experimental.
+
+**Rationale:** Source identity and command IDs are the dispatch context agents use after parsing an envelope. The explicit `v0` language keeps the current experimental source useful without overstating source-version stability."""

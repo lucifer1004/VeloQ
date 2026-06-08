@@ -1,0 +1,49 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-EVENT-REF"
+title = "EventRef objects"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+Each row in `search.rows[]` MUST be an EventRef object.
+
+Each embedded event in `correlate.rows[].events[]` MUST be an EventRef object.
+
+Each event reference exposed by `inspect.rows[].event.reference`, `inspect.rows[].event.parent`, `inspect.rows[].event.children[]`, `inspect.rows[].event.step`, `inspect.rows[].event.python_context`, and `inspect.rows[].event.python_stack[]` MUST be an EventRef object when present.
+
+An EventRef object MUST carry a top-level `type` discriminator.
+
+The EventRef `type` value MUST be one of `cpu-op`, `annotation`, `step`, `runtime`, `driver`, `kernel`, `memcpy`, `memset`, `memory`, `python`, or `comm`.
+
+An EventRef object MUST carry `key`, `row_id`, `name`, `start_ns`, and `duration_ns`.
+
+An EventRef `key` MUST be a string.
+
+An EventRef `row_id` MUST follow [[RFC-0007:C-ROW-ID]].
+
+An EventRef `name` MUST be a string.
+
+An EventRef `start_ns` MUST be an integer nanosecond timestamp in the opened trace timebase.
+
+An EventRef `duration_ns` MUST be an integer nanosecond duration.
+
+An EventRef object MAY carry `rank`, `worker`, `device_id`, `stream_id`, `step`, `is_comm`, `external_id`, `correlation_id`, `comm_kind`, `bytes`, and `shape` when those values are known for the event.
+
+An EventRef `rank`, `device_id`, `stream_id`, `step`, `external_id`, and `correlation_id` value MUST be an integer when present.
+
+An EventRef `worker`, `comm_kind`, and `shape` value MUST be a string when present.
+
+An EventRef `bytes` value MUST be an integer byte count when present.
+
+An EventRef `is_comm` value MUST be boolean when present.
+
+An EventRef SHOULD omit `is_comm` when the event is not communication-related.
+
+An EventRef MUST omit unavailable optional values instead of fabricating placeholder values.
+
+An EventRef `key` MUST equal its `row_id` unless a future source version explicitly defines a different key contract.
+
+**Rationale:** EventRef is the compact evidence shape agents use across search, inspect, and correlate. It exposes common PyTorch/Kineto typed fields while preserving absent trace data as absent JSON fields instead of unreliable placeholders."""

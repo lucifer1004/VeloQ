@@ -1,0 +1,59 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-KEYS"
+title = "Concrete row keys"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+A PyTorch row key defined by this clause MUST be treated as an opaque equality string by consumers.
+
+A PyTorch row key consumer MUST NOT require delimiter-based parsing of a row key.
+
+A PyTorch row key producer MUST preserve the key formats in this clause for public responses covered by this RFC.
+
+Trace-derived key components MAY contain delimiter characters.
+
+A PyTorch `summary` row key MUST use `trace|<trace_file_path>`.
+
+A PyTorch `search` row key MUST use `<row_id>`.
+
+A PyTorch `inspect` row key MUST use the requested `<row_id>`.
+
+A PyTorch `inspect` not-found row key MUST use the requested `<row_id>`.
+
+A PyTorch `stats` row key with grouping axes MUST use `stats|<axis>:<value>|...`.
+
+A PyTorch `stats` row key MUST order axis segments by axis name, not by the order supplied on the command line.
+
+A PyTorch `stats` row key for an absent axis value MUST use the string value `none` for that axis segment.
+
+A PyTorch `stats` row key with no grouping axes MUST use `stats|`.
+
+A PyTorch `correlate` result row key MUST use the seed row identifier.
+
+An EventRef embedded under a PyTorch `correlate` result MUST use `<row_id>` as its key.
+
+A PyTorch `timeline` row key MUST use `bucket|<start_ns>..<end_ns>`.
+
+A PyTorch `slices` instance row key MUST use `slice|<name>|@<start_ns>`.
+
+A PyTorch `slices` aggregate row key MUST use `scope|<scope>`.
+
+A PyTorch `slices` aggregate row key for an absent aggregate scope value MUST use `scope|none`.
+
+A PyTorch `collectives` row key MUST use `collective|<kind>|rank:<rank-or-none>|step:<step-or-none>|ordinal:<ordinal>`.
+
+A PyTorch `collectives` row key for an unknown rank MUST use `rank:none`.
+
+A PyTorch `collectives` row key for an unknown step MUST use `step:none`.
+
+A PyTorch `prep` row key MUST use `sidecar|<sidecar_name>`.
+
+A command that emits a canonical PyTorch list row and is not listed in this clause MUST define its row key format before the command is treated as covered by this RFC.
+
+A command that emits a PyTorch auxiliary list whose rows carry `key` SHOULD define that auxiliary row key format before the command or mode is treated as covered by this RFC.
+
+**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but leaves concrete formats to source and verb contracts. These PyTorch formats are equality keys for cross-run comparison, not a general key-parsing language."""

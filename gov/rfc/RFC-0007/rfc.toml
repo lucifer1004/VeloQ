@@ -1,0 +1,52 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0007"
+title = "PyTorch source wire contract"
+version = "0.1.0"
+status = "draft"
+phase = "spec"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+    "RFC-0004",
+    "RFC-0005",
+    "RFC-0002:C-DEFAULT-MACHINE-OUTPUT",
+    "RFC-0002:C-SUCCESS-RESPONSE",
+    "RFC-0002:C-ERROR-RESPONSE",
+    "RFC-0002:C-STDOUT-STDERR",
+    "RFC-0002:C-FORMAT-PROJECTIONS",
+    "RFC-0003:C-ROW-KEY",
+    "RFC-0004:C-SOURCE-IDENTITY",
+    "RFC-0004:C-SOURCE-VERSION",
+    "RFC-0004:C-TRACE-DETECTION",
+    "RFC-0004:C-COMMAND-SURFACE",
+    "RFC-0005:C-ARTIFACT-ROOT",
+    "RFC-0005:C-FRESHNESS",
+]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-SOURCE-IDENTITY.toml",
+    "clauses/C-SUPPORTED-INPUTS.toml",
+    "clauses/C-COMMAND-SURFACE.toml",
+    "clauses/C-ROW-ID.toml",
+    "clauses/C-EVENT-REF.toml",
+    "clauses/C-ROW-KEYS.toml",
+    "clauses/C-RANK-SCOPE.toml",
+    "clauses/C-ARTIFACTS.toml",
+    "clauses/C-COMPATIBILITY.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

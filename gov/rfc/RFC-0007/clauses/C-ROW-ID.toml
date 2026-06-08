@@ -1,0 +1,33 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-ID"
+title = "Event row identifiers"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+A PyTorch event identifier exposed as `row_id` MUST use the `<kind>:<stable_index>` string form.
+
+The `<kind>` component MUST be one of `cpu_op`, `annotation`, `step`, `runtime`, `driver`, `kernel`, `memcpy`, `memset`, `memory`, `python`, or `comm`.
+
+The `<stable_index>` component MUST be a base-10 non-negative integer string.
+
+A PyTorch `row_id` MUST be accepted by PyTorch `inspect` without requiring callers to pass any private numeric identifier.
+
+A PyTorch `row_id` exposed by `search`, `correlate`, `slices`, or `collectives` MUST be round-trippable through PyTorch `inspect` when it names an event row.
+
+A PyTorch `inspect` request for an absent `row_id` MUST return a success response.
+
+A PyTorch `inspect` response for an absent `row_id` MUST include a row with `found: false`.
+
+A PyTorch `inspect` not-found row MUST carry `key` equal to the requested `row_id`.
+
+A PyTorch `inspect` not-found row MUST carry `row_id` equal to the requested `row_id`.
+
+A PyTorch `row_id` MUST NOT expose a packed binary key in place of the human-readable `<kind>:<stable_index>` form.
+
+The `cpu_op` row identifier kind MUST correspond to the EventRef `type` value `cpu-op`.
+
+**Rationale:** Agents commonly pass identifiers from search, correlate, slices, or collectives into inspect. A readable, round-trippable row ID separates user-facing identity from private storage and indexing details."""

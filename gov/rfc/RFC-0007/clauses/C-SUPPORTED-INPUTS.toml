@@ -1,0 +1,33 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUPPORTED-INPUTS"
+title = "Supported inputs"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+PyTorch automatic source detection MUST follow the side-effect-free trace detection contract in [[RFC-0004:C-TRACE-DETECTION]].
+
+PyTorch automatic source detection MUST claim path names whose final component ends with `.pt.trace.json`.
+
+PyTorch automatic source detection MUST claim path names whose final component ends with `.pt.trace.json.gz`.
+
+PyTorch automatic source detection MUST NOT claim path names whose final component does not end with `.pt.trace.json` or `.pt.trace.json.gz`.
+
+A PyTorch trace-bearing command MUST accept `.pt.trace.json` inputs that contain a Chrome trace JSON object with a `traceEvents` array.
+
+A PyTorch trace-bearing command MUST accept `.pt.trace.json.gz` inputs that decompress to a Chrome trace JSON object with a `traceEvents` array.
+
+A PyTorch trace-bearing command MUST emit a handled diagnostic error when the supplied input path does not exist.
+
+A PyTorch trace-bearing command MUST emit a handled diagnostic error when the supplied input is a directory.
+
+A PyTorch trace-bearing command MUST emit a handled diagnostic error when the supplied file extension is not supported.
+
+A PyTorch trace-bearing command MUST emit a handled diagnostic error when a supported-extension file is not parseable as the expected Chrome trace JSON shape.
+
+A PyTorch command that opens a supported input MUST keep generated artifacts under the artifact root defined by [[RFC-0005:C-ARTIFACT-ROOT]].
+
+**Rationale:** The PyTorch source intentionally supports the single-file Kineto Chrome trace shape first. Clear detection and handled diagnostics let agents route inputs deterministically without triggering ingest side effects during source detection."""
