@@ -1,0 +1,10 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-ARTIFACT-CACHE-CONTRACT"
+title = "artifact cache contract"
+refs = ["RFC-0005"]
+
+[check]
+command = "bash -c 'cargo test --profile ci -p veloq-core --lib sidecar && cargo test --profile ci -p veloq-data --lib parquet && cargo test --profile ci -p veloq --test cli_smoke prep_status_reports_cold_then_warm_state && cargo test --profile ci -p veloq --test cli_smoke clean_removes_only_veloq_artifact_root && cargo test --profile ci -p veloq --test cli_smoke clean_generated_parquetdir_removes_owner_artifact_root'"
+timeout_secs = 900

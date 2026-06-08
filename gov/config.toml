@@ -22,10 +22,16 @@ version = 2
 # - random: WI-YYYY-MM-DD-{rand} (simple uniqueness)
 # id_strategy = "author-hash"
 
-# [verification]
-# Enable project-level default verification guards.
-# enabled = true
-# default_guards = ["GUARD-GOVCTL-CHECK", "GUARD-CARGO-TEST"]
+[verification]
+# Cheap project-wide defaults. RFC-specific and full-CI guards are
+# available under gov/guard/ for work items that need them.
+enabled = true
+default_guards = [
+    "GUARD-GOVCTL-CHECK",
+    "GUARD-FMT",
+    "GUARD-WORKSPACE-CHECK",
+    "GUARD-SOURCE-REGISTRY-CONTRACT",
+]
 
 # [source_scan]
 # Scan source files for [[artifact-id]] references during `govctl check`

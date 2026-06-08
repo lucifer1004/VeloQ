@@ -1,0 +1,9 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-FULL-CI-CLIPPY"
+title = "full ci clippy"
+
+[check]
+command = "cargo clippy --profile ci --workspace --all-targets -- -D warnings"
+timeout_secs = 1800
