@@ -1,0 +1,18 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC defines VeloQ's product identity and design center. It is the top-level specification that future VeloQ RFCs and ADRs should align with.
+
+VeloQ is a profile-query CLI family for agent- and script-driven analysis of GPU and ML performance traces. It exposes structured, repeatable evidence from profiler artifacts through one-shot commands, stable machine-readable output, and high-performance query paths.
+
+**Scope:** This RFC covers VeloQ's purpose, primary audience, performance posture, source model, execution model, and explicit non-goals. It does not specify the full JSON envelope, per-source wire formats, row-key catalog, generated-artifact schemas, or individual verb behavior; those belong in narrower RFCs.
+
+**Rationale:** Without a meta RFC, lower-level decisions can optimize locally while drifting from the product center. VeloQ's central trade-off is not merely "CLI instead of GUI" or "fast SQL over traces". The design center is the combination of agent-friendly evidence contracts and high-performance profile querying."""

@@ -1,0 +1,32 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-MODEL"
+title = "Profile source model"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST support profile sources through a shared source contract rather than unrelated per-source binaries or unrelated output conventions.
+
+Each source MUST identify its profile kind.
+
+Each source MUST identify its user-visible command namespace.
+
+Each source MUST identify its source-specific wire compatibility version.
+
+Source-specific verbs MAY expose source-specific evidence.
+
+Source-specific verbs SHOULD preserve the shared conventions defined by this RFC.
+
+Source-specific verbs SHOULD preserve shared command, output, error, and row-list conventions defined by applicable narrower RFCs.
+
+A source-specific exception to shared conventions SHOULD be recorded in a narrower RFC.
+
+Trace detection SHOULD be side-effect-free when detection is used to choose a source before opening or preparing the profile.
+
+Adding a source MUST NOT require existing sources to change their public wire shape.
+
+**Rationale:** NSys, NCU, and PyTorch traces carry different evidence, but agents benefit from one mental model and one parser family. A shared source model lets VeloQ expand source coverage without turning every profile format into a separate product."""

@@ -1,0 +1,31 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0001"
+title = "VeloQ product and design center"
+version = "0.1.0"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-PRODUCT-IDENTITY.toml",
+    "clauses/C-AGENT-CONTRACT.toml",
+    "clauses/C-PERFORMANCE-CENTER.toml",
+    "clauses/C-QUERY-EXECUTION.toml",
+    "clauses/C-SOURCE-MODEL.toml",
+    "clauses/C-NON-GOALS.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

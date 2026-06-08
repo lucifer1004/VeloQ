@@ -1,0 +1,36 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-AGENT-CONTRACT"
+title = "Agent-facing contract"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Default VeloQ query output MUST use a machine-readable response format with documented compatibility rules.
+
+Default VeloQ query output MUST be parseable without screen scraping human-oriented tables or prose.
+
+A successful query SHOULD expose primary row-shaped evidence through a canonical list contract when the command returns multiple comparable items.
+
+Rows that represent comparable entities SHOULD carry stable keys derived from identifying axes.
+
+Error responses MUST use a process exit status that distinguishes them from successful responses.
+
+Error responses MUST use a response payload shape that distinguishes them from successful responses.
+
+Validation failures, trace/source failures, and parse/dispatch failures SHOULD be distinguishable by structured diagnostics or by a documented pre-dispatch exception.
+
+A successful empty result MUST be represented as success rather than as an error.
+
+Progress logs and human mirrors MUST NOT corrupt the machine-readable primary output stream.
+
+Documentation and Agent Skills SHOULD describe how agents compose CLI invocations.
+
+Documentation and Agent Skills SHOULD describe how agents inspect truncation or empty-result signals.
+
+Documentation and Agent Skills SHOULD describe how agents guard optional fields.
+
+**Rationale:** An agent-friendly CLI is not just JSON syntax. Agents need stable shape, stable identity, explicit error semantics, and stdout discipline so that shell pipelines and jq-style readers stay reliable across profile sources and releases."""
