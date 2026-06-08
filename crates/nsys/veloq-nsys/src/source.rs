@@ -149,7 +149,40 @@ fn emit_err(
 mod tests {
     use super::*;
     use anyhow::Result;
+    use std::collections::BTreeSet;
     use std::fs;
+
+    #[test]
+    fn stable_command_surface_matches_rfc_0006() {
+        let actual: BTreeSet<String> = NsysSource
+            .cli()
+            .get_subcommands()
+            .map(|cmd| cmd.get_name().to_string())
+            .collect();
+        let expected: BTreeSet<String> = [
+            "concurrency",
+            "correlate",
+            "correlation-stats",
+            "gaps",
+            "graph-replays",
+            "hardware",
+            "inspect",
+            "metrics",
+            "ncu-command",
+            "prep",
+            "schema",
+            "search",
+            "slices",
+            "stats",
+            "summary",
+            "timeline",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn detect_claims_nsys_wire_inputs() -> Result<()> {
