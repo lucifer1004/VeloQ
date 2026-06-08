@@ -25,7 +25,7 @@ mod prep_status;
 mod scope;
 
 use std::path::Path;
-use veloq_core::{OutputFormat, TraceSpan, guards};
+use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, guards};
 use veloq_nsys_query::search::SearchRequest;
 use veloq_nsys_query::stats::{ALLOWED_KINDS as STATS_ALLOWED_KINDS, GroupBy, StatsRequest};
 use veloq_nsys_query::{EventKind, RowId};
@@ -43,7 +43,10 @@ use next_steps::{
 };
 use parse::{kinds_csv, parse_duration_filter, parse_row_id, parse_sort_spec};
 use prep_status::collect_prep_status;
-use scope::{resolve_or_refuse, scope_request_from, scope_request_from_device};
+use scope::{
+    resolve_or_refuse, scope_request_from, scope_request_from_device,
+    scope_request_from_device_with_implicit_all,
+};
 
 /// Gate for hidden flags. Returns `Ok(())` only when `VELOQ_UNSTABLE=1`
 /// is present in the process environment; otherwise an error with the
@@ -53,6 +56,46 @@ fn require_unstable(verb: &str) -> NsysSourceResult<()> {
         return Ok(());
     }
     Err(NsysSourceError::unstable_feature_disabled(verb))
+}
+
+fn validate_gaps_scope_args(
+    gap_scope: veloq_nsys_query::gaps::GapScope,
+    location: &crate::filters::GpuLocationFilters,
+    sort: Option<&veloq_core::SortSpec>,
+) -> NsysSourceResult<()> {
+    use veloq_nsys_query::NsysQueryError;
+    use veloq_nsys_query::gaps::{GapScope, SortKey};
+
+    if location.stream.is_some() && gap_scope != GapScope::Stream {
+        return Err(NsysQueryError::GapsStreamRequiresStreamScope {
+            scope: gap_scope.as_str(),
+        }
+        .into());
+    }
+
+    if let (Some(device), GapScope::Trace) = (location.device, gap_scope) {
+        return Err(NsysQueryError::GapsDeviceInTraceScope { device }.into());
+    }
+
+    if let Some(spec) = sort {
+        for field in spec.fields() {
+            let (key, _) = SortKey::from_field(field).map_err(NsysQueryError::gaps_sort_invalid)?;
+            match (key, gap_scope) {
+                (SortKey::Stream, scope) if scope != GapScope::Stream => {
+                    return Err(NsysQueryError::GapsSortStreamRequiresStreamScope {
+                        scope: scope.as_str(),
+                    }
+                    .into());
+                }
+                (SortKey::Device, GapScope::Trace) => {
+                    return Err(NsysQueryError::GapsSortDeviceInTraceScope.into());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Top-level dispatch from the source's `run()` once clap parsing
@@ -225,14 +268,24 @@ pub fn run(
                                 .map_err(|source| NsysSourceError::invalid_sort(&sort, source))?,
                         )
                     };
+                    let scope = match resolve_or_refuse(
+                        trace,
+                        fmt,
+                        "stats-by-size",
+                        trace_span,
+                        scope_request_from(&location),
+                    )? {
+                        Some(s) => s,
+                        None => return Ok(1),
+                    };
                     let data = veloq_nsys_query::stats_by_size::run(
                         trace,
                         veloq_nsys_query::stats_by_size::StatsBySizeRequest {
                             kinds,
                             group_by,
                             time_window: common.time_window()?,
-                            device: location.device,
-                            stream: location.stream,
+                            device: scope.applied.device,
+                            stream: scope.applied.stream,
                             sort,
                             limit: common.limit_or(50)?,
                         },
@@ -423,7 +476,7 @@ pub fn run(
                 fmt,
                 "concurrency",
                 trace_span,
-                scope_request_from_device(&location),
+                scope_request_from_device_with_implicit_all(&location),
             )? {
                 Some(s) => s,
                 None => return Ok(1),
@@ -459,19 +512,19 @@ pub fn run(
             common,
             ..
         } => {
-            let resolved = match resolve_or_refuse(
-                trace,
-                fmt,
-                "gaps",
-                trace_span,
-                scope_request_from(&location),
-            )? {
+            let gap_scope = veloq_nsys_query::gaps::GapScope::parse(&scope_arg)?;
+            let min_ns = veloq_nsys_query::gaps::GapsRequest::parse_min_duration(&min_duration)?;
+            let sort = parse_sort_spec(&sort)?;
+            validate_gaps_scope_args(gap_scope, &location, sort.as_ref())?;
+
+            let mut scope_req = scope_request_from(&location);
+            if gap_scope == veloq_nsys_query::gaps::GapScope::Trace {
+                scope_req.implicit_all_devices = true;
+            }
+            let resolved = match resolve_or_refuse(trace, fmt, "gaps", trace_span, scope_req)? {
                 Some(s) => s,
                 None => return Ok(1),
             };
-            let min_ns = veloq_nsys_query::gaps::GapsRequest::parse_min_duration(&min_duration)?;
-            let sort = parse_sort_spec(&sort)?;
-            let gap_scope = veloq_nsys_query::gaps::GapScope::parse(&scope_arg)?;
             let data = veloq_nsys_query::gaps::run(
                 trace,
                 veloq_nsys_query::gaps::GapsRequest {

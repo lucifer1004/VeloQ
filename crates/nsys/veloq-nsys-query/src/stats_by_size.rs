@@ -275,6 +275,8 @@ pub fn run<P: AsRef<Path>>(
             unsupported,
         ));
     }
+    req.group_by
+        .validate_device_parent_axes("stats-by-size", req.device)?;
 
     let requested = req.kinds.resolve(&ALLOWED_KINDS);
     let kinds: Vec<EventKind> = ALLOWED_KINDS

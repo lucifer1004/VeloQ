@@ -21,10 +21,15 @@
 //!    `slices` on a TP workload.
 //! 4. *Multiple devices, `--all-devices` set:* aggregate response;
 //!    `applied_scope.aggregated_over = ["device"]`.
+//! 5. *Multiple devices, command opts into implicit all-device scope:*
+//!    same outcome as `--all-devices`. This is reserved for commands
+//!    whose primary response already has an explicit device axis, or
+//!    whose selected scope is trace-wide.
 //!
-//! `--stream` does not participate in ambiguity refusal — cross-stream
-//! sum on one device is not the wrong-answer footgun this resolver
-//! addresses.
+//! `--stream` is valid only after the resolver has locked a single
+//! device. CUDA stream identifiers are not a useful cross-device
+//! scope axis for agent queries; `--all-devices --stream N` is rejected
+//! instead of silently filtering stream id N on every device.
 //!
 //! ## Layering
 //!
@@ -41,15 +46,18 @@ use veloq_core::{AppliedScope, Warning, WarningCode, WarningSeverity};
 
 /// Caller-supplied scope inputs the resolver actually reasons about.
 /// Mirrors the public fields of
-/// `veloq_nsys::filters::GpuLocationFilters`. The verb dispatch fills
-/// the rest of `AppliedScope` (`kind`, `nvtx_pattern`, `time_window_ns`)
-/// from its own parsed args after the resolver returns — those don't
+/// `veloq_nsys::filters::GpuLocationFilters` plus the internal
+/// `implicit_all_devices` opt-in for commands whose response shape is
+/// already trace-wide or per-device. The verb dispatch fills the rest
+/// of `AppliedScope` (`kind`, `nvtx_pattern`, `time_window_ns`) from
+/// its own parsed args after the resolver returns — those don't
 /// participate in ambiguity refusal so they don't belong here.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeRequest {
     pub device: Option<i32>,
     pub stream: Option<i64>,
     pub all_devices: bool,
+    pub implicit_all_devices: bool,
 }
 
 /// Outcome of [`resolve_scope`]: the verb either gets an `AppliedScope`
@@ -136,9 +144,20 @@ pub fn resolve_scope(
             // (Case 1) Single device: auto-resolve to the unique value.
             (None, 1) => (devices.into_iter().next(), Vec::new()),
 
-            // (Case 2) Multi-device, no `--device` → refuse.
+            // Multi-device, no `--device`: `--stream` is more specific
+            // than the generic ambiguity error because `--all-devices`
+            // is not a valid recovery for a stream-local filter.
             (None, n) => {
-                return Err(ResolveError::Ambiguous(AmbiguityError::multi_device(n)));
+                if let Some(stream) = req.stream {
+                    return Err(ResolveError::probe(
+                        crate::NsysDataError::scope_stream_requires_device(stream),
+                    ));
+                }
+                if req.implicit_all_devices {
+                    (None, vec!["device".to_string()])
+                } else {
+                    return Err(ResolveError::Ambiguous(AmbiguityError::multi_device(n)));
+                }
             }
 
             // (Case 3) Explicit `--device <N>` — single-device traces
@@ -150,6 +169,12 @@ pub fn resolve_scope(
             (Some(d), _) => (Some(d), Vec::new()),
         }
     };
+
+    if let (Some(stream), None) = (req.stream, resolved_device) {
+        return Err(ResolveError::probe(
+            crate::NsysDataError::scope_stream_requires_device(stream),
+        ));
+    }
 
     // Cross-axis bridge: when a single device is locked in, look up
     // the native_pid(s) that ran on it. In a TP workload this is the
@@ -414,6 +439,99 @@ mod tests {
         );
         assert!(err.to_string().contains("--device 7"));
         assert!(err.to_string().contains("--all-devices"));
+    }
+
+    #[test]
+    fn implicit_all_devices_resolves_multi_device_trace() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)",
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (1)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let strict = resolve_scope(&trace, ScopeRequest::default());
+        assert!(
+            matches!(strict, Err(ResolveError::Ambiguous(_))),
+            "strict multi-device request should still refuse: {strict:?}",
+        );
+
+        let resolved = resolve_scope(
+            &trace,
+            ScopeRequest {
+                implicit_all_devices: true,
+                ..ScopeRequest::default()
+            },
+        )?;
+        assert!(
+            resolved.applied.device.is_none(),
+            "implicit all-device scope must not lock one device: {resolved:?}",
+        );
+        let axis = resolved
+            .applied
+            .aggregated_over
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected aggregated_over device axis"))?;
+        assert_eq!(axis, "device");
+        Ok(())
+    }
+
+    #[test]
+    fn stream_requires_single_resolved_device_scope() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (start BIGINT, "end" BIGINT)"#,
+                Vec::new(),
+            ),
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)",
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (1)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(
+            &trace,
+            ScopeRequest {
+                stream: Some(7),
+                all_devices: true,
+                ..ScopeRequest::default()
+            },
+        ) {
+            Ok(scope) => anyhow::bail!("stream across all devices should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.data.scope-stream-requires-device"
+        );
+
+        let scoped = resolve_scope(
+            &trace,
+            ScopeRequest {
+                device: Some(0),
+                stream: Some(7),
+                ..ScopeRequest::default()
+            },
+        )?;
+        assert_eq!(scoped.applied.device, Some(0));
+        assert_eq!(scoped.applied.stream, Some(7));
+        Ok(())
     }
 
     #[test]

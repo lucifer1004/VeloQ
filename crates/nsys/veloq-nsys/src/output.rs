@@ -18,8 +18,8 @@
 
 use std::path::Path;
 use veloq_core::{
-    EnvelopeError, EnvelopeTraceRef, OutputFormat, ResponseMeta, SourceRef, TraceSpan,
-    VeloqDiagnostic,
+    EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ResponseMeta, SourceRef, TraceSpan,
+    VeloqDiagnostic, shell_quote,
     tabular::{TabularView, emit_csv, emit_table},
 };
 
@@ -174,11 +174,22 @@ pub fn emit_ambiguity_error(
 ) {
     let qualified = format!("{}.{verb}", NsysSource::KIND);
     let trace_ref = Some(nsys_trace_ref(trace));
+    let trace_arg = shell_quote(&trace.display().to_string());
     let meta = Some(ResponseMeta {
+        next_steps: vec![
+            NextStep {
+                hint: "Aggregate intentionally across every CUDA device.".to_string(),
+                command: format!("veloq {verb} {trace_arg} --all-devices"),
+            },
+            NextStep {
+                hint: "Inspect one CUDA device before comparing peers.".to_string(),
+                command: format!("veloq {verb} {trace_arg} --device 0"),
+            },
+        ],
         warnings: vec![err.warning.clone()],
         ..ResponseMeta::default()
     });
-    let env = EnvelopeError::new(
+    let mut env = EnvelopeError::new(
         Some(nsys_source_ref()),
         Some(qualified),
         trace_ref,
@@ -186,6 +197,13 @@ pub fn emit_ambiguity_error(
         meta,
         err.message.clone(),
         Vec::new(),
+    );
+    env.error.code = Some(veloq_core::ErrorCode::new(
+        "nsys.query.multi-device-ambiguous",
+    ));
+    env.error.hint = Some(
+        "Rerun with `--all-devices` for an explicit aggregate, or `--device 0` for one GPU"
+            .to_string(),
     );
     if !matches!(fmt, OutputFormat::Json) {
         eprintln!("veloq: {}", err.message);

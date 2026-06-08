@@ -123,7 +123,10 @@ Common prefixes:
 
    `collectives` groups single-trace communication evidence and reports
    linked CPU/NCCL row ids. If a trace file contains multiple rank values,
-   pass `--rank <n>` or `--all-ranks`. It does not compute cross-rank skew
+   pass `--rank <n>` or `--all-ranks`. Device ids are rank-local and stream
+   ids are device-local: filter a stream with `--rank <n> --device <id>
+   --stream <id>`, or compare lanes with `--group-by rank,device,stream`.
+   It does not compute cross-rank skew
    in v0:
 
    ```bash

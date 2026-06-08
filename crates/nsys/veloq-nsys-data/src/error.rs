@@ -224,6 +224,11 @@ pub enum NsysDataError {
     )]
     ScopeConflictingDeviceFlags { device: i32 },
 
+    #[error(
+        "--stream {stream} requires a single device scope; pass --device <id> or drop --stream"
+    )]
+    ScopeStreamRequiresDevice { stream: i64 },
+
     #[error("scope device probe requires {table}.{column}, which is not present in this trace")]
     ScopeDeviceProbeColumnMissing {
         table: String,
@@ -718,6 +723,10 @@ impl NsysDataError {
 
     pub fn scope_conflicting_device_flags(device: i32) -> Self {
         Self::ScopeConflictingDeviceFlags { device }
+    }
+
+    pub fn scope_stream_requires_device(stream: i64) -> Self {
+        Self::ScopeStreamRequiresDevice { stream }
     }
 
     pub fn scope_device_probe_column_missing(
@@ -1331,6 +1340,9 @@ impl VeloqDiagnostic for NsysDataError {
             }
             Self::ScopeConflictingDeviceFlags { .. } => {
                 ErrorCode::new("nsys.data.scope-conflicting-device-flags")
+            }
+            Self::ScopeStreamRequiresDevice { .. } => {
+                ErrorCode::new("nsys.data.scope-stream-requires-device")
             }
             Self::ScopeDeviceProbeColumnMissing { .. } => {
                 ErrorCode::new("nsys.data.scope-device-probe-column-missing")

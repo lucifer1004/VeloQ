@@ -415,6 +415,10 @@ Chrome trace files (`.pt.trace.json` / `.pt.trace.json.gz`). Directory
 inputs and cross-rank collective skew are planned, not shipped in v0.
 When one trace file contains multiple rank values, rank-scoped list and
 aggregate commands require `--rank <n>` or `--all-ranks`.
+CUDA device ids are rank-local in multi-rank traces, and stream ids are
+device-local: use `--rank <n> --device <id> --stream <id>` for a fixed
+stream, or project parent axes with `--group-by rank,device,stream` for
+comparison.
 It uses the same general VeloQ verbs instead
 of adding parallel `steps`, `memory`, or `comm` commands; communication
 questions use `--type comm`, `--is-comm`, grouping axes, `slices`, and the

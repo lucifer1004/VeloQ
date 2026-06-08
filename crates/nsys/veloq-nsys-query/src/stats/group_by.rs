@@ -550,6 +550,30 @@ pub(super) fn stats_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
 }
 
 impl GroupBy {
+    /// Validate local child axes whose ids are only meaningful under a
+    /// device parent. `--device <id>` fixes the parent; otherwise the
+    /// parent must be projected as part of the group key.
+    pub(crate) fn validate_device_parent_axes(
+        self,
+        verb: &'static str,
+        device: Option<i32>,
+    ) -> NsysQueryResult<()> {
+        if device.is_some() || self.device {
+            return Ok(());
+        }
+        let axis = if self.stream {
+            Some("stream")
+        } else if self.context {
+            Some("context")
+        } else {
+            None
+        };
+        if let Some(axis) = axis {
+            return Err(crate::NsysQueryError::StatsGroupByDeviceParentRequired { verb, axis });
+        }
+        Ok(())
+    }
+
     pub fn from_arg(s: &str) -> NsysQueryResult<Self> {
         let mut out = Self::default();
         let mut name_seen: Option<&'static str> = None;

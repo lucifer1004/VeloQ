@@ -46,6 +46,7 @@ pub(super) fn scope_request_from(location: &GpuLocationFilters) -> ScopeRequest 
         device: location.device,
         stream: location.stream,
         all_devices: location.all_devices,
+        implicit_all_devices: false,
     }
 }
 
@@ -54,5 +55,17 @@ pub(super) fn scope_request_from_device(location: &DeviceLocationFilters) -> Sco
         device: location.device,
         stream: None,
         all_devices: location.all_devices,
+        implicit_all_devices: false,
+    }
+}
+
+pub(super) fn scope_request_from_device_with_implicit_all(
+    location: &DeviceLocationFilters,
+) -> ScopeRequest {
+    ScopeRequest {
+        device: location.device,
+        stream: None,
+        all_devices: location.all_devices,
+        implicit_all_devices: true,
     }
 }

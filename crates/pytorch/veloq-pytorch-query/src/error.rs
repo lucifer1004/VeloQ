@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use thiserror::Error;
 use veloq_core::query::NameMatchError;
 use veloq_core::time::TimeParseError;
@@ -87,6 +88,21 @@ pub enum PytorchQueryError {
         "unknown pytorch stats --group-by axis `{axis}`; expected name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path"
     )]
     UnknownStatsGroupBy { axis: String },
+    #[error("pytorch --{axis} {value} requires {parents}; {suggestion}")]
+    LocalFilterParentRequired {
+        axis: &'static str,
+        value: i64,
+        parents: &'static str,
+        suggestion: &'static str,
+    },
+    #[error(
+        "pytorch stats --group-by {axis} requires parent axis {parents}; use a fixed scope or include `{group_by}` in --group-by"
+    )]
+    StatsGroupByParentRequired {
+        axis: &'static str,
+        parents: &'static str,
+        group_by: &'static str,
+    },
     #[error(
         "pytorch stats --group-by {axis} requires Python stack events, but this trace has none; re-capture with `torch.profiler.profile(..., with_stack=True)`"
     )]
@@ -186,6 +202,32 @@ impl PytorchQueryError {
     pub fn unknown_stats_group_by(axis: &str) -> Self {
         Self::UnknownStatsGroupBy {
             axis: axis.to_string(),
+        }
+    }
+
+    pub(crate) fn local_filter_parent_required(
+        axis: &'static str,
+        value: i64,
+        parents: &'static str,
+        suggestion: &'static str,
+    ) -> Self {
+        Self::LocalFilterParentRequired {
+            axis,
+            value,
+            parents,
+            suggestion,
+        }
+    }
+
+    pub(crate) fn stats_group_by_parent_required(
+        axis: &'static str,
+        parents: &'static str,
+        group_by: &'static str,
+    ) -> Self {
+        Self::StatsGroupByParentRequired {
+            axis,
+            parents,
+            group_by,
         }
     }
 
@@ -316,6 +358,12 @@ impl VeloqDiagnostic for PytorchQueryError {
             Self::UnknownStatsGroupBy { .. } => {
                 ErrorCode::new("pytorch.query.unknown-stats-group-by")
             }
+            Self::LocalFilterParentRequired { .. } => {
+                ErrorCode::new("pytorch.query.local-filter-parent-required")
+            }
+            Self::StatsGroupByParentRequired { .. } => {
+                ErrorCode::new("pytorch.query.stats-group-by-parent-required")
+            }
             Self::PythonStackMissing { .. } => ErrorCode::new("pytorch.query.python-stack-missing"),
             Self::UnknownSlicesGroupBy { .. } => {
                 ErrorCode::new("pytorch.query.unknown-slices-group-by")
@@ -339,6 +387,15 @@ impl VeloqDiagnostic for PytorchQueryError {
             Self::InspectTraceIndexOverflow { .. } => {
                 ErrorCode::new("pytorch.query.inspect-trace-index-overflow")
             }
+        }
+    }
+
+    fn hint(&self) -> Option<Cow<'_, str>> {
+        match self {
+            Self::MultiRankRequiresScope => Some(Cow::Borrowed(
+                "Rerun with `--all-ranks` for an explicit aggregate, or `--rank 0` for one rank",
+            )),
+            _ => None,
         }
     }
 }

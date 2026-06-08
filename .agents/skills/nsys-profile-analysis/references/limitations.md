@@ -117,9 +117,10 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   graphs — those kernels do not appear in `kernel_ns`. Treat
   `kernel_ns + memcpy_ns + memset_ns + graph_ns` as the per-bucket
   GPU busy total.
-- **`slices` doesn't filter by `--device`/`--stream`**: primary
-  axis is NVTX-range; `gpu_attributed` already splits per (device,
-  stream).
+- **`slices --stream` needs a device parent**: stream ids are
+  device-local. Use `--device D --stream S` for one lane, or keep
+  the query all-device and read the per-(device, stream)
+  `gpu_attributed` breakdown for comparison.
 - **`metrics --type gpu --bucket` aggregator**: `mean` by default;
   `sum` for `[Cycles Active]` / `[Requests]` tally counters only.
   Other tally-shaped units (`[Bytes]`, `[Instructions Issued]`,

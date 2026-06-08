@@ -163,6 +163,14 @@ fn query_errors_survive_anyhow_context_for_diagnostic_projection() -> Result<()>
         query_err.code().as_str(),
         "pytorch.query.rank-scope-required"
     );
+    let hint = json
+        .pointer("/error/hint")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("expected pytorch query hint"))?;
+    assert!(
+        hint.contains("--all-ranks") && hint.contains("--rank 0"),
+        "hint should name both rank-scope recovery flags: {hint}",
+    );
     Ok(())
 }
 

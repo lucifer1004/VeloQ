@@ -91,6 +91,62 @@ pub(crate) fn require_rank_scope(trace: &QueryTrace, scope: RankScope) -> Pytorc
     Ok(())
 }
 
+pub(crate) fn validate_event_scope(
+    trace: &QueryTrace,
+    request: &EventFilterRequest,
+) -> PytorchQueryResult<()> {
+    if let Some(stream) = request.stream {
+        match (
+            trace.is_multi_rank(),
+            request.rank_scope.rank,
+            request.device,
+        ) {
+            (true, None, None) => {
+                return Err(PytorchQueryError::local_filter_parent_required(
+                    "stream",
+                    stream,
+                    "`--rank <n>` and `--device <id>` because stream ids are rank/device-local",
+                    "use `--rank <n> --device <id> --stream <id>` for one stream",
+                ));
+            }
+            (true, None, Some(_)) => {
+                return Err(PytorchQueryError::local_filter_parent_required(
+                    "stream",
+                    stream,
+                    "`--rank <n>` because stream ids are rank-local in multi-rank traces",
+                    "use `--rank <n> --device <id> --stream <id>` for one stream",
+                ));
+            }
+            (_, _, None) => {
+                return Err(PytorchQueryError::local_filter_parent_required(
+                    "stream",
+                    stream,
+                    "`--device <id>` because stream ids are device-local",
+                    "use `--device <id> --stream <id>` for one stream",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if trace.is_multi_rank()
+        && request.device.is_some()
+        && request.rank_scope.rank.is_none()
+        && let Some(device) = request.device
+    {
+        return Err(PytorchQueryError::local_filter_parent_required(
+            "device",
+            device,
+            "`--rank <n>` because device ids are rank-local in multi-rank traces",
+            "use `--rank <n> --device <id>` for one rank/device scope",
+        ));
+    }
+
+    require_rank_scope(trace, request.rank_scope)?;
+
+    Ok(())
+}
+
 pub(crate) fn limit_ref(limit: usize) -> PytorchQueryResult<LimitRef> {
     LimitRef::new(limit).map_err(|_| PytorchQueryError::LimitTooSmall)
 }

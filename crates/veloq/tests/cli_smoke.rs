@@ -195,6 +195,23 @@ fn build_minimal_trace() -> Result<(TempDir, PathBuf)> {
     Ok((dir, pqtdir))
 }
 
+fn write_multi_rank_pytorch_trace(dir: &TempDir) -> Result<PathBuf> {
+    let path = dir.path().join("multi_rank.pt.trace.json");
+    std::fs::write(
+        &path,
+        r#"{
+  "traceEvents": [
+    { "name": "c10d::allreduce", "cat": "cpu_op", "ph": "X", "ts": 100, "dur": 100, "pid": 1, "tid": 10, "args": { "External id": 8, "rank": 0 } },
+    { "name": "ncclDevKernel_AllReduce", "cat": "kernel", "ph": "X", "ts": 200, "dur": 200, "pid": 1, "tid": 8, "args": { "External id": 8, "device": 0, "stream": 8, "rank": 0 } },
+    { "name": "c10d::allreduce", "cat": "cpu_op", "ph": "X", "ts": 1000, "dur": 100, "pid": 1, "tid": 11, "args": { "External id": 9, "rank": 1 } },
+    { "name": "ncclDevKernel_AllReduce", "cat": "kernel", "ph": "X", "ts": 1100, "dur": 200, "pid": 1, "tid": 9, "args": { "External id": 9, "device": 0, "stream": 9, "rank": 1 } }
+  ]
+}"#,
+    )
+    .context("write multi-rank pytorch trace")?;
+    Ok(path)
+}
+
 fn build_graph_replay_trace() -> Result<(TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
@@ -469,6 +486,59 @@ fn nsys_namespace_routes_default_source_verbs() -> Result<()> {
     assert!(
         v.get("trace").is_none(),
         "nsys schema envelope must omit trace: {v}"
+    );
+    Ok(())
+}
+
+#[test]
+fn pytorch_collectives_rank_scope_error_is_recoverable() -> Result<()> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let trace = write_multi_rank_pytorch_trace(&dir)?;
+    let trace_arg = trace.to_string_lossy();
+    let out = run_veloq(["pytorch", "collectives", trace_arg.as_ref()])?;
+    let v = assert_error_code(&out, "pytorch.query.rank-scope-required")?;
+    assert!(
+        out.stderr.is_empty(),
+        "json error mode should keep stderr empty; stderr={}",
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        v.pointer("/command").and_then(Value::as_str),
+        Some("pytorch.collectives"),
+        "got: {v}",
+    );
+    let hint = v
+        .pointer("/error/hint")
+        .and_then(Value::as_str)
+        .context("error.hint must be a string")?;
+    assert!(
+        hint.contains("--all-ranks") && hint.contains("--rank 0"),
+        "hint must mention both recovery flags: {hint}",
+    );
+    assert_eq!(
+        v.pointer("/meta/warnings/0/code").and_then(Value::as_str),
+        Some("multi-rank-ambiguous"),
+        "got: {v}",
+    );
+    let aggregate_command = v
+        .pointer("/meta/next_steps/0/command")
+        .and_then(Value::as_str)
+        .context("first next_steps command must be a string")?;
+    assert!(
+        aggregate_command.contains("veloq pytorch collectives")
+            && aggregate_command.contains(trace_arg.as_ref())
+            && aggregate_command.contains("--all-ranks"),
+        "aggregate next step should rerun the collectives query: {aggregate_command}",
+    );
+    let rank_command = v
+        .pointer("/meta/next_steps/1/command")
+        .and_then(Value::as_str)
+        .context("second next_steps command must be a string")?;
+    assert!(
+        rank_command.contains("veloq pytorch collectives")
+            && rank_command.contains(trace_arg.as_ref())
+            && rank_command.contains("--rank 0"),
+        "rank next step should rerun the collectives query: {rank_command}",
     );
     Ok(())
 }

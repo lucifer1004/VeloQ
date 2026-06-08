@@ -27,6 +27,8 @@ pub enum Cmd {
     Stats {
         trace: PathBuf,
         /// Comma-separated axes: name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path.
+        /// In multi-rank traces, `device` must be paired with `rank`;
+        /// `stream` must be paired with both `rank` and `device`.
         #[arg(long, default_value = "name")]
         group_by: String,
         #[command(flatten)]
@@ -129,11 +131,13 @@ pub struct ScopeArgs {
     #[arg(long = "all-ranks", default_value_t = false)]
     pub all_ranks: bool,
 
-    /// Restrict to one CUDA device id.
+    /// Restrict to one CUDA device id. On multi-rank traces this
+    /// requires `--rank` because device ids are rank-local.
     #[arg(long)]
     pub device: Option<i64>,
 
-    /// Restrict to one CUDA stream id.
+    /// Restrict to one CUDA stream id. Requires a single device, and
+    /// on multi-rank traces a single rank.
     #[arg(long)]
     pub stream: Option<i64>,
 

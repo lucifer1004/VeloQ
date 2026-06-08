@@ -1,5 +1,5 @@
 use crate::dto::{StatsAuxiliary, StatsResponse, StatsRow};
-use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::filter::{EventFilterRequest, limit_ref, validate_event_scope};
 use crate::query_sql::{
     event_filter,
     exec::{self, SqlLabel, SqlVerb},
@@ -15,8 +15,9 @@ pub fn stats(
     request: EventFilterRequest,
     group_by: &[String],
 ) -> PytorchQueryResult<StatsResponse> {
-    require_rank_scope(trace, request.rank_scope)?;
     validate_group_by(&trace.capabilities, group_by)?;
+    validate_group_by_scope(trace, &request, group_by)?;
+    validate_event_scope(trace, &request)?;
     stats_sql(trace, request, group_by)
 }
 
@@ -117,6 +118,61 @@ fn validate_group_by(capabilities: &Capabilities, group_by: &[String]) -> Pytorc
         }
     }
     Ok(())
+}
+
+fn validate_group_by_scope(
+    trace: &QueryTrace,
+    request: &EventFilterRequest,
+    group_by: &[String],
+) -> PytorchQueryResult<()> {
+    let has_rank = has_axis(group_by, "rank");
+    let has_device = has_axis(group_by, "device");
+    let has_stream = has_axis(group_by, "stream");
+    let rank_parent_fixed = !trace.is_multi_rank() || request.rank_scope.rank.is_some();
+    let rank_parent_projected = rank_parent_fixed || has_rank;
+    let device_parent_fixed = request.device.is_some();
+    let device_parent_projected = device_parent_fixed || has_device;
+
+    if has_device && !rank_parent_projected {
+        return Err(PytorchQueryError::stats_group_by_parent_required(
+            "device",
+            "rank",
+            "rank,device",
+        ));
+    }
+
+    if has_stream {
+        match (rank_parent_projected, device_parent_projected) {
+            (false, false) => {
+                return Err(PytorchQueryError::stats_group_by_parent_required(
+                    "stream",
+                    "rank,device",
+                    "rank,device,stream",
+                ));
+            }
+            (false, true) => {
+                return Err(PytorchQueryError::stats_group_by_parent_required(
+                    "stream",
+                    "rank",
+                    "rank,device,stream",
+                ));
+            }
+            (true, false) => {
+                return Err(PytorchQueryError::stats_group_by_parent_required(
+                    "stream",
+                    "device",
+                    "device,stream",
+                ));
+            }
+            (true, true) => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn has_axis(group_by: &[String], axis: &str) -> bool {
+    group_by.iter().any(|candidate| candidate == axis)
 }
 
 fn stats_key(axes: &BTreeMap<String, String>) -> String {

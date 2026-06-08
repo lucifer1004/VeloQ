@@ -53,6 +53,9 @@ pub enum Cmd {
         /// non-kernel kinds with this axis error up-front. Examples:
         /// `device`, `demangled,device`, `mangled,device`,
         /// `demangled,grid_block`, `nvtx-path`, `no-name,device,stream`.
+        /// `stream` and `context` are device-local: use `--device`
+        /// for one device, or include `device` in this list for
+        /// cross-device comparison.
         #[arg(long, default_value = "short")]
         group_by: String,
 
@@ -249,7 +252,7 @@ pub enum Cmd {
         trace_arg: TraceArg,
 
         /// Aggregation scope. `device` (default) | `stream` | `trace`.
-        /// See `gaps --help` for per-scope semantics.
+        /// Trace scope implies all devices when no device is selected.
         #[arg(long, default_value = "device", value_name = "SCOPE")]
         scope: String,
 

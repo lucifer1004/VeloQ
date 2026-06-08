@@ -233,6 +233,14 @@ pub enum NsysQueryError {
     StatsGroupByLocationAxisConflict { kinds: String },
 
     #[error(
+        "{verb}: --group-by {axis} requires a device parent axis because {axis} ids are device-local; use `--device <id>` for one device or include `device,{axis}` in --group-by for comparison"
+    )]
+    StatsGroupByDeviceParentRequired {
+        verb: &'static str,
+        axis: &'static str,
+    },
+
+    #[error(
         "stats: --group-by grid_block is kernel-only; gridX/Y/Z and blockX/Y/Z columns live on CUPTI_ACTIVITY_KIND_KERNEL and nowhere else. Got `--type {kind}` in the explicit kind set; either drop the non-kernel kinds or unset --group-by grid_block"
     )]
     StatsGridBlockKindConflict { kind: &'static str },
@@ -826,6 +834,9 @@ impl VeloqDiagnostic for NsysQueryError {
             Self::StatsKindNotAllowed { .. } => ErrorCode::new("nsys.query.stats-kind-not-allowed"),
             Self::StatsGroupByLocationAxisConflict { .. } => {
                 ErrorCode::new("nsys.query.stats-group-by-location-axis-conflict")
+            }
+            Self::StatsGroupByDeviceParentRequired { .. } => {
+                ErrorCode::new("nsys.query.stats-group-by-device-parent-required")
             }
             Self::StatsGridBlockKindConflict { .. } => {
                 ErrorCode::new("nsys.query.stats-grid-block-kind-conflict")

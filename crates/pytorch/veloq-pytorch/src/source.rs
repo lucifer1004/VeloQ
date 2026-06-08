@@ -4,9 +4,11 @@ use crate::commands;
 use clap::{ArgMatches, Command, FromArgMatches, Subcommand};
 use std::path::Path;
 use veloq_core::{
-    EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef, SourceRunResult, TraceSpan,
+    EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta,
+    SourceRef, SourceRunResult, TraceSpan, Warning, WarningCode, WarningSeverity, shell_quote,
     write_diagnostic_error_envelope,
 };
+use veloq_pytorch_query::PytorchQueryError;
 
 pub struct PytorchSource;
 
@@ -81,11 +83,65 @@ fn emit_err(
     match err {
         PytorchSourceError::Command(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Query(PytorchQueryError::MultiRankRequiresScope) => {
+            emit_rank_scope_error(verb, trace, trace_span, fmt);
+        }
         PytorchSourceError::Query(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Tabular(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::SerializeEnvelope { .. } => {
             emit_diagnostic(verb, trace, trace_span, err, fmt);
         }
+    }
+}
+
+fn emit_rank_scope_error(
+    verb: &str,
+    trace: Option<&Path>,
+    trace_span: Option<TraceSpan>,
+    fmt: OutputFormat,
+) {
+    let message = "pytorch trace has multiple ranks; use `--rank <n>` or `--all-ranks`";
+    let trace_arg = trace
+        .map(|path| shell_quote(&path.display().to_string()))
+        .unwrap_or_else(|| "<trace>".to_string());
+    let mut env = EnvelopeError::new(
+        Some(PytorchSource::source_ref()),
+        Some(format!("{}.{}", PytorchSource::KIND, verb)),
+        trace.map(PytorchSource::trace_ref),
+        trace_span,
+        Some(ResponseMeta {
+            next_steps: vec![
+                NextStep {
+                    hint: "Aggregate intentionally across every PyTorch rank.".to_string(),
+                    command: format!("veloq pytorch {verb} {trace_arg} --all-ranks"),
+                },
+                NextStep {
+                    hint: "Inspect one PyTorch rank before comparing peers.".to_string(),
+                    command: format!("veloq pytorch {verb} {trace_arg} --rank 0"),
+                },
+            ],
+            warnings: vec![Warning {
+                severity: WarningSeverity::Warn,
+                code: WarningCode::MultiRankAmbiguous,
+                message: message.to_string(),
+            }],
+            ..ResponseMeta::default()
+        }),
+        message,
+        Vec::new(),
+    );
+    env.error.code = Some(veloq_core::ErrorCode::new(
+        "pytorch.query.rank-scope-required",
+    ));
+    env.error.hint = Some(
+        "Rerun with `--all-ranks` for an explicit aggregate, or `--rank 0` for one rank"
+            .to_string(),
+    );
+    if !matches!(fmt, OutputFormat::Json) {
+        eprintln!("veloq: {message}");
+    }
+    if let Ok(s) = env.to_json_pretty() {
+        println!("{s}");
     }
 }
 

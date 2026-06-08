@@ -1,6 +1,6 @@
 use crate::PytorchQueryResult;
 use crate::dto::{EventListAuxiliary, EventRef, SearchResponse};
-use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::filter::{EventFilterRequest, limit_ref, validate_event_scope};
 use crate::query_sql::{
     event_filter,
     exec::{self, SqlLabel, SqlVerb},
@@ -13,7 +13,7 @@ pub fn search(
     trace: &QueryTrace,
     request: EventFilterRequest,
 ) -> PytorchQueryResult<SearchResponse> {
-    require_rank_scope(trace, request.rank_scope)?;
+    validate_event_scope(trace, &request)?;
     limit_ref(request.limit)?;
     let events_path = sidecar::path(&trace.artifact_dir, PytorchSidecar::Events);
     let query = event_filter::search_sql(&events_path, &request)?;

@@ -84,54 +84,54 @@ impl CommonFilters {
     }
 }
 
-/// Uniform scope filters shared by every list verb that aggregates GPU
+/// Uniform scope filters shared by list verbs that aggregate or list GPU
 /// events (`stats`, `search`, `slices`, `gaps`, `timeline`).
 /// `--device <N>` scopes **both** axes — `deviceId` on GPU
 /// events AND the native_pids that ran on device N on host-thread
 /// events — via the existing `TARGET_INFO_CUDA_CONTEXT_INFO` bridge.
 /// `--all-devices` opts back into the cross-device aggregate when the
-/// silent-sum behavior is genuinely what the caller wants. Multi-device
-/// traces with neither flag set are refused upstream by
-/// `crates/veloq/src/scope.rs::resolve_scope`.
+/// silent-sum behavior is genuinely what the caller wants. Most commands
+/// refuse multi-device traces with neither flag set; trace-wide command
+/// modes can explicitly opt into an implicit all-device scope.
 #[derive(Args, Debug, Clone, Default)]
 pub struct GpuLocationFilters {
     /// Restrict to one CUDA device (NSys `deviceId`). On multi-device
-    /// traces, required unless `--all-devices` is set; mutually
-    /// exclusive with `--all-devices`. Also scopes host-thread events
-    /// (NVTX ranges, runtime API calls, slices' CPU bounds) to the
-    /// native_pid(s) that ran on this device.
+    /// traces, most commands require this unless `--all-devices` is
+    /// set; mutually exclusive with `--all-devices`. Also scopes
+    /// host-thread events (NVTX ranges, runtime API calls, slices' CPU
+    /// bounds) to the native_pid(s) that ran on this device.
     #[arg(long, value_name = "DEV_ID", conflicts_with = "all_devices")]
     pub device: Option<i32>,
 
-    /// Restrict to one CUDA stream (NSys `streamId`). Plain-echo; not
-    /// involved in ambiguity refusal because cross-stream sum on one
-    /// device is not the wrong-answer footgun this filter set
-    /// addresses.
+    /// Restrict to one CUDA stream (NSys `streamId`). Requires a
+    /// single resolved device; on multi-device traces pass `--device`
+    /// as well.
     #[arg(long, value_name = "STREAM_ID")]
     pub stream: Option<i64>,
 
     /// Opt into the cross-device aggregate on multi-device traces.
-    /// Mutually exclusive with `--device`. On single-device traces this
-    /// flag is a no-op (the resolver returns the unique device
-    /// automatically and `applied_scope.aggregated_over` stays empty).
+    /// Mutually exclusive with `--device`. Some trace-wide command
+    /// modes imply this when no device is selected.
     #[arg(long = "all-devices", default_value_t = false)]
     pub all_devices: bool,
 }
 
 /// Device-only scope filters for list verbs that aggregate across
-/// streams by construction. Same multi-device ambiguity policy as
-/// [`GpuLocationFilters`], but intentionally does not expose
-/// `--stream`.
+/// streams by construction. Most commands use the same multi-device
+/// ambiguity policy as [`GpuLocationFilters`], but commands with a
+/// natural per-device output can imply all-device scope. This group
+/// intentionally does not expose `--stream`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct DeviceLocationFilters {
     /// Restrict to one CUDA device (NSys `deviceId`). On multi-device
-    /// traces, required unless `--all-devices` is set; mutually
-    /// exclusive with `--all-devices`.
+    /// traces, strict commands require this unless `--all-devices` is
+    /// set; mutually exclusive with `--all-devices`.
     #[arg(long, value_name = "DEV_ID", conflicts_with = "all_devices")]
     pub device: Option<i32>,
 
     /// Opt into the cross-device aggregate on multi-device traces.
-    /// Mutually exclusive with `--device`.
+    /// Mutually exclusive with `--device`. Commands with a natural
+    /// per-device output can imply this when no device is selected.
     #[arg(long = "all-devices", default_value_t = false)]
     pub all_devices: bool,
 }
