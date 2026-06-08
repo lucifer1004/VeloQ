@@ -8,14 +8,19 @@ on:
 
 env:
   RUST_VERSION: "1.89.0"
+  GOVCTL_VERSION: "0.9.3"
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
-  # fmt + clippy + the full workspace test suite. Glibc image: rust's
-  # musl host triple blocks proc-macro compilation; release binaries
-  # stay musl-static via the release workflow's cross build.
+  # Governance check + fmt + clippy + the full workspace test suite.
+  # Glibc image: rust's musl host triple blocks proc-macro compilation;
+  # release binaries stay musl-static via the release workflow's cross
+  # build.
   test:
-    name: fmt + clippy + test
+    name: gov + fmt + clippy + test
     runs-on: ubuntu-latest
     container:
       image: rust:1.89.0-slim-bookworm
@@ -27,6 +32,17 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential pkg-config ca-certificates cmake
+      - name: Install govctl
+        uses: jaxxstorm/action-install-gh-release@v3.0.0
+        with:
+          repo: govctl-org/govctl
+          tag: v${{ env.GOVCTL_VERSION }}
+          asset-name: govctl-v${{ env.GOVCTL_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          binaries-location: govctl-v${{ env.GOVCTL_VERSION }}-x86_64-unknown-linux-gnu
+          digest: f401c4e646a6a02ed3b6028d766a6c13b49d7c98e7e38467b330ab1ac9caa869
+          cache: enable
+      - run: govctl --version
+      - run: govctl check
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
