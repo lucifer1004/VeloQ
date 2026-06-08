@@ -8,6 +8,8 @@
 use anyhow::{Context, Result};
 use duckdb::{Connection, params};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use tempfile::TempDir;
@@ -34,6 +36,55 @@ fn parse_stdout(out: &Output) -> Result<Value> {
 fn at<'a>(v: &'a Value, ptr: &str) -> Result<&'a Value> {
     v.pointer(ptr)
         .ok_or_else(|| anyhow::anyhow!("missing pointer `{ptr}` in {v}"))
+}
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn quoted_toml_field(content: &str, field: &str) -> Result<String> {
+    let needle = format!("{field} = ");
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix(&needle) else {
+            continue;
+        };
+        let value = rest
+            .trim_start()
+            .strip_prefix('"')
+            .and_then(|quoted| quoted.split_once('"').map(|(value, _)| value.to_string()))
+            .with_context(|| format!("could not parse quoted TOML field `{field}`"))?;
+        return Ok(value);
+    }
+    anyhow::bail!("missing TOML field `{field}`")
+}
+
+fn guard_records() -> Result<BTreeMap<String, (String, String)>> {
+    let guard_dir = repo_root().join("gov/guard");
+    let mut records = BTreeMap::new();
+    for entry in fs::read_dir(&guard_dir).with_context(|| {
+        format!(
+            "read guard directory {}",
+            guard_dir.as_path().to_string_lossy()
+        )
+    })? {
+        let path = entry?.path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("toml") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("read guard file {}", path.as_path().to_string_lossy()))?;
+        let id = quoted_toml_field(&content, "id")
+            .with_context(|| format!("parse id in {}", path.as_path().to_string_lossy()))?;
+        let title =
+            quoted_toml_field(&content, "title").with_context(|| format!("parse title in {id}"))?;
+        let command = quoted_toml_field(&content, "command")
+            .with_context(|| format!("parse command in {id}"))?;
+        if records.insert(id.clone(), (title, command)).is_some() {
+            anyhow::bail!("duplicate guard id `{id}`");
+        }
+    }
+    Ok(records)
 }
 
 fn finalize_to_pqtdir(conn: &Connection, dir: &TempDir) -> Result<PathBuf> {
@@ -70,6 +121,85 @@ fn install_minimal_export_metadata(conn: &Connection) -> Result<()> {
             "INSERT INTO META_DATA_EXPORT (name, value) VALUES (?, ?)",
             params![k, v],
         )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn guard_titles_advertise_selection_layer() -> Result<()> {
+    let records = guard_records()?;
+    assert!(
+        !records.contains_key("GUARD-FULL-CI-CHECK"),
+        "workspace check is the single default/release check guard"
+    );
+    let prefixes = [
+        "default: ",
+        "default contract: ",
+        "default/release: ",
+        "contract: ",
+        "release: ",
+    ];
+    for (id, (title, _command)) in &records {
+        assert!(
+            prefixes.iter().any(|prefix| title.starts_with(prefix)),
+            "{id} title must advertise guard selection layer; got `{title}`"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn default_guard_config_uses_routine_guard_set() -> Result<()> {
+    let config_path = repo_root().join("gov/config.toml");
+    let config = fs::read_to_string(&config_path)
+        .with_context(|| format!("read {}", config_path.as_path().to_string_lossy()))?;
+    let records = guard_records()?;
+    let defaults = [
+        "GUARD-GOVCTL-CHECK",
+        "GUARD-FMT",
+        "GUARD-WORKSPACE-CHECK",
+        "GUARD-SOURCE-REGISTRY-CONTRACT",
+    ];
+    for id in defaults {
+        assert!(
+            config.contains(&format!("\"{id}\"")),
+            "default_guards must include {id}",
+        );
+        let title = records
+            .get(id)
+            .map(|(title, _command)| title.as_str())
+            .with_context(|| format!("default guard {id} has no guard file"))?;
+        assert!(
+            title.starts_with("default"),
+            "default guard {id} should have a default-layer title; got `{title}`"
+        );
+    }
+    for non_default in [
+        "GUARD-NSYS-WIRE-CONTRACT",
+        "GUARD-NCU-WIRE-CONTRACT",
+        "GUARD-PYTORCH-WIRE-CONTRACT",
+        "GUARD-ROW-WIRE-CONTRACT",
+        "GUARD-CLI-IO-CONTRACT",
+        "GUARD-ARTIFACT-CACHE-CONTRACT",
+        "GUARD-FULL-CI-CLIPPY",
+        "GUARD-FULL-CI-TEST",
+    ] {
+        assert!(
+            !config.contains(&format!("\"{non_default}\"")),
+            "default_guards should not include heavier guard {non_default}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn guards_do_not_duplicate_exact_check_commands() -> Result<()> {
+    let records = guard_records()?;
+    let mut by_command = BTreeMap::new();
+    for (id, (_title, command)) in records {
+        if let Some(previous) = by_command.insert(command.clone(), id.clone()) {
+            anyhow::bail!("guards {previous} and {id} share the same check command `{command}`");
+        }
     }
     Ok(())
 }

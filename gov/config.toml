@@ -30,7 +30,7 @@ version = 2
 # - release guards are GUARD-WORKSPACE-CHECK, GUARD-FULL-CI-CLIPPY,
 #   and GUARD-FULL-CI-TEST. GUARD-WORKSPACE-CHECK intentionally
 #   serves as both the default workspace check and the release check
-#   guard; there is no duplicate GUARD-FULL-CI-CHECK.
+#   guard; there is no separate full-CI check guard.
 enabled = true
 default_guards = [
     "GUARD-GOVCTL-CHECK",

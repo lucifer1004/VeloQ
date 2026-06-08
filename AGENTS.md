@@ -413,15 +413,29 @@ one line plus the source crate.
 
 ## Pre-commit checklist
 
-- [ ] `cargo check --profile ci --workspace --all-targets`
-- [ ] `cargo clippy --profile ci --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --profile ci --workspace`
-- [ ] `cargo fmt --all -- --check`
+- [ ] Routine/default validation:
+      `govctl verify GUARD-GOVCTL-CHECK`,
+      `govctl verify GUARD-FMT`,
+      `govctl verify GUARD-WORKSPACE-CHECK`, and
+      `govctl verify GUARD-SOURCE-REGISTRY-CONTRACT`.
+- [ ] Source or wire-contract changes → run the matching contract
+      guard(s): `GUARD-NSYS-WIRE-CONTRACT`,
+      `GUARD-NCU-WIRE-CONTRACT`,
+      `GUARD-PYTORCH-WIRE-CONTRACT`,
+      `GUARD-ROW-WIRE-CONTRACT`,
+      `GUARD-CLI-IO-CONTRACT`, or
+      `GUARD-ARTIFACT-CACHE-CONTRACT`.
+- [ ] Release/full-CI validation:
+      `govctl verify GUARD-WORKSPACE-CHECK`,
+      `govctl verify GUARD-FULL-CI-CLIPPY`, and
+      `govctl verify GUARD-FULL-CI-TEST`.
+      The release commands are the full workspace check, full
+      all-targets clippy, and full workspace test suite.
 - [ ] No `unwrap()` / `expect()` / `[i]` indexing in lib **or**
       tests — the workspace's `clippy::unwrap_used` / `expect_used`
       / `indexing_slicing` denies apply to every target, and the
-      gate above runs `--all-targets` to actually enforce them on
-      integration tests too. Use `ok_or_else` + `?` instead.
+      release clippy guard runs `--all-targets` to actually enforce
+      them on integration tests too. Use `ok_or_else` + `?` instead.
 - [ ] New subcommand → updated this file's roadmap + README
       example + matching `.agents/skills/*` profile-analysis skill
       (the skill is the user-facing contract description; this
