@@ -14,14 +14,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect`, `stats`, `correlate`, `timeline`, `slices`, `collectives`,
   `prep`, and `schema`.
 - **PyTorch profile-analysis skill** — `scripts/install.sh`,
-  `veloq self-update`, and the Claude Code plugin now include
+  `veloq self-update`, and the plugin metadata now include
   `pytorch-profile-analysis` alongside the NSys and NCU skills.
 
 ### Changed
 
-- **Distribution** — installer and self-update skill installs replace each
-  bundled skill directory wholesale, so files removed from a later release do
+- **Distribution** — installer and self-update Agent Skills installs replace
+  each bundled skill directory wholesale, so files removed from a later release do
   not linger from an older install.
+- **Agent Skills layout** — the canonical repo source and default install root
+  moved to `.agents/skills`, with `.claude/skills` kept as a compatibility
+  alias and `.codex-plugin/` plus a repo-local Codex marketplace added for
+  Codex plugin installs.
 
 ## [0.1.0] - 2026-06-04
 
@@ -53,7 +57,7 @@ Initial public release.
   products live under one `<report>.veloq/` artifact root with content/mtime
   cache invalidation.
 - **Distribution** — `scripts/install.sh` installs the binary plus the
-  `nsys-profile-analysis` and `ncu-profile-analysis` Claude Code skills; a
+  `nsys-profile-analysis` and `ncu-profile-analysis` Agent Skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
 [0.2.0]: https://github.com/lucifer1004/veloq/compare/v0.1.0...v0.2.0

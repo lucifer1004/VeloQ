@@ -1,0 +1,20 @@
+{
+  "name": "veloq",
+  "interface": {
+    "displayName": "VeloQ"
+  },
+  "plugins": [
+    {
+      "name": "veloq",
+      "source": {
+        "source": "local",
+        "path": "./plugins/veloq"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

@@ -6,8 +6,8 @@
   },
   "plugins": [
     {
-      "name": "veloq-profile-analysis",
-      "description": "Profile-analysis skills (nsys + ncu + pytorch) that require the VeloQ CLI for evidence extraction. Install the binary separately via scripts/install.sh or cargo binstall.",
+      "name": "veloq",
+      "description": "Agent Skills for profile analysis (nsys + ncu + pytorch) that require the VeloQ CLI for evidence extraction. Install the binary separately via scripts/install.sh or cargo binstall.",
       "version": "0.2.0",
       "source": "./"
     }

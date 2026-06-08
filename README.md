@@ -62,17 +62,17 @@ VeloQ is for programmatic, repeatable, agent- or script-driven querying.
 ## Install
 
 For Linux and macOS, the install script is the shortest path: it installs
-both the `veloq` binary and the bundled profile-analysis skills.
+both the `veloq` binary and the bundled Agent Skills.
 
 ```bash
 # Linux x86_64 / aarch64 and macOS x86_64 / arm64
 curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash
 ```
 
-Installs the `veloq` binary under `~/.local/bin` and the Claude Code
-profile-analysis skills (`nsys-profile-analysis`, `ncu-profile-analysis`,
+Installs the `veloq` binary under `~/.local/bin` and the Agent Skills
+for profile analysis (`nsys-profile-analysis`, `ncu-profile-analysis`,
 `pytorch-profile-analysis`) under
-`~/.claude/skills/`. Pass `--no-skills` to install just the
+`~/.agents/skills/`. Pass `--no-skills` to install just the
 binary, or `--no-binary` to refresh the skills when you manage the
 VeloQ CLI separately. The skills are VeloQ-backed: they can be
 installed separately, but profile evidence extraction still requires a
@@ -101,11 +101,28 @@ veloq self-update --no-binary
 ```
 
 Use `--skills-dir <path>` on that second command to install skills under a
-non-default root such as `.agents/skills/`.
+non-default root such as `.claude/skills/`.
 
 ```bash
-veloq self-update --no-binary --skills-dir .agents
+veloq self-update --no-binary --skills-dir .claude
 ```
+
+### Codex plugin (alternative)
+
+VeloQ ships Codex plugin metadata under `.codex-plugin/` and a local
+marketplace under `.agents/plugins/`. From a VeloQ checkout:
+
+```bash
+codex plugin marketplace add .
+codex plugin add veloq@veloq
+```
+
+The plugin install handles the Agent Skills only. Those skills require
+the VeloQ CLI for evidence extraction, so install the `veloq` binary
+separately via `cargo binstall veloq` or `scripts/install.sh --no-skills`.
+
+The repo's canonical Agent Skills source lives under `.agents/skills/`.
+The legacy `.claude/skills` path is kept as a compatibility alias.
 
 ### Claude Code plugin (alternative)
 
@@ -114,41 +131,39 @@ VeloQ ships a one-plugin marketplace listing under
 
 ```text
 /plugin marketplace add https://github.com/lucifer1004/veloq.git
-/plugin install veloq-profile-analysis@veloq
+/plugin install veloq@veloq
 ```
 
-The plugin install handles the profile-analysis skills only. Those
-skills require the VeloQ CLI for evidence extraction, so install the
-`veloq` binary separately via `cargo binstall veloq` or
-`scripts/install.sh --no-skills`.
+This uses the same Agent Skills through the Claude-specific plugin
+metadata under `.claude-plugin/`.
 
 ### Updating
 
 ```bash
-veloq self-update                              # binary AND bundled skills
+veloq self-update                              # binary AND bundled Agent Skills
 veloq self-update --check                      # is a newer release out? (JSON)
 veloq self-update --no-skills                  # binary only
-veloq self-update --no-binary                  # skills only; keep your binary manager
-veloq self-update --skills-dir .agents          # install skills to .agents/skills/
+veloq self-update --no-binary                  # Agent Skills only; keep your binary manager
+veloq self-update --skills-dir .claude          # install skills to .claude/skills/
 ```
 
 `self-update` pulls the latest GitHub release: it replaces the running
-binary and re-installs the Claude Code profile-analysis skills, matching what
+binary and re-installs the bundled Agent Skills, matching what
 `install.sh` does — so a self-updated binary never leaves stale skills
-behind. Skills go to `~/.claude/skills/` by default; `--skills-dir <path>`
+behind. Skills go to `~/.agents/skills/` by default; `--skills-dir <path>`
 (or `VELOQ_SKILLS_DIR`) points them under a different root — a
-project-local `.claude`, an agent-agnostic `.agents`, etc. By convention
+project-local `.agents`, a Claude-specific `.claude`, etc. By convention
 skills live in a `skills/` subdir, so `skills/` is appended automatically
 (pass the root or the full skills dir, either works); the skills
 themselves are portable `SKILL.md` files. `--check` only reports
 `update_available` without touching anything. All emit the standard
 envelope on stdout. Re-running `install.sh` (same `--skills-dir`) also
-works: it refreshes bundled skills and removes stale files from prior
-skill installs.
+works: it refreshes bundled Agent Skills and removes stale files from prior
+Agent Skills installs.
 
 If the binary was installed with `cargo-binstall` and you want
 `cargo-binstall` to remain the binary manager, use
-`veloq self-update --no-binary` to refresh skills only, and use
+`veloq self-update --no-binary` to refresh Agent Skills only, and use
 `cargo binstall` again for binary updates.
 
 ## Quick start
@@ -426,7 +441,7 @@ source-specific `collectives` verb.
 | `recipes [<id>]` | List or show registered workflow recipes (run `veloq recipes` for the catalog, `veloq recipes <id>` for one).                                                                                                                                                                                                                     |
 | `sources`        | Registered sources and their wire-format versions                                                                                                                                                                                                                                                                                 |
 | `clean <trace>`  | Remove the `<trace>.veloq/` artifact root generated by VeloQ                                                                                                                                                                                                                                                                      |
-| `self-update`    | Update the binary and bundled skills from the latest GitHub release (`--check` / `--no-skills` / `--no-binary` / `--skills-dir`)                                                                                                                                                                                                  |
+| `self-update`    | Update the binary and bundled Agent Skills from the latest GitHub release (`--check` / `--no-skills` / `--no-binary` / `--skills-dir`)                                                                                                                                                                                           |
 
 Per-verb flag detail, response shape, sort keys, and examples live
 in `veloq <verb> --help` (which is projected from the same

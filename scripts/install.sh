@@ -3,8 +3,8 @@
 #
 # Installs:
 #   1. The VeloQ binary into ~/.local/bin (or --bin-dir).
-#   2. Claude Code profile-analysis skills (nsys-profile-analysis,
-#      ncu-profile-analysis, pytorch-profile-analysis) into ~/.claude/skills/.
+#   2. Agent Skills for profile analysis (nsys-profile-analysis,
+#      ncu-profile-analysis, pytorch-profile-analysis) into ~/.agents/skills/.
 #
 # Re-run safe: existing files are overwritten. Use --no-binary or
 # --no-skills to update one half without touching the other. The
@@ -12,11 +12,11 @@
 #
 # Options:
 #   --bin-dir <path>    Install binary to this directory (default: ~/.local/bin)
-#   --skills-dir <path> Install skills under this dir (default: ~/.claude); `skills/`
-#                       is appended if absent, so pass an agent root (.agents, ~/.claude)
+#   --skills-dir <path> Install skills under this dir (default: ~/.agents); `skills/`
+#                       is appended if absent, so pass an agent root (.agents, ~/.agents)
 #                       or a full skills dir
-#   --no-binary         Skip the binary download (skills only; manage VeloQ separately)
-#   --no-skills         Skip the Claude Code skill install (binary only)
+#   --no-binary         Skip the binary download (Agent Skills only; manage VeloQ separately)
+#   --no-skills         Skip the Agent Skills install (binary only)
 #   --help              Show this help and exit
 #
 # Environment:
@@ -38,7 +38,7 @@ API_URL="${VELOQ_GITHUB_API:-https://api.github.com}"
 # GitHub release assets live at <host>/<repo>/releases/download/<tag>/<asset>.
 RELEASE_BASE="${VELOQ_BASE_URL:-${GITHUB_HOST}/${REPO}/releases/download}"
 BIN_DIR="${VELOQ_INSTALL_DIR:-$HOME/.local/bin}"
-SKILLS_DIR="${VELOQ_SKILLS_DIR:-$HOME/.claude}"
+SKILLS_DIR="${VELOQ_SKILLS_DIR:-$HOME/.agents}"
 INSTALL_BINARY=true
 INSTALL_SKILLS=true
 
@@ -86,7 +86,7 @@ done
 
 # Skills live under <dir>/skills/ by convention; append it unless the path
 # already ends in `skills`, so --skills-dir / VELOQ_SKILLS_DIR may be an
-# agent root (~/.claude, .agents) or a full skills dir. Mirrors
+# agent root (~/.agents, .agents, ~/.claude) or a full skills dir. Mirrors
 # `veloq self-update`'s resolution.
 if [ "$(basename "$SKILLS_DIR")" != "skills" ]; then
     SKILLS_DIR="$SKILLS_DIR/skills"
@@ -207,11 +207,11 @@ install_binary() {
 # ---------------------------------------------------------------------------
 # Skills install
 # ---------------------------------------------------------------------------
-# At release time the CI's skills-tarball job tar.gz's
-# .claude/skills/ and attaches it to the GitHub Release as
-# veloq-skills.tar.gz. We fetch + extract into a staging directory, then
-# replace each installed skill directory wholesale so removed files do not
-# linger across upgrades.
+# At release time the CI's skills-tarball job packs .agents/skills/ and
+# a .claude/skills/ compatibility alias, then attaches the archive to the
+# GitHub Release as veloq-skills.tar.gz. We fetch + extract into a staging
+# directory, then replace each installed skill directory wholesale so removed
+# files do not linger across upgrades.
 
 install_skills() {
     local url archive extract_dir staged skill_dir skill_name dest installed
@@ -226,8 +226,11 @@ install_skills() {
     fetch "$url" "$archive"
     tar -xz -f "$archive" -C "$extract_dir"
 
-    staged="${extract_dir}/.claude/skills"
-    [ -d "$staged" ] || die "skills archive is missing .claude/skills/"
+    staged="${extract_dir}/.agents/skills"
+    if [ ! -d "$staged" ]; then
+        staged="${extract_dir}/.claude/skills"
+    fi
+    [ -d "$staged" ] || die "skills archive is missing .agents/skills/ or .claude/skills/"
 
     installed=false
     for skill_dir in "$staged"/*; do
@@ -287,7 +290,7 @@ main() {
         info "try: veloq --help"
     fi
     if $INSTALL_SKILLS; then
-        info "Claude Code: skills land at $SKILLS_DIR/{nsys,ncu,pytorch}-profile-analysis"
+        info "Agent Skills: installed under $SKILLS_DIR/{nsys,ncu,pytorch}-profile-analysis"
     fi
 }
 

@@ -108,14 +108,24 @@ jobs:
       - name: Pack + checksum
         run: |
           # Reproducible: fixed owner/mtime so sha256s match for identical input.
+          staged="$(mktemp -d)"
+          mkdir -p "$staged/.agents" "$staged/.claude"
+          cp -R .agents/skills "$staged/.agents/skills"
+          cp -R .agents/skills "$staged/.claude/skills"
           tar -czf veloq-skills.tar.gz \
             --owner=root --group=root \
             --mtime='2026-01-01 00:00:00 UTC' \
+            -C "$staged" \
+            .agents/skills/ \
             .claude/skills/
           sha256sum veloq-skills.tar.gz > veloq-skills.tar.gz.sha256
           tar -tzf veloq-skills.tar.gz > /tmp/skill-listing.txt
+          grep -q "^.agents/skills/nsys-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
+          grep -q "^.agents/skills/ncu-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
+          grep -q "^.agents/skills/pytorch-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
           grep -q "^.claude/skills/nsys-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
           grep -q "^.claude/skills/ncu-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
+          grep -q "^.claude/skills/pytorch-profile-analysis/SKILL.md$" /tmp/skill-listing.txt
       - uses: actions/upload-artifact@v7
         with:
           name: skills
@@ -146,13 +156,15 @@ jobs:
             ```bash
             curl -fsSL https://raw.githubusercontent.com/lucifer1004/veloq/main/scripts/install.sh | bash
             ```
-            Installs the `veloq` binary under `~/.local/bin` and the two
-            Claude Code skills (`nsys-profile-analysis`,
-            `ncu-profile-analysis`) under `~/.claude/skills/`. Pass
-            `--no-skills` or `--no-binary` to install just one half.
+            Installs the `veloq` binary under `~/.local/bin` and the bundled
+            Agent Skills for profile analysis (`nsys-profile-analysis`,
+            `ncu-profile-analysis`, `pytorch-profile-analysis`) under
+            `~/.agents/skills/`. Pass `--no-skills` or `--no-binary` to install
+            just one half. Use `--skills-dir ~/.claude` for Claude-specific
+            installs.
 
             Already installed? `veloq self-update` pulls this release in
-            place — binary and bundled skills together.
+            place — binary and bundled Agent Skills together.
 
             ## Direct downloads
             Bare binaries and their `.sha256` checksums are attached below

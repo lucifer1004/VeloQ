@@ -1,0 +1,34 @@
+{
+  "name": "veloq",
+  "version": "0.2.0",
+  "description": "Agent Skills for Nsight Systems, Nsight Compute, and PyTorch/Kineto profile analysis with the VeloQ CLI.",
+  "author": {
+    "name": "Zihua Wu"
+  },
+  "homepage": "https://github.com/lucifer1004/veloq",
+  "repository": "https://github.com/lucifer1004/veloq",
+  "license": "MIT",
+  "keywords": [
+    "profiling",
+    "cuda",
+    "nsight",
+    "pytorch",
+    "veloq"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "VeloQ",
+    "shortDescription": "Analyze GPU profile traces with VeloQ-backed Agent Skills.",
+    "longDescription": "Reusable Agent Skills for analyzing Nsight Systems timelines, Nsight Compute kernel reports, and PyTorch/Kineto traces through the VeloQ CLI.",
+    "developerName": "Zihua Wu",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Skills"
+    ],
+    "defaultPrompt": [
+      "Analyze this GPU profile with VeloQ.",
+      "Find CPU overhead in this profile.",
+      "Investigate NCCL or kernel bottlenecks."
+    ]
+  }
+}

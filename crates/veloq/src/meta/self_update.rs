@@ -1,8 +1,8 @@
 //! `veloq self-update` — update the running binary *and* the bundled
-//! Claude Code skills to the latest GitHub release.
+//! Agent Skills to the latest GitHub release.
 //!
 //! A release ships both the binary (per-target archives) and a
-//! `veloq-skills.tar.gz` of the bundled profile-analysis skills.
+//! `veloq-skills.tar.gz` of the bundled Agent Skills.
 //! `scripts/install.sh` installs both; this verb keeps them in lockstep so
 //! a self-updated binary doesn't leave stale skills behind.
 //!
@@ -11,7 +11,7 @@
 //!   `install.sh`'s flags). Skills-only refreshes are for users who manage
 //!   the VeloQ CLI separately; the skills still require the CLI on `PATH`.
 //! - `--skills-dir <path>`: install skills under a different root — a
-//!   project-local `.claude`, an agent-agnostic `.agents`, etc. `skills/` is
+//!   project-local `.agents`, a Claude-specific `.claude`, etc. `skills/` is
 //!   appended unless already present, so the agent root or the full skills
 //!   dir both work (overrides `VELOQ_SKILLS_DIR`).
 //! - `--check`: report whether a newer release exists, with no side
@@ -40,7 +40,8 @@ const BIN_NAME: &str = "veloq";
 /// `{{ version }}` / `{{ target }}` / `{{ bin }}` placeholders at runtime.
 const BIN_PATH_IN_ARCHIVE: &str = "veloq-v{{ version }}-{{ target }}/{{ bin }}";
 /// Skills archive attached to every release. Its entries are prefixed
-/// `.claude/skills/<name>/...` (see the `skills` job in release.yml).
+/// `.agents/skills/<name>/...`; release archives also carry a `.claude/skills`
+/// compatibility alias for older installers (see the `skills` job in release.yml).
 const SKILLS_ASSET: &str = "veloq-skills.tar.gz";
 
 #[derive(Debug, Serialize)]
@@ -51,7 +52,7 @@ struct SelfUpdatePayload {
     /// True only when the binary was actually replaced (not when it was
     /// already current or `--no-binary` was passed).
     binary_updated: bool,
-    /// True when the bundled skills were (re)installed from the release.
+    /// True when the bundled Agent Skills were (re)installed from the release.
     skills_updated: bool,
     /// Where the skills were installed, when `skills_updated`.
     skills_dir: Option<String>,
@@ -61,7 +62,7 @@ struct SelfUpdatePayload {
 
 pub fn cli() -> Command {
     Command::new(VERB)
-        .about("Update the VeloQ binary and bundled skills to the latest GitHub release")
+        .about("Update the VeloQ binary and bundled Agent Skills to the latest GitHub release")
         .arg(
             Arg::new("check")
                 .long("check")
@@ -72,13 +73,15 @@ pub fn cli() -> Command {
             Arg::new("no-binary")
                 .long("no-binary")
                 .action(ArgAction::SetTrue)
-                .help("Update only the bundled skills; keep the binary manager you already use"),
+                .help(
+                    "Update only the bundled Agent Skills; keep the binary manager you already use",
+                ),
         )
         .arg(
             Arg::new("no-skills")
                 .long("no-skills")
                 .action(ArgAction::SetTrue)
-                .help("Update only the binary, not the bundled skills"),
+                .help("Update only the binary, not the bundled Agent Skills"),
         )
         .arg(
             Arg::new("skills-dir")
@@ -86,8 +89,8 @@ pub fn cli() -> Command {
                 .value_name("PATH")
                 .help(
                     "Install skills under this directory instead of the default \
-                     (~/.claude). `skills/` is appended unless already present, so \
-                     pass an agent root (.agents, ~/.claude) or a full skills dir. \
+                     (~/.agents). `skills/` is appended unless already present, so \
+                     pass an agent root (.agents, ~/.agents, ~/.claude) or a full skills dir. \
                      Overrides VELOQ_SKILLS_DIR.",
                 ),
         )
@@ -198,8 +201,8 @@ fn perform_binary_update(current: &str) -> MetaResult<bool> {
     Ok(!matches!(status, self_update::Status::UpToDate(_)))
 }
 
-/// Download `veloq-skills.tar.gz` for `version` and install the bundled skills
-/// under the Claude Code skills directory, overwriting any prior copy.
+/// Download `veloq-skills.tar.gz` for `version` and install the bundled Agent Skills
+/// under the Agent Skills directory, overwriting any prior copy.
 /// Returns the skills directory.
 fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> MetaResult<PathBuf> {
     let skills_dir = resolve_skills_dir(skills_dir_override)?;
@@ -227,18 +230,18 @@ fn update_skills(version: &str, skills_dir_override: Option<&Path>) -> MetaResul
         .extract_into(&extract_dir)
         .map_err(|source| MetaError::self_update_skills_extract(archive.display(), source))?;
 
-    // Tarball entries are `.claude/skills/<name>/...`.
-    let staged = extract_dir.join(".claude").join("skills");
+    let staged = staged_skills_dir(&extract_dir)?;
     install_staged_skills(&staged, &skills_dir)?;
     Ok(skills_dir)
 }
 
 /// Resolve the skills install directory. Precedence, highest first:
 /// `--skills-dir` (`override_dir`), `$VELOQ_SKILLS_DIR`, then the default
-/// agent home `$HOME/.claude` (`%USERPROFILE%` on Windows) — matching
+/// agent home `$HOME/.agents` (`%USERPROFILE%` on Windows) — matching
 /// `scripts/install.sh`. The chosen base is normalized by
 /// [`with_skills_leaf`], so a caller may pass either the agent root
-/// (`.agents`, `~/.claude`) or the full skills dir (`.agents/skills`).
+/// (`.agents`, `~/.agents`, `~/.claude`) or the full skills dir
+/// (`.agents/skills`).
 fn resolve_skills_dir(override_dir: Option<&Path>) -> MetaResult<PathBuf> {
     let base = if let Some(dir) = override_dir {
         dir.to_path_buf()
@@ -248,13 +251,13 @@ fn resolve_skills_dir(override_dir: Option<&Path>) -> MetaResult<PathBuf> {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .ok_or(MetaError::SelfUpdateHomeMissing)?;
-        PathBuf::from(home).join(".claude")
+        PathBuf::from(home).join(".agents")
     };
     Ok(with_skills_leaf(base))
 }
 
-/// Skills live under `<dir>/skills/` by convention (`.claude/skills`,
-/// `.agents/skills`, …) and consumers only read from a `skills/` subdir, so
+/// Skills live under `<dir>/skills/` by convention (`.agents/skills`,
+/// `.claude/skills`, …) and consumers only read from a `skills/` subdir, so
 /// append `skills` unless `dir` already ends in it. This lets callers pass
 /// the agent root or the full skills dir interchangeably.
 fn with_skills_leaf(dir: PathBuf) -> PathBuf {
@@ -263,6 +266,20 @@ fn with_skills_leaf(dir: PathBuf) -> PathBuf {
     } else {
         dir.join("skills")
     }
+}
+
+fn staged_skills_dir(extract_dir: &Path) -> MetaResult<PathBuf> {
+    let agents = extract_dir.join(".agents").join("skills");
+    if agents.is_dir() {
+        return Ok(agents);
+    }
+    let claude = extract_dir.join(".claude").join("skills");
+    if claude.is_dir() {
+        return Ok(claude);
+    }
+    Err(MetaError::SelfUpdateSkillsLayoutMissing {
+        path: format!("{} or {}", agents.display(), claude.display()),
+    })
 }
 
 /// Copy each `<name>/` skill from the extracted staging tree into
@@ -391,8 +408,10 @@ mod tests {
     #[test]
     fn install_staged_skills_replaces_and_strips_prefix() -> Result<()> {
         let tmp = tempfile::tempdir()?;
-        // Staged tree mirrors the extracted tarball: .claude/skills/<name>/...
-        let staged = tmp.path().join("extract").join(".claude").join("skills");
+        // Staged tree mirrors the preferred extracted tarball path:
+        // .agents/skills/<name>/...
+        let extract = tmp.path().join("extract");
+        let staged = extract.join(".agents").join("skills");
         fs::create_dir_all(staged.join("nsys-profile-analysis"))?;
         fs::write(staged.join("nsys-profile-analysis/SKILL.md"), "new nsys")?;
         fs::create_dir_all(staged.join("ncu-profile-analysis/references"))?;
@@ -404,6 +423,7 @@ mod tests {
         fs::create_dir_all(skills_dir.join("nsys-profile-analysis"))?;
         fs::write(skills_dir.join("nsys-profile-analysis/OLD.md"), "stale")?;
 
+        let staged = staged_skills_dir(&extract)?;
         install_staged_skills(&staged, &skills_dir)?;
 
         // Skills land at <skills_dir>/<name>/... (prefix stripped).
@@ -417,6 +437,17 @@ mod tests {
         );
         // The stale file is gone (the skill dir was replaced wholesale).
         assert!(!skills_dir.join("nsys-profile-analysis/OLD.md").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_skills_dir_falls_back_to_claude_alias() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let extract = tmp.path().join("extract");
+        let staged = extract.join(".claude").join("skills");
+        fs::create_dir_all(&staged)?;
+
+        assert_eq!(staged_skills_dir(&extract)?, staged);
         Ok(())
     }
 
@@ -442,8 +473,8 @@ mod tests {
             PathBuf::from("/x/.claude/skills")
         );
         assert_eq!(
-            with_skills_leaf(PathBuf::from("/x/.claude")),
-            PathBuf::from("/x/.claude/skills")
+            with_skills_leaf(PathBuf::from("/x/.agents")),
+            PathBuf::from("/x/.agents/skills")
         );
         Ok(())
     }
