@@ -5,12 +5,13 @@ id = "C-SOURCE-IDENTITY"
 title = "Source identity"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
 PyTorch success responses MUST set `source.kind` to `pytorch`.
 
-PyTorch success responses MUST set `source.version` to `v0` until a future source-version change explicitly replaces the experimental PyTorch wire contract.
+PyTorch success responses MUST set `source.version` to `v0` for the wire contract specified by this RFC until a future PyTorch source-version change explicitly replaces that contract.
 
 PyTorch handled error responses MUST set `source.kind` to `pytorch` when source context is known.
 
@@ -32,8 +33,8 @@ The PyTorch `schema` command MUST NOT require a trace input.
 
 The PyTorch `schema` command MUST omit `trace` and `trace_span` from its envelope.
 
-A breaking change to a PyTorch source payload after the source is advanced beyond `v0` MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+A breaking change to a PyTorch source payload MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]], including while the current PyTorch source version is `v0`.
 
 Consumers SHOULD treat PyTorch source version `v0` as experimental.
 
-**Rationale:** Source identity and command IDs are the dispatch context agents use after parsing an envelope. The explicit `v0` language keeps the current experimental source useful without overstating source-version stability."""
+**Rationale:** Source identity and command IDs are the dispatch context agents use after parsing an envelope. The explicit `v0` language keeps the current experimental source useful without exempting PyTorch from the source-version compatibility rules in [[RFC-0004:C-SOURCE-VERSION]]."""

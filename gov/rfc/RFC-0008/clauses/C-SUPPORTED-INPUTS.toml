@@ -5,6 +5,7 @@ id = "C-SUPPORTED-INPUTS"
 title = "Supported inputs"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """

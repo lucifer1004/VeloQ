@@ -5,6 +5,7 @@ id = "C-METRIC-ENUMS"
 title = "Metric enum fields"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """

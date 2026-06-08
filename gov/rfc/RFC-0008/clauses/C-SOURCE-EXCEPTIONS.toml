@@ -5,10 +5,11 @@ id = "C-SOURCE-EXCEPTIONS"
 title = "Source-specific output exceptions"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
-NCU has no stable raw-stdout success exception.
+NCU stable commands MUST NOT define a raw-stdout success exception.
 
 NCU JSON-mode successes MUST write exactly one VeloQ success envelope to stdout.
 

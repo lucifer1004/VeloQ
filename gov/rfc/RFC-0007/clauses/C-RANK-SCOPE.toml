@@ -5,10 +5,13 @@ id = "C-RANK-SCOPE"
 title = "Rank and local-axis scope"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
-A PyTorch trace with more than one discovered rank MUST require callers to choose a rank scope before running event-listing or event-aggregation commands that would otherwise mix rank-local identities.
+The rank-scoped PyTorch command set covered by this clause MUST be `search`, `stats`, `timeline`, `slices`, and `collectives`.
+
+A PyTorch trace with more than one discovered rank MUST require callers to choose a rank scope before any rank-scoped PyTorch command produces result rows.
 
 A PyTorch trace with more than one discovered rank MUST allow callers to choose one rank using `--rank <n>` where the command exposes rank scope.
 
@@ -36,4 +39,4 @@ A PyTorch scope echo in response `auxiliary.scope` MUST expose selected `rank` a
 
 A PyTorch scope echo in response `auxiliary.scope.aggregated_over` MUST include `rank` when `--all-ranks` was used.
 
-**Rationale:** Rank, CUDA device, and CUDA stream identities are not globally unique in PyTorch traces. Explicit hierarchy validation prevents false aggregation and makes agent-generated commands self-describing."""
+**Rationale:** Rank, CUDA device, and CUDA stream identities are not globally unique in PyTorch traces. Explicit hierarchy validation prevents false aggregation and makes agent-generated commands self-describing. Naming the rank-scoped command set keeps the rule testable while leaving non-listing drill commands such as `inspect` and `correlate` outside this scope gate."""

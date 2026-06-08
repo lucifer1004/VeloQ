@@ -5,6 +5,7 @@ id = "C-COMMAND-SURFACE"
 title = "Command surface"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
@@ -12,7 +13,7 @@ The PyTorch source-owned command surface MUST include `summary`, `search`, `insp
 
 The PyTorch source-owned command surface MUST preserve the source command rules in [[RFC-0004:C-COMMAND-SURFACE]].
 
-The PyTorch `schema` command MUST emit a normal VeloQ JSON envelope.
+The PyTorch `schema` command MUST emit a VeloQ success envelope that conforms to [[RFC-0002:C-SUCCESS-RESPONSE]].
 
 The PyTorch `schema` command envelope `data` field MUST contain the requested JSON schema document.
 
@@ -20,13 +21,15 @@ The PyTorch `schema` command MUST omit `trace` because it does not inspect a tra
 
 The PyTorch `schema` command target set MUST include `summary`, `search`, `inspect`, `stats`, `correlate`, `timeline`, `slices`, `collectives`, and `prep`.
 
-The PyTorch `schema` command targets SHOULD be treated as the complete response field inventory for their corresponding PyTorch payloads.
+The PyTorch `schema` command targets MUST be treated as the complete response field inventory for their corresponding PyTorch payloads.
 
 A gated hidden or unstable PyTorch command or schema target MUST NOT be treated as part of the public command surface until this clause explicitly lists it.
 
 A command added to the PyTorch public command surface MUST either conform to [[RFC-0002]], [[RFC-0003]], [[RFC-0004]], and this RFC, or document a PyTorch-specific exception in this RFC.
 
-PyTorch JSON-mode successes and handled diagnostics MUST use normal VeloQ envelopes.
+PyTorch JSON-mode successes MUST use VeloQ success envelopes that conform to [[RFC-0002:C-SUCCESS-RESPONSE]].
+
+PyTorch JSON-mode handled diagnostics MUST use VeloQ error envelopes that conform to [[RFC-0002:C-ERROR-RESPONSE]].
 
 PyTorch CSV and table projections MUST follow [[RFC-0002:C-FORMAT-PROJECTIONS]].
 
@@ -34,4 +37,4 @@ PyTorch source-owned commands MUST NOT write progress output to stdout in JSON m
 
 PyTorch source-owned commands MUST NOT define a raw-stdout success exception unless this RFC is amended to list that exception.
 
-**Rationale:** The command surface is part of the external agent contract. Keeping JSON-mode stdout envelope-shaped is especially important for PyTorch `prep`, where cache-building progress must not corrupt machine-readable output."""
+**Rationale:** The command surface is part of the external agent contract. Keeping JSON-mode stdout envelope-shaped is especially important for PyTorch `prep`, where cache-building progress must not corrupt machine-readable output. Treating schema targets as authoritative keeps compatibility checks grounded in the shipped response inventories rather than in private implementation details."""

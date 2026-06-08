@@ -5,6 +5,7 @@ id = "C-EVENT-REF"
 title = "EventRef objects"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
