@@ -4,10 +4,11 @@
 id = "RFC-0006"
 title = "NSys source wire contract"
 version = "0.1.0"
-status = "draft"
-phase = "spec"
+status = "normative"
+phase = "stable"
 owners = ["@Zihua Wu"]
 created = "2026-06-08"
+updated = "2026-06-08"
 refs = [
     "RFC-0001",
     "RFC-0002",

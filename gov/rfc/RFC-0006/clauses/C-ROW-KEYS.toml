@@ -5,6 +5,7 @@ id = "C-ROW-KEYS"
 title = "Concrete row keys"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
@@ -64,14 +65,24 @@ An NSys `graph-replays` row key MUST use `graph-replay|<synthetic_id>`.
 
 An NSys `hardware` row key MUST use `host|<hostname>`.
 
-An NSys GPU `metrics` row key MUST use `counter|type:<type_id>|metric:<metric_id>`.
+An NSys GPU `metrics.rows[]` row key MUST use `counter|type:<type_id>|metric:<metric_id>`.
 
-An NSys NIC `metrics` row key MUST use `nic_counter|nic:<id>|port:<id>|metric:<idx>`.
+An NSys GPU `metrics.auxiliary.buckets[]` row key MUST use `bucket|<t_start_ns>|type:<type_id>|metric:<metric_id>`.
 
-An NSys CPU sampling `metrics` row key MUST use the selected grouping identity: bare `<symbol>`, `<module-basename>`, `<tid>`, or `<cpu>`.
+An NSys NIC `metrics.rows[]` row key MUST use `nic_counter|nic:<id>|port:<id>|metric:<idx>`.
 
-An NSys CPU scheduler `metrics` row key MUST use the selected grouping identity: `tid:<id>`, `cpu:<id>`, or `state:<name>`.
+An NSys NIC `metrics.auxiliary.buckets[]` row key MUST use `nic_bucket|<t_start_ns>|nic:<id>|port:<id>|metric:<idx>`.
+
+An NSys CPU sampling `metrics.rows[]` row key MUST use the selected grouping identity: bare `<symbol>`, `<module-basename>`, `<tid>`, `<cpu>`, or `stack|<stack_hash>`.
+
+An NSys CPU sampling `metrics.auxiliary.cpu_buckets[]` row key MUST use the selected non-stack grouping identity: bare `<symbol>`, `<module-basename>`, `<tid>`, or `<cpu>`.
+
+An NSys CPU scheduler `metrics.rows[]` row key MUST use the selected grouping identity: `tid:<id>`, `cpu:<id>`, or `state:<name>`.
+
+An NSys CPU scheduler `metrics.auxiliary.cpu_buckets[]` row key MUST use the selected grouping identity: `tid:<id>`, `cpu:<id>`, or `state:<name>`.
 
 A command that emits a canonical NSys list row and is not listed in this clause MUST define its row key format before the command is advanced as a stable public surface.
 
-**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but intentionally leaves concrete formats to source and verb contracts. These NSys formats are equality keys for cross-trace comparison, not a general key-parsing language."""
+A command that emits a stable NSys auxiliary list whose rows carry `key` MUST define that auxiliary row key format before the command or mode is advanced as a stable public surface.
+
+**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but intentionally leaves concrete formats to source and verb contracts. These NSys formats are equality keys for cross-trace comparison, not a general key-parsing language. Metrics bucket arrays are documented here because they are stable auxiliary lists used for time-series comparison."""

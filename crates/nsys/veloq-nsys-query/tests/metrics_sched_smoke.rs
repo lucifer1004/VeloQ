@@ -156,6 +156,11 @@ fn bucket_mode_emits_clipped_long_form() -> Result<()> {
     assert!(r.rows.is_empty(), "bucket mode skips summary");
     assert!(!r.auxiliary.cpu_buckets.is_empty());
     for b in &r.auxiliary.cpu_buckets {
+        assert!(
+            b.key.starts_with("tid:"),
+            "default cpu-sched bucket key should use tid axis; got `{}`",
+            b.key
+        );
         assert_eq!(b.agg, "sum");
         // Every bucket carries strictly positive on-cpu time and
         // matches the bucket width (5ms) since quanta are exact

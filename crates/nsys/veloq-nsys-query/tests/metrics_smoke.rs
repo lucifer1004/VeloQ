@@ -105,6 +105,10 @@ fn summary_covers_both_counters() -> Result<()> {
 
     // Counter 0 (Throughput %): values 0,10,…,90 → min=0, max=90, mean=45.
     let sms = counter_by_id(&r.rows, 0)?;
+    assert_eq!(
+        sms.key,
+        format!("counter|type:{}|metric:{}", sms.type_id, sms.metric_id)
+    );
     assert_eq!(sms.unit.as_deref(), Some("Throughput %"));
     assert_eq!(sms.agg, "mean");
     assert_eq!(sms.samples, 10);
@@ -114,6 +118,10 @@ fn summary_covers_both_counters() -> Result<()> {
 
     // Counter 1 (Requests): constant 4 → mean=4, sum-agg.
     let pcie = counter_by_id(&r.rows, 1)?;
+    assert_eq!(
+        pcie.key,
+        format!("counter|type:{}|metric:{}", pcie.type_id, pcie.metric_id)
+    );
     assert_eq!(pcie.unit.as_deref(), Some("Requests"));
     assert_eq!(pcie.agg, "sum");
     assert_eq!(pcie.samples, 10);
@@ -266,6 +274,13 @@ fn bucket_mode_emits_long_form_rows() -> Result<()> {
     let b1 = sms
         .get(1)
         .ok_or_else(|| anyhow!("missing bucket 1 for metric 0"))?;
+    assert_eq!(
+        b0.key,
+        format!(
+            "bucket|{}|type:{}|metric:{}",
+            b0.t_start_ns, b0.type_id, b0.metric_id
+        )
+    );
     assert_eq!(b0.agg, "mean");
     assert!((b0.value - 20.0).abs() < 1e-9);
     assert!((b1.value - 70.0).abs() < 1e-9);
@@ -279,6 +294,13 @@ fn bucket_mode_emits_long_form_rows() -> Result<()> {
     let p1 = pcie
         .get(1)
         .ok_or_else(|| anyhow!("missing bucket 1 for metric 1"))?;
+    assert_eq!(
+        p0.key,
+        format!(
+            "bucket|{}|type:{}|metric:{}",
+            p0.t_start_ns, p0.type_id, p0.metric_id
+        )
+    );
     assert_eq!(p0.agg, "sum");
     assert!((p0.value - 20.0).abs() < 1e-9);
     assert!((p1.value - 20.0).abs() < 1e-9);

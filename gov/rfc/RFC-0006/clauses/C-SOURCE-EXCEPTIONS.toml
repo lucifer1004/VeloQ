@@ -5,6 +5,7 @@ id = "C-SOURCE-EXCEPTIONS"
 title = "Source-specific output exceptions"
 kind = "normative"
 status = "active"
+since = "0.1.0"
 
 [content]
 text = """
@@ -24,8 +25,24 @@ text = """
 
 `ncu-command` without `--print` MUST use the normal JSON envelope contract.
 
+NSys `metrics --bucket` MAY return its time-series rows under the source-specific auxiliary bucket list instead of `data.rows[]`.
+
+NSys GPU and NIC `metrics --bucket` responses MUST place bucket rows under `data.auxiliary.buckets[]`.
+
+NSys CPU sampling and CPU scheduler `metrics --bucket` responses MUST place bucket rows under `data.auxiliary.cpu_buckets[]`.
+
+NSys `metrics --bucket` responses MUST leave `data.rows[]` empty.
+
+NSys `metrics --bucket` response `count` MUST equal the number of returned bucket rows in the active auxiliary bucket list.
+
+NSys `metrics --bucket` response `total_matched` MUST equal the number of matching bucket rows before response limiting.
+
+NSys `metrics --bucket` auxiliary bucket rows MUST carry row keys defined by [[RFC-0006:C-ROW-KEYS]].
+
+NSys metrics responses without `--bucket` MUST use normal canonical `data.rows[]` list semantics.
+
 NSys JSON-mode handled diagnostics MUST follow [[RFC-0002:C-ERROR-RESPONSE]] and [[RFC-0002:C-STDOUT-STDERR]].
 
 NSys CSV and table outputs MUST follow [[RFC-0002:C-FORMAT-PROJECTIONS]].
 
-**Rationale:** `ncu-command --print` is designed to be piped directly into a shell or saved by a caller, so its raw stdout behavior is intentional. Other NSys commands remain envelope-shaped for agent parsing."""
+**Rationale:** `ncu-command --print` is designed to be piped directly into a shell or saved by a caller, so its raw stdout behavior is intentional. Metrics bucket mode is a source-specific time-series projection whose bucket rows have source-dependent shapes that differ from the summary rows in `data.rows[]`; documenting the exception preserves current agent-readable behavior while making its pagination and key semantics explicit. Other NSys commands remain envelope-shaped for agent parsing."""
