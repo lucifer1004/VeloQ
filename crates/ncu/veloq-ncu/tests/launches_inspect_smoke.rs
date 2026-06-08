@@ -13,6 +13,29 @@ fn fixture() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vector_add_basic.ncu-rep")
 }
 
+fn assert_not_found_row(
+    row: &LaunchDetailsRow,
+    expected_row_id: &str,
+    reason_needle: &str,
+) -> Result<()> {
+    match row {
+        LaunchDetailsRow::NotFound {
+            key,
+            row_id,
+            reason,
+        } => {
+            assert_eq!(key, expected_row_id);
+            assert_eq!(row_id, expected_row_id);
+            assert!(
+                reason.contains(reason_needle),
+                "reason should mention `{reason_needle}` ({reason})"
+            );
+        }
+        LaunchDetailsRow::Launch(_) => bail!("expected NotFound for `{expected_row_id}` row_id"),
+    }
+    Ok(())
+}
+
 #[test]
 fn launches_lists_every_launch_with_v2_headline_columns() -> Result<()> {
     let r = launches::run(
@@ -125,30 +148,46 @@ fn inspect_resolves_launch_row_id_to_full_details() -> Result<()> {
 fn inspect_out_of_range_row_id_returns_not_found_not_error() -> Result<()> {
     let r = inspect::run(fixture(), &["launch:42".into()])?;
     assert_eq!(r.count, 1);
-    match r.rows.first().ok_or_else(|| anyhow!("expected one row"))? {
-        LaunchDetailsRow::NotFound { row_id, reason, .. } => {
-            assert_eq!(row_id, "launch:42");
-            assert!(
-                reason.contains("out of range"),
-                "reason should explain why ({reason})"
-            );
-        }
-        LaunchDetailsRow::Launch(_) => bail!("expected NotFound for out-of-range row_id"),
-    }
+    assert_not_found_row(
+        r.rows.first().ok_or_else(|| anyhow!("expected one row"))?,
+        "launch:42",
+        "out of range",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn inspect_malformed_row_ids_return_not_found_not_error() -> Result<()> {
+    let row_ids = vec!["launch0".to_string(), "launch:abc".to_string()];
+    let r = inspect::run(fixture(), &row_ids)?;
+    assert_eq!(r.count, row_ids.len());
+    assert_eq!(r.total_matched, row_ids.len());
+
+    let mut rows = r.rows.iter();
+    assert_not_found_row(
+        rows.next().ok_or_else(|| anyhow!("expected first row"))?,
+        "launch0",
+        "expected",
+    )?;
+    assert_not_found_row(
+        rows.next().ok_or_else(|| anyhow!("expected second row"))?,
+        "launch:abc",
+        "invalid launch index",
+    )?;
+    assert!(
+        rows.next().is_none(),
+        "inspect should return one row per requested row_id"
+    );
     Ok(())
 }
 
 #[test]
 fn inspect_rejects_unknown_row_id_kinds_as_not_found() -> Result<()> {
     let r = inspect::run(fixture(), &["range:0".into()])?;
-    match r.rows.first().ok_or_else(|| anyhow!("expected one row"))? {
-        LaunchDetailsRow::NotFound { reason, .. } => {
-            assert!(
-                reason.contains("launch:<idx>"),
-                "should hint at the supported form ({reason})"
-            );
-        }
-        LaunchDetailsRow::Launch(_) => bail!("expected NotFound for `range:0` row_id"),
-    }
+    assert_not_found_row(
+        r.rows.first().ok_or_else(|| anyhow!("expected one row"))?,
+        "range:0",
+        "launch:<idx>",
+    )?;
     Ok(())
 }

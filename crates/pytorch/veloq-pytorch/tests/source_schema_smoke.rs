@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::FromArgMatches;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use veloq_core::ProfileSource;
@@ -13,10 +14,38 @@ fn source_detects_pytorch_inputs() -> Result<()> {
     let trace_path = dir.path().join("worker0.pt.trace.json");
     fs::write(&trace_path, r#"{"traceEvents":[]}"#)?;
     let source = PytorchSource;
+    assert_eq!(source.kind(), "pytorch");
+    assert_eq!(source.version(), "v0");
     assert!(source.detect(&trace_path));
     assert!(!source.detect(dir.path()));
     assert!(!source.detect(&dir.path().join("report.ncu-rep")));
     Ok(())
+}
+
+#[test]
+fn stable_command_surface_matches_rfc_0007() {
+    let actual: BTreeSet<String> = PytorchSource
+        .cli()
+        .get_subcommands()
+        .map(|cmd| cmd.get_name().to_string())
+        .collect();
+    let expected: BTreeSet<String> = [
+        "collectives",
+        "correlate",
+        "inspect",
+        "prep",
+        "schema",
+        "search",
+        "slices",
+        "stats",
+        "summary",
+        "timeline",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+
+    assert_eq!(actual, expected);
 }
 
 #[test]

@@ -193,6 +193,26 @@ fn pytorch_search_and_stats_rank_scope_errors_are_recoverable() -> Result<()> {
 }
 
 #[test]
+fn pytorch_timeline_and_slices_rank_scope_errors_are_recoverable() -> Result<()> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let trace = write_multi_rank_pytorch_trace(&dir)?;
+    let trace_arg = trace.to_string_lossy().into_owned();
+
+    let timeline = run_veloq([
+        "pytorch",
+        "timeline",
+        trace_arg.as_str(),
+        "--interval",
+        "1ms",
+    ])?;
+    assert_pytorch_rank_scope_error(&timeline, "pytorch.timeline", trace_arg.as_str())?;
+
+    let slices = run_veloq(["pytorch", "slices", trace_arg.as_str()])?;
+    assert_pytorch_rank_scope_error(&slices, "pytorch.slices", trace_arg.as_str())?;
+    Ok(())
+}
+
+#[test]
 fn pytorch_collectives_rank_scope_error_is_recoverable() -> Result<()> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let trace = write_multi_rank_pytorch_trace(&dir)?;

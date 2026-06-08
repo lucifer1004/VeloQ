@@ -87,9 +87,15 @@ on `data.format` (`"long"` vs `"per_launch"`) before reading
 long-only fields such as `counter_name` or wide-only fields such as
 `counters`.
 
+`ncu inspect` is partial-batch friendly: out-of-range, malformed, or
+unsupported-kind row ids return success rows tagged `type: "not_found"`.
+Other NCU drill verbs may reject invalid row ids with handled diagnostic
+errors.
+
 Failure replaces `data` with `error: { message, chain }`. Parse
 stdout, not stderr. `veloq ncu schema <target>` returns the
-schemars-derived JSON Schema for any verb's response.
+schemars-derived JSON Schema for any verb's response; schema targets are
+the authoritative response field inventory.
 
 ## Data Integrity
 

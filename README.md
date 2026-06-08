@@ -307,7 +307,10 @@ Every successful JSON call returns the source-qualified v1 envelope:
   `ncu inspect` metric's
   `metric_type` / `metric_subtype` / `rollup` is the `ncu_report` enum
   _name_ such as `"counter"` rather than the integer `1`, with the raw
-  integer kept alongside as `*_code`).
+  integer kept alongside as `*_code`). PyTorch reports `v0`: it is
+  experimental, but documented response fields, schema-target
+  inventories, row ids/keys, command ids, and output-mode semantics are
+  still part of the versioned source contract.
 - `command` — qualified as `<source>.<verb>` for source verbs
   (`nsys.stats`, `ncu.summary`), or just `<verb>` for meta verbs
   (`info`, `sources`, `clean`).
@@ -398,7 +401,7 @@ schema` is JSON-only.
 | --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ncu summary`         | json / csv / table | Slim overview: one launch-derived totals row + degraded session (NCU version only). `--format csv\|table` renders the totals + session as a `section,key,value` projection.                                                                |
 | `ncu launches`        | json / csv / table | List CUDA kernel launches as headline rows (`launch:<idx>`); filters: `--kernel '<glob>'`, `--nvtx-range '<glob>'`, `--grid WxHxD`, `--block WxHxD`, `--limit`                                                                             |
-| `ncu inspect`         | json / csv / table | Full per-launch payload (full metric list with placement-tagged instances + rules + recovered identity scalars) for one or more `--row-id launch:<idx>`; tabular emits one wide row per id with NULL columns for `not_found` variants      |
+| `ncu inspect`         | json / csv / table | Full per-launch payload (full metric list with placement-tagged instances + rules + recovered identity scalars) for one or more `--row-id launch:<idx>`; malformed, unsupported-kind, and out-of-range ids return `not_found` rows so partial batches survive |
 | `ncu metrics`         | json / csv / table | Cross-launch metric projection. Default long form (one row per `(launch, counter)`); `--per-launch` for wide form (BTreeMap counters expand to one column per name)                                                                        |
 | `ncu disasm`          | json / csv / table | SASS / PTX / source-index correlation for the cubin one launch ran out of (cubin extracted from the report, cached per-cubin under `<report>.veloq/disasm/`); tabular emits one row per SASS instruction with denormalised kernel identity |
 | `ncu source-metrics`  | json / csv / table | Per-source-line / per-SASS / per-file NCU counter attribution. Joins per-PC metric instances with DWARF source-line attribution; `--by line\|sass\|file`. See `veloq recipes source-line-hotspots` for the canonical invocation.           |
@@ -406,15 +409,20 @@ schema` is JSON-only.
 | `ncu ranges`          | json / csv / table | List range workloads (`--replay-mode range`)                                                                                                                                                                                               |
 | `ncu graphs`          | json / csv / table | List CUDA-graph workloads (`--graph-profiling graph`)                                                                                                                                                                                      |
 | `ncu sources`         | json / csv / table | Per-cubin source metadata (`cuda_sm_name`, `embedded_source_file_count`, `has_disasm`), one row per launch's cubin                                                                                                                         |
-| `ncu schema <target>` | json               | Strict JSON Schema for one NCU response. Targets: `summary \| launches \| inspect \| metrics \| disasm \| ranges \| graphs \| sources \| source-metrics \| warp-stalls`                                                                    |
+| `ncu schema <target>` | json               | Strict JSON Schema for one NCU response. Targets are the response field inventory: `summary \| launches \| inspect \| metrics \| disasm \| ranges \| graphs \| sources \| source-metrics \| warp-stalls`                                  |
+
+NCU drill verbs other than `inspect` may return handled diagnostic
+errors for malformed, unsupported-kind, or out-of-range launch row ids.
 
 ### PyTorch verbs (namespaced under `pytorch`)
 
 PyTorch is an experimental `source.version = "v0"` source for Kineto
 Chrome trace files (`.pt.trace.json` / `.pt.trace.json.gz`). Directory
 inputs and cross-rank collective skew are planned, not shipped in v0.
-When one trace file contains multiple rank values, rank-scoped list and
-aggregate commands require `--rank <n>` or `--all-ranks`.
+When one trace file contains multiple rank values, rank-scoped commands
+(`search`, `stats`, `timeline`, `slices`, and `collectives`) require
+`--rank <n>` or `--all-ranks`. `inspect` and `correlate` operate on
+explicit row ids and are not rank-scope gated.
 CUDA device ids are rank-local in multi-rank traces, and stream ids are
 device-local: use `--rank <n> --device <id> --stream <id>` for a fixed
 stream, or project parent axes with `--group-by rank,device,stream` for
@@ -435,7 +443,7 @@ source-specific `collectives` verb.
 | `pytorch slices`          | json / csv / table | ProfilerStep and user annotation range instances or aggregates                                                |
 | `pytorch collectives`     | json / csv / table | Single-trace communication groups with CPU/NCCL evidence row ids and link/ordinal confidence                  |
 | `pytorch prep`            | json / csv / table | Build or inspect PyTorch sidecars under `<input>.veloq/pytorch/`                                              |
-| `pytorch schema <target>` | json               | Strict JSON Schema for one PyTorch response                                                                   |
+| `pytorch schema <target>` | json               | Strict JSON Schema for one PyTorch response; schema targets are the response field inventory                   |
 
 ### Meta verbs (root, owned by the binary)
 

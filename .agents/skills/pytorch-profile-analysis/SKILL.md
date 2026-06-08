@@ -43,6 +43,8 @@ with `summary`, `search`, `inspect`, `stats`, `correlate`, `timeline`,
 PyTorch row ids use `<kind>:<stable_index>`, where the stable index is
 derived from the original `traceEvents` order after non-event flow markers
 are skipped. Do not use Kineto `Ev Idx` as a stable key.
+Use `veloq pytorch schema <target>` for the authoritative response field
+inventory; do not infer the public contract from raw Kineto fields.
 
 Common prefixes:
 
@@ -123,9 +125,12 @@ Common prefixes:
 
    `collectives` groups single-trace communication evidence and reports
    linked CPU/NCCL row ids. If a trace file contains multiple rank values,
-   pass `--rank <n>` or `--all-ranks`. Device ids are rank-local and stream
-   ids are device-local: filter a stream with `--rank <n> --device <id>
-   --stream <id>`, or compare lanes with `--group-by rank,device,stream`.
+   rank-scoped commands (`search`, `stats`, `timeline`, `slices`, and
+   `collectives`) require `--rank <n>` or `--all-ranks`. `inspect` and
+   `correlate` operate on explicit row ids and are not rank-scope gated.
+   Device ids are rank-local and stream ids are device-local: filter a
+   stream with `--rank <n> --device <id> --stream <id>`, or compare lanes
+   with `--group-by rank,device,stream`.
    It does not compute cross-rank skew
    in v0:
 
@@ -145,4 +150,6 @@ focus on NCCL kernels.
 
 PyTorch support is experimental (`source.version = "v0"`). Classification
 is based on Kineto category/name/arg conventions and may need extension
-for profiler variants not yet represented by tests.
+for profiler variants not yet represented by tests. Treat documented
+fields, schema targets, row ids/keys, command ids, and output modes as the
+versioned source contract even while the source remains `v0`.

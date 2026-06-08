@@ -3,10 +3,11 @@
 This file is for agents/contributors **developing VeloQ itself**
 (adding verbs, profile sources, fixes, refactors). User-facing
 agents that use `veloq` as a black-box CLI to analyze profiles
-should read the skills under `.claude/skills/`:
+should read the skills under `.agents/skills/`:
 
-- `.claude/skills/nsys-profile-analysis/` — Nsight Systems timelines
-- `.claude/skills/ncu-profile-analysis/` — Nsight Compute kernel reports
+- `.agents/skills/nsys-profile-analysis/` — Nsight Systems timelines
+- `.agents/skills/ncu-profile-analysis/` — Nsight Compute kernel reports
+- `.agents/skills/pytorch-profile-analysis/` — PyTorch/Kineto traces
 
 VeloQ (velo-query) is a profile-query CLI family. Pure CLI in /
 JSON contract out by default, CSV/table projections for row-shaped
@@ -98,6 +99,17 @@ version).
    matching axes — modulo `trace_span.origin_ns` if the recipe
    needs wall-clock normalization first.
 
+   NCU launch row ids are `launch:<idx>`. `ncu inspect` is
+   partial-batch friendly: out-of-range, malformed, and unsupported-kind
+   row ids return success rows tagged `type: "not_found"` with `key` and
+   `row_id` equal to the requested id. Other NCU drill verbs may reject
+   invalid launch row ids with handled diagnostic errors.
+
+   PyTorch rank-scoped commands are `search`, `stats`, `timeline`,
+   `slices`, and `collectives`. On multi-rank traces they must require
+   either `--rank <n>` or `--all-ranks`; `inspect` and `correlate` operate
+   on explicit row ids and are not rank-scope gated.
+
 3. **Per-source version (`SourceRef.version`)**: bumps independently
    from `ENVELOPE_VERSION` on any breaking shape change to that
    source's payloads. Today NSys is `v1` (`stats --group-by nvtx-path`
@@ -108,7 +120,10 @@ version).
    keeps only the NCU version), with the wire reporting each `ncu inspect` metric's `metric_type` /
    `metric_subtype` / `rollup` as the `ncu_report` enum _name_
    (`"counter"` rather than `1`), the raw integer kept alongside as
-   `*_code`.
+   `*_code`; PyTorch is `v0` — experimental, but documented fields,
+   schema-target inventories, row ids/keys, command ids, and output-mode
+   semantics are still covered by the source-version compatibility
+   boundary.
 4. **`RowId` is round-trippable**:
    `<kind>:<sqlite-compatible-rowid>` on the wire
    (`veloq_nsys_query::RowId`). Bit-packing stays inside the
@@ -408,6 +423,6 @@ one line plus the source crate.
       gate above runs `--all-targets` to actually enforce them on
       integration tests too. Use `ok_or_else` + `?` instead.
 - [ ] New subcommand → updated this file's roadmap + README
-      example + matching `.claude/skills/*` profile-analysis skill
+      example + matching `.agents/skills/*` profile-analysis skill
       (the skill is the user-facing contract description; this
       file is the maintainer-side invariant).
