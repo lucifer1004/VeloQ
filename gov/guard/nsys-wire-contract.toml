@@ -1,0 +1,19 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-NSYS-WIRE-CONTRACT"
+title = "NSys wire contract"
+refs = [
+    "RFC-0006",
+    "RFC-0006:C-SOURCE-IDENTITY",
+    "RFC-0006:C-COMMAND-SURFACE",
+    "RFC-0006:C-ROW-ID",
+    "RFC-0006:C-EVENT-REF",
+    "RFC-0006:C-ROW-KEYS",
+    "RFC-0006:C-NVTX-IDENTITY",
+    "RFC-0006:C-SOURCE-EXCEPTIONS",
+]
+
+[check]
+command = "bash -c 'cargo test --profile ci -p veloq-nsys && cargo test --profile ci -p veloq --test cli_smoke schema_endpoint_emits_envelope_without_trace && cargo test --profile ci -p veloq --test cli_smoke summary_happy_path_emits_full_envelope && cargo test --profile ci -p veloq --test cli_smoke schema_bad_target_omits_trace_field && cargo test --profile ci -p veloq --test cli_smoke nsys_ncu_command_print_emits_only_shell_script && cargo test --profile ci -p veloq --test cli_smoke nsys_ncu_command_print_error_keeps_stdout_empty && cargo test --profile ci -p veloq-nsys-query'"
+timeout_secs = 1200

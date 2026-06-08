@@ -144,3 +144,36 @@ fn emit_err(
 ) {
     crate::output::emit_error(verb, trace, trace_span, err, fmt);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::fs;
+
+    #[test]
+    fn detect_claims_nsys_wire_inputs() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+
+        let direct_pqtdir = dir.path().join("trace_pqtdir");
+        fs::create_dir_all(&direct_pqtdir)?;
+
+        let generated = veloq_nsys_data::nsys_rep::pqtdir_path_for(&source);
+        fs::create_dir_all(&generated)?;
+
+        let sqlite = dir.path().join("trace.sqlite");
+        fs::write(&sqlite, b"sqlite")?;
+
+        let orphan_generated = dir.path().join("missing.nsys-rep.veloq/parquetdir");
+        fs::create_dir_all(&orphan_generated)?;
+
+        assert!(NsysSource.detect(&source));
+        assert!(NsysSource.detect(&direct_pqtdir));
+        assert!(NsysSource.detect(&generated));
+        assert!(!NsysSource.detect(&sqlite));
+        assert!(!NsysSource.detect(&orphan_generated));
+        Ok(())
+    }
+}

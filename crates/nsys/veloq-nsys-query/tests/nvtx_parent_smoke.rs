@@ -733,6 +733,7 @@ fn nvtx_parent_attribution_agrees_with_search_with_nvtx() -> Result<()> {
             kinds: KindFilter::Only(vec![EventKind::Kernel]),
             group_by: GroupBy {
                 nvtx_parent: true,
+                device: true,
                 stream: true,
                 ..Default::default()
             },

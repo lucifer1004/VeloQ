@@ -947,6 +947,12 @@ fn summary_happy_path_emits_full_envelope() -> Result<()> {
         Some("nsys"),
     );
     assert_eq!(
+        v.get("source")
+            .and_then(|s| s.get("version"))
+            .and_then(Value::as_str),
+        Some("v1"),
+    );
+    assert_eq!(
         v.get("trace")
             .and_then(|t| t.get("kind"))
             .and_then(Value::as_str),
@@ -2721,6 +2727,12 @@ fn schema_bad_target_omits_trace_field() -> Result<()> {
             .and_then(|s| s.get("kind"))
             .and_then(Value::as_str),
         Some("nsys"),
+    );
+    assert_eq!(
+        v.get("source")
+            .and_then(|s| s.get("version"))
+            .and_then(Value::as_str),
+        Some("v1"),
     );
     // The bug: `trace` was present with `path: ""`. Fixed contract:
     // schema is a meta endpoint with no trace, so the field must be
