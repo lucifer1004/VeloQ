@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-06-07
+
+### Added
+
+- **Codex plugin marketplace** — repo-local Codex plugin metadata and
+  marketplace entries now install the VeloQ Agent Skills with
+  `codex plugin marketplace add .` followed by `codex plugin add veloq@veloq`.
+
+### Changed
+
+- **Agent Skills layout** — the canonical repo source and default install root
+  moved to `.agents/skills`, with `.claude/skills` kept as a compatibility
+  alias. Release skill archives include both `.agents/skills` and
+  `.claude/skills` so old installers keep working while new installs default
+  to the agent-neutral path.
+- **Distribution docs** — installer, self-update, website, and plugin metadata
+  now use Agent Skills terminology and the official VeloQ branding.
+- **Prep stdout coverage** — CLI smoke coverage now guards that prep/export
+  progress stays off stdout so JSON output remains parseable.
+
 ## [0.2.0] - 2026-06-07
 
 ### Added
@@ -22,10 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Distribution** — installer and self-update Agent Skills installs replace
   each bundled skill directory wholesale, so files removed from a later release do
   not linger from an older install.
-- **Agent Skills layout** — the canonical repo source and default install root
-  moved to `.agents/skills`, with `.claude/skills` kept as a compatibility
-  alias and `.codex-plugin/` plus a repo-local Codex marketplace added for
-  Codex plugin installs.
 
 ## [0.1.0] - 2026-06-04
 
@@ -60,5 +76,6 @@ Initial public release.
   `nsys-profile-analysis` and `ncu-profile-analysis` Agent Skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
+[0.2.1]: https://github.com/lucifer1004/veloq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lucifer1004/veloq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucifer1004/veloq/releases/tag/v0.1.0
