@@ -620,13 +620,8 @@ fn build_stream_sql(
     abs_window: Option<(i64, i64)>,
 ) -> NsysQueryResult<(String, Vec<Value>)> {
     let mut where_parts: Vec<String> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
+    let (event_ctes, event_source, mut params) = build_stream_event_input(union, req, abs_window);
 
-    crate::kind_policy::LocationFilter {
-        device: req.device,
-        stream: req.stream,
-    }
-    .push_where(&mut where_parts, &mut params);
     if let Some((s, e)) = abs_window {
         where_parts.push("gap_start_ns < ? AND gap_end_ns > ?".to_string());
         params.push(Value::BigInt(e));
@@ -645,7 +640,7 @@ fn build_stream_sql(
 
     let sql = format!(
         r#"
-        WITH events AS ({union}),
+        WITH {event_ctes},
         sequenced AS (
             SELECT
                 kind, row_id, device_id, stream_id, name, start_ns, end_ns,
@@ -654,7 +649,7 @@ fn build_stream_sql(
                 LEAD(kind)     OVER w  AS next_kind,
                 LEAD(name)     OVER w  AS next_name,
                 LEAD(stream_id) OVER w AS next_stream_id
-            FROM events
+            FROM {event_source}
             WINDOW w AS (PARTITION BY device_id, stream_id ORDER BY start_ns, row_id)
         ),
         filtered AS (
@@ -711,14 +706,8 @@ fn build_unified_sql(
     };
 
     let mut where_parts: Vec<String> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
-
-    // `--stream` is rejected upstream under unified scopes; device only.
-    crate::kind_policy::LocationFilter {
-        device: req.device,
-        stream: None,
-    }
-    .push_where(&mut where_parts, &mut params);
+    let (event_ctes, event_source, mut params) =
+        build_unified_event_input(union, req, abs_window, partition_device);
     if let Some((s, e)) = abs_window {
         where_parts.push("gap_start_ns < ? AND gap_end_ns > ?".to_string());
         params.push(Value::BigInt(e));
@@ -750,7 +739,7 @@ fn build_unified_sql(
 
     let sql = format!(
         r#"
-        WITH events AS ({union}),
+        WITH {event_ctes},
         with_prev AS (
             SELECT
                 device_id, stream_id, kind, row_id, name, start_ns, end_ns,
@@ -759,7 +748,7 @@ fn build_unified_sql(
                 arg_max(kind,      end_ns) OVER win AS prev_kind,
                 arg_max(name,      end_ns) OVER win AS prev_name,
                 arg_max(stream_id, end_ns) OVER win AS prev_stream_id
-            FROM events
+            FROM {event_source}
             WINDOW win AS ({partition} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
         ),
         filtered AS (
@@ -792,6 +781,242 @@ fn build_unified_sql(
         total_matched = total_matched_bigint_expr(),
     );
     Ok((sql, params))
+}
+
+const GAP_EVENT_COLUMNS: &str = "kind, row_id, device_id, stream_id, name, start_ns, end_ns";
+const GAP_EVENT_COLUMNS_E: &str =
+    "e.kind, e.row_id, e.device_id, e.stream_id, e.name, e.start_ns, e.end_ns";
+
+fn build_stream_event_input(
+    union: &str,
+    req: &GapsRequest,
+    abs_window: Option<(i64, i64)>,
+) -> (String, &'static str, Vec<Value>) {
+    let mut scope_parts = Vec::new();
+    let mut params = Vec::new();
+
+    crate::kind_policy::LocationFilter {
+        device: req.device,
+        stream: req.stream,
+    }
+    .push_where(&mut scope_parts, &mut params);
+    let scope_where = if scope_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", scope_parts.join(" AND "))
+    };
+
+    let events_cte = format!("events AS NOT MATERIALIZED ({union})");
+    let needs_scoped_events = abs_window.is_some() || !scope_parts.is_empty();
+    if !needs_scoped_events {
+        return (events_cte, "events", params);
+    }
+
+    let scoped_cte = format!(
+        r#"
+        scoped_events AS NOT MATERIALIZED (
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM events
+            {scope_where}
+        )
+        "#
+    );
+
+    let Some((s, e)) = abs_window else {
+        return (
+            format!("{events_cte}, {scoped_cte}"),
+            "scoped_events",
+            params,
+        );
+    };
+
+    let local_cte = format!(
+        r#"
+        prefix_starts AS (
+            SELECT device_id, stream_id, MAX(start_ns) AS start_ns
+            FROM scoped_events
+            WHERE start_ns <= ?
+            GROUP BY device_id, stream_id
+        ),
+        prefix_rows AS (
+            SELECT e.device_id, e.stream_id, e.start_ns, MAX(e.row_id) AS row_id
+            FROM scoped_events e
+            JOIN prefix_starts p
+              ON e.device_id = p.device_id
+             AND e.stream_id = p.stream_id
+             AND e.start_ns = p.start_ns
+            GROUP BY e.device_id, e.stream_id, e.start_ns
+        ),
+        prefix_events AS (
+            SELECT {GAP_EVENT_COLUMNS_E}
+            FROM scoped_events e
+            JOIN prefix_rows p
+              ON e.device_id = p.device_id
+             AND e.stream_id = p.stream_id
+             AND e.start_ns = p.start_ns
+             AND e.row_id = p.row_id
+        ),
+        suffix_starts AS (
+            SELECT device_id, stream_id, MIN(start_ns) AS start_ns
+            FROM scoped_events
+            WHERE start_ns >= ?
+            GROUP BY device_id, stream_id
+        ),
+        suffix_rows AS (
+            SELECT e.device_id, e.stream_id, e.start_ns, MIN(e.row_id) AS row_id
+            FROM scoped_events e
+            JOIN suffix_starts p
+              ON e.device_id = p.device_id
+             AND e.stream_id = p.stream_id
+             AND e.start_ns = p.start_ns
+            GROUP BY e.device_id, e.stream_id, e.start_ns
+        ),
+        suffix_events AS (
+            SELECT {GAP_EVENT_COLUMNS_E}
+            FROM scoped_events e
+            JOIN suffix_rows p
+              ON e.device_id = p.device_id
+             AND e.stream_id = p.stream_id
+             AND e.start_ns = p.start_ns
+             AND e.row_id = p.row_id
+        ),
+        local_events AS (
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM scoped_events
+            WHERE start_ns < ? AND end_ns > ?
+            UNION
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM prefix_events
+            UNION
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM suffix_events
+        )
+        "#
+    );
+
+    params.push(Value::BigInt(s));
+    params.push(Value::BigInt(e));
+    params.push(Value::BigInt(e));
+    params.push(Value::BigInt(s));
+
+    (
+        format!("{events_cte}, {scoped_cte}, {local_cte}"),
+        "local_events",
+        params,
+    )
+}
+
+fn build_unified_event_input(
+    union: &str,
+    req: &GapsRequest,
+    abs_window: Option<(i64, i64)>,
+    partition_device: bool,
+) -> (String, &'static str, Vec<Value>) {
+    let mut scope_parts = Vec::new();
+    let mut params = Vec::new();
+
+    // `--stream` is rejected upstream under unified scopes; device only.
+    crate::kind_policy::LocationFilter {
+        device: req.device,
+        stream: None,
+    }
+    .push_where(&mut scope_parts, &mut params);
+    let scope_where = if scope_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", scope_parts.join(" AND "))
+    };
+
+    let events_cte = format!("events AS NOT MATERIALIZED ({union})");
+    let needs_scoped_events = abs_window.is_some() || !scope_parts.is_empty();
+    if !needs_scoped_events {
+        return (events_cte, "events", params);
+    }
+
+    let scoped_cte = format!(
+        r#"
+        scoped_events AS NOT MATERIALIZED (
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM events
+            {scope_where}
+        )
+        "#
+    );
+
+    let Some((s, e)) = abs_window else {
+        return (
+            format!("{events_cte}, {scoped_cte}"),
+            "scoped_events",
+            params,
+        );
+    };
+
+    let (prefix_device_expr, suffix_device_expr, frontier_group, prefix_having, suffix_having) =
+        if partition_device {
+            ("device_id", "device_id", "GROUP BY device_id", "", "")
+        } else {
+            (
+                "CAST(arg_max(device_id, end_ns) AS INTEGER)",
+                "CAST(arg_min(device_id, start_ns) AS INTEGER)",
+                "",
+                "HAVING MAX(end_ns) IS NOT NULL",
+                "HAVING MIN(start_ns) IS NOT NULL",
+            )
+        };
+    let local_cte = format!(
+        r#"
+        prefix_events AS (
+            SELECT
+                arg_max(kind, end_ns) AS kind,
+                arg_max(row_id, end_ns) AS row_id,
+                {prefix_device_expr} AS device_id,
+                CAST(arg_max(stream_id, end_ns) AS BIGINT) AS stream_id,
+                arg_max(name, end_ns) AS name,
+                CAST(arg_max(start_ns, end_ns) AS BIGINT) AS start_ns,
+                MAX(end_ns) AS end_ns
+            FROM scoped_events
+            WHERE start_ns <= ?
+            {frontier_group}
+            {prefix_having}
+        ),
+        suffix_events AS (
+            SELECT
+                arg_min(kind, start_ns) AS kind,
+                arg_min(row_id, start_ns) AS row_id,
+                {suffix_device_expr} AS device_id,
+                CAST(arg_min(stream_id, start_ns) AS BIGINT) AS stream_id,
+                arg_min(name, start_ns) AS name,
+                MIN(start_ns) AS start_ns,
+                CAST(arg_min(end_ns, start_ns) AS BIGINT) AS end_ns
+            FROM scoped_events
+            WHERE start_ns >= ?
+            {frontier_group}
+            {suffix_having}
+        ),
+        local_events AS (
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM scoped_events
+            WHERE start_ns < ? AND end_ns > ?
+            UNION
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM prefix_events
+            UNION
+            SELECT {GAP_EVENT_COLUMNS}
+            FROM suffix_events
+        )
+        "#
+    );
+
+    params.push(Value::BigInt(s));
+    params.push(Value::BigInt(e));
+    params.push(Value::BigInt(e));
+    params.push(Value::BigInt(s));
+
+    (
+        format!("{events_cte}, {scoped_cte}, {local_cte}"),
+        "local_events",
+        params,
+    )
 }
 
 /// Returns an error when called with a non-GPU kind. Upstream filters
@@ -858,6 +1083,84 @@ mod tests {
              7::BIGINT AS stream_id, \
              {busy_expr} AS busy_ns"
         )
+    }
+
+    #[test]
+    fn unified_window_input_pushes_scope_before_sweep() -> Result<()> {
+        let req = GapsRequest {
+            min_ns: 42,
+            device: Some(2),
+            limit: 7,
+            ..Default::default()
+        };
+        let (sql, params) = build_unified_sql(
+            "SELECT * FROM synthetic_gpu_events",
+            &req,
+            Some((10, 20)),
+            true,
+        )?;
+
+        assert!(sql.contains("scoped_events AS"));
+        assert!(sql.contains("prefix_events AS"));
+        assert!(sql.contains("suffix_events AS"));
+        assert!(sql.contains("local_events AS"));
+        assert!(sql.contains("FROM local_events"));
+        assert!(sql.contains("GROUP BY device_id"));
+        assert!(!sql.contains("ROW_NUMBER()"));
+        assert!(sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert_eq!(
+            params,
+            vec![
+                Value::Int(2),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(42),
+                Value::BigInt(7),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stream_window_input_pushes_scope_before_lead() -> Result<()> {
+        let req = GapsRequest {
+            scope: GapScope::Stream,
+            min_ns: 42,
+            device: Some(2),
+            stream: Some(143),
+            limit: 7,
+            ..Default::default()
+        };
+        let (sql, params) =
+            build_stream_sql("SELECT * FROM synthetic_gpu_events", &req, Some((10, 20)))?;
+
+        assert!(sql.contains("scoped_events AS"));
+        assert!(sql.contains("prefix_events AS"));
+        assert!(sql.contains("suffix_events AS"));
+        assert!(sql.contains("local_events AS"));
+        assert!(sql.contains("FROM local_events"));
+        assert!(sql.contains("PARTITION BY device_id, stream_id"));
+        assert!(sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert_eq!(
+            params,
+            vec![
+                Value::Int(2),
+                Value::BigInt(143),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(42),
+                Value::BigInt(7),
+            ]
+        );
+        Ok(())
     }
 
     #[test]

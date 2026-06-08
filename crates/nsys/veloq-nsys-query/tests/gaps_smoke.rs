@@ -8,6 +8,7 @@
 mod fixture;
 
 use anyhow::Result;
+use veloq_core::time::TimeWindow;
 use veloq_nsys_query::gaps::{GapScope, GapsRequest, run};
 
 #[test]
@@ -171,6 +172,69 @@ fn device_scope_emits_unified_keys() -> Result<()> {
     // Bracketing events always carry stream context.
     assert_eq!(g.prev.stream_id, 7);
     assert_eq!(g.next.stream_id, 7);
+    Ok(())
+}
+
+#[test]
+fn unified_time_window_preserves_cross_window_gap() -> Result<()> {
+    // Window 105ms..109ms contains no GPU event body in minimal_gpu,
+    // but it overlaps the idle gap between the 104.0..104.5ms memcpy
+    // and the 110..120ms kernel. Local-window sweep input must keep
+    // both bracketing frontier events.
+    let trace = fixture::minimal_gpu()?;
+    for scope in [GapScope::Device, GapScope::Trace] {
+        let r = run(
+            trace.path(),
+            GapsRequest {
+                scope,
+                min_ns: 1,
+                time_window: Some(TimeWindow::parse("@105ms-@109ms")?),
+                limit: 100,
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(r.total_matched, 1, "scope {scope:?}: {r:?}");
+        let gap = r
+            .rows
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("scope {scope:?} returned no gap rows"))?;
+        assert_eq!(gap.start_ns, 104_500_000);
+        assert_eq!(gap.end_ns, 110_000_000);
+        assert_eq!(gap.duration_ns, 5_500_000);
+    }
+    Ok(())
+}
+
+#[test]
+fn stream_time_window_preserves_cross_window_gap() -> Result<()> {
+    // Same cross-window gap as the unified-scope test, but under
+    // per-stream LEAD semantics. The local window input must keep
+    // the bracketing frontier events for the requested stream.
+    let trace = fixture::minimal_gpu()?;
+    let r = run(
+        trace.path(),
+        GapsRequest {
+            scope: GapScope::Stream,
+            device: Some(0),
+            stream: Some(7),
+            min_ns: 1,
+            time_window: Some(TimeWindow::parse("@105ms-@109ms")?),
+            limit: 100,
+            ..Default::default()
+        },
+    )?;
+
+    assert_eq!(r.total_matched, 1, "{r:?}");
+    let gap = r
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("stream scope returned no gap rows"))?;
+    assert_eq!(gap.key, "gap|dev:0|stream:7|@104500000");
+    assert_eq!(gap.device_id, Some(0));
+    assert_eq!(gap.stream_id, Some(7));
+    assert_eq!(gap.start_ns, 104_500_000);
+    assert_eq!(gap.end_ns, 110_000_000);
+    assert_eq!(gap.duration_ns, 5_500_000);
     Ok(())
 }
 

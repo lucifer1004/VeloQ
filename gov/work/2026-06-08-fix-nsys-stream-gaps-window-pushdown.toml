@@ -1,0 +1,26 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-003"
+title = "Fix NSys stream gaps window pushdown"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0006",
+]
+
+[content]
+description = "Fix the NSys stream-scope gaps query planner so device, stream, and explicit time-window filters are applied before the per-stream LEAD sweep. The change preserves the existing CLI and JSON wire shape while making small-window stream gaps practical on large traces."
+
+[[content.acceptance_criteria]]
+text = "NSys gaps stream scope applies device, stream, and time-window filters before per-stream LEAD sweep while preserving cross-window gap correctness"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "govctl check and targeted NSys gaps query tests pass"
+status = "done"
+category = "chore"
