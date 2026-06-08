@@ -1,0 +1,37 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-ID"
+title = "Event row identifiers"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+An NSys event identifier exposed as `row_id` MUST use the `<kind>:<rowid>` string form.
+
+The `<kind>` component MUST be one of `kernel`, `memcpy`, `memset`, `runtime`, `osrt`, `nvtx`, `sync`, `graph`, `graph_node`, `graph_event`, `cuda_event`, `overhead`, or `cpu_sample`.
+
+The `<rowid>` component MUST be a base-10 integer string.
+
+The `<rowid>` component MUST be compatible with the source row identifier accepted by NSys `inspect`.
+
+An NSys `row_id` MUST be round-trippable through `inspect`.
+
+The `cpu_sample` row identifier kind MAY appear in inspect-compatible identifiers.
+
+The `cpu_sample` row identifier kind MUST NOT appear as an EventRef `type` value.
+
+An NSys `inspect` request for a syntactically valid but absent `row_id` MUST return a success response.
+
+An NSys `inspect` response for an absent `row_id` MUST include a row tagged with `type: "not_found"`.
+
+An NSys `inspect` not-found row MUST carry `key` equal to the requested `row_id`.
+
+An NSys `inspect` not-found row MUST carry `row_id` equal to the requested `row_id`.
+
+An NSys `row_id` MUST NOT expose a packed binary correlation key in place of the human-readable `<kind>:<rowid>` form.
+
+A packed synthetic identifier MAY appear only in a field whose contract explicitly defines a synthetic identifier.
+
+**Rationale:** Agents commonly take a search or correlate row and pass its `row_id` to inspect. Keeping the wire identifier readable and round-trippable separates user-facing identity from private indexing strategies. CPU samples are inspect evidence, not duration-bearing EventRef rows."""

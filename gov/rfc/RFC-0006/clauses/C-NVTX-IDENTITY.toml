@@ -1,0 +1,29 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-NVTX-IDENTITY"
+title = "NVTX identity"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+NSys `stats --group-by nvtx-path` rows for real NVTX ranges MUST include the NVTX domain dimension in row identity.
+
+NSys `stats --group-by nvtx-path` row keys for real NVTX ranges MUST include the `domain:<pid>:<domainId>` segment defined by [[RFC-0006:C-ROW-KEYS]].
+
+NSys `stats --group-by nvtx-path` rows for real NVTX ranges MUST expose resolved `domain_id` and `domain_pid` values when the trace provides them.
+
+NSys `stats --group-by nvtx-path` rows MAY expose `domain_name` when the trace provides a registered domain name.
+
+Same-name and same-parent NVTX ranges in distinct domains MUST remain distinct rows when the requested grouping includes the NVTX path axis.
+
+A sentinel or no-NVTX row MUST NOT fabricate a domain identity.
+
+A row key that includes the NVTX style axis MUST use one of `push_pop`, `start_end`, or `unknown` for the style value.
+
+A command that requires `NVTX_EVENTS` MUST return a handled diagnostic error when the opened trace lacks `NVTX_EVENTS` and no explicit raw-output exception applies.
+
+A command that can answer without `NVTX_EVENTS` MUST NOT fail solely because `NVTX_EVENTS` is absent.
+
+**Rationale:** NVTX labels are often reused across domains and processes. Domain-aware identity prevents false joins, while explicit missing-table behavior keeps optional NSys schema features from becoming accidental global requirements."""

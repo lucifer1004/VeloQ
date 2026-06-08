@@ -1,0 +1,77 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-KEYS"
+title = "Concrete row keys"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+An NSys row key defined by this clause MUST be treated as an opaque equality string by consumers.
+
+An NSys row key consumer MUST NOT require delimiter-based parsing of a row key.
+
+An NSys row key producer MUST preserve the key formats in this clause for stable public responses.
+
+Optional pipe-delimited segments in the row key templates below are shown with square brackets.
+
+A bracketed optional segment MUST be omitted when that identity axis is absent.
+
+The square brackets MUST NOT appear literally in a row key.
+
+A sentinel value such as `nvtx:none` or `nvtx-path:none` is a present segment, not an absent axis.
+
+Trace-derived key components MAY contain delimiter characters.
+
+An NSys `summary` row key MUST use `table|<table_name>`.
+
+An NSys `stats` row key MUST use `<kind>[|<name>][|dev:<n>][|stream:<n>][|ctx:<n>][|graph:<n>][|graph_node:<n>][|style:<push_pop|start_end|unknown>][|nvtx:<rowid-or-none>][|nvtx-path:<path-or-none>][|domain:<pid>:<domainId>][|grid:<x>x<y>x<z>][|block:<x>x<y>x<z>]`.
+
+An NSys `stats` row key for a no-NVTX parent sentinel MUST use `nvtx:none` for the NVTX parent segment.
+
+An NSys `stats` row key for a no-NVTX path sentinel MUST use `nvtx-path:none` for the NVTX path segment.
+
+An NSys `stats` row key for a real NVTX path row MUST include `domain:<pid>:<domainId>`.
+
+An NSys `search` row key MUST use `<row_id>`.
+
+An NSys `inspect` row key MUST use `<row_id>`.
+
+An NSys `inspect` not-found row key MUST use the requested `<row_id>`.
+
+An NSys `timeline` row key MUST use `bucket|<start_ns>..<end_ns>`.
+
+An NSys `concurrency` row key MUST use `concurrency|dev:<n>`.
+
+An NSys `slices` instance row key MUST use `slice|<name>|@<cpu_start_ns>`.
+
+An NSys `slices` aggregate row key MUST use `scope|<name>` or `scope|path:<path>` according to the requested grouping mode.
+
+An NSys device-scope `gaps` row key MUST use `gap|dev:<n>|@<start_ns>`.
+
+An NSys stream-scope `gaps` row key MUST use `gap|dev:<n>|stream:<n>|@<start_ns>`.
+
+An NSys trace-scope `gaps` row key MUST use `gap|@<start_ns>`.
+
+An NSys `gaps.auxiliary.streams[]` row key MUST use `stream|dev:<n>|stream:<n>`.
+
+An NSys `correlate` result row key MUST use the seed row identifier.
+
+An EventRef embedded under an NSys `correlate` result MUST use `<row_id>` as its key.
+
+An NSys `graph-replays` row key MUST use `graph-replay|<synthetic_id>`.
+
+An NSys `hardware` row key MUST use `host|<hostname>`.
+
+An NSys GPU `metrics` row key MUST use `counter|type:<type_id>|metric:<metric_id>`.
+
+An NSys NIC `metrics` row key MUST use `nic_counter|nic:<id>|port:<id>|metric:<idx>`.
+
+An NSys CPU sampling `metrics` row key MUST use the selected grouping identity: bare `<symbol>`, `<module-basename>`, `<tid>`, or `<cpu>`.
+
+An NSys CPU scheduler `metrics` row key MUST use the selected grouping identity: `tid:<id>`, `cpu:<id>`, or `state:<name>`.
+
+A command that emits a canonical NSys list row and is not listed in this clause MUST define its row key format before the command is advanced as a stable public surface.
+
+**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but intentionally leaves concrete formats to source and verb contracts. These NSys formats are equality keys for cross-trace comparison, not a general key-parsing language."""

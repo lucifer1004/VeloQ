@@ -1,0 +1,31 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-EXCEPTIONS"
+title = "Source-specific output exceptions"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+`ncu-command --print` MAY write a raw pipe-ready command script to stdout instead of a JSON success envelope.
+
+`ncu-command --print` MUST keep stdout reserved for the raw script when it succeeds.
+
+`ncu-command --print` MUST NOT mix progress output with the raw script on stdout.
+
+`ncu-command --print` MUST NOT write a partial raw script to stdout when it fails.
+
+`ncu-command --print` MUST NOT write a JSON error envelope to stdout when it fails.
+
+`ncu-command --print` MUST write a human-readable failure diagnostic to stderr when it fails.
+
+`ncu-command --print` MUST return a non-zero process status when it fails.
+
+`ncu-command` without `--print` MUST use the normal JSON envelope contract.
+
+NSys JSON-mode handled diagnostics MUST follow [[RFC-0002:C-ERROR-RESPONSE]] and [[RFC-0002:C-STDOUT-STDERR]].
+
+NSys CSV and table outputs MUST follow [[RFC-0002:C-FORMAT-PROJECTIONS]].
+
+**Rationale:** `ncu-command --print` is designed to be piped directly into a shell or saved by a caller, so its raw stdout behavior is intentional. Other NSys commands remain envelope-shaped for agent parsing."""
