@@ -24,14 +24,14 @@ fn help_exits_zero() -> Result<()> {
 #[test]
 fn nsys_schema_endpoint_emits_standard_meta_envelope() -> Result<()> {
     let out = run_veloq(["schema", "summary"])?;
-    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", "summary")?;
+    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v2", "summary")?;
     Ok(())
 }
 
 #[test]
 fn nsys_graph_replays_schema_endpoint_is_registered() -> Result<()> {
     let out = run_veloq(["schema", "graph-replays"])?;
-    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", "graph-replays")?;
+    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v2", "graph-replays")?;
     Ok(())
 }
 
@@ -58,7 +58,7 @@ fn nsys_namespace_routes_default_source_verbs() -> Result<()> {
     );
 
     let schema = run_veloq(["nsys", "schema", "summary"])?;
-    let _ = assert_schema_envelope(&schema, "nsys.schema", "nsys", "v1", "summary")?;
+    let _ = assert_schema_envelope(&schema, "nsys.schema", "nsys", "v2", "summary")?;
     Ok(())
 }
 
@@ -115,7 +115,7 @@ fn nsys_graph_replays_cli_renders_json_table_and_csv() -> Result<()> {
 fn nsys_schema_endpoint_covers_cli_side_payloads() -> Result<()> {
     for target in ["prep", "correlation-stats", "ncu-command"] {
         let out = run_veloq(["schema", target])?;
-        let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", target)?;
+        let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v2", target)?;
     }
     Ok(())
 }
@@ -159,7 +159,7 @@ fn nsys_summary_happy_path_emits_full_envelope() -> Result<()> {
         v.get("source")
             .and_then(|s| s.get("version"))
             .and_then(Value::as_str),
-        Some("v1"),
+        Some("v2"),
     );
     assert_eq!(
         v.get("trace")
@@ -352,7 +352,7 @@ fn nsys_schema_bad_target_omits_trace_field() -> Result<()> {
         v.get("source")
             .and_then(|s| s.get("version"))
             .and_then(Value::as_str),
-        Some("v1"),
+        Some("v2"),
     );
     // The bug: `trace` was present with `path: ""`. Fixed contract:
     // schema is a meta endpoint with no trace, so the field must be

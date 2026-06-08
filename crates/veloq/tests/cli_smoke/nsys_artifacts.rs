@@ -5,6 +5,16 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use tempfile::TempDir;
 
+fn prep_sidecar_row<'a>(data: &'a Value, key: &str) -> Result<&'a Value> {
+    let rows = data
+        .get("rows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing prep rows: {data}"))?;
+    rows.iter()
+        .find(|row| row.get("key").and_then(Value::as_str) == Some(key))
+        .ok_or_else(|| anyhow!("missing prep sidecar row {key}: {rows:?}"))
+}
+
 /// Build the `.nsys-rep` + generated `<report>.veloq/parquetdir/`
 /// shape that appears after the first run on a report.
 fn build_generated_parquetdir_alias() -> Result<(TempDir, PathBuf, PathBuf)> {
@@ -174,10 +184,13 @@ fn nsys_artifact_prep_on_generated_parquetdir_uses_owner_artifact_root() -> Resu
     );
     let v: Value = serde_json::from_slice(&prep.stdout).context("prep stdout must be JSON")?;
     let data = v.get("data").ok_or_else(|| anyhow!("missing data: {v}"))?;
+    let aux = data
+        .get("auxiliary")
+        .ok_or_else(|| anyhow!("missing prep auxiliary: {data}"))?;
     assert_eq!(
-        data.get("cache_root").and_then(Value::as_str),
+        aux.get("cache_root").and_then(Value::as_str),
         Some(owner_root.to_string_lossy().as_ref()),
-        "prep must report the owning report cache root: {data}"
+        "prep must report the owning report cache root: {aux}"
     );
     assert!(
         owner_root.join("meta.bin").is_file(),
@@ -197,10 +210,13 @@ fn nsys_artifact_prep_on_generated_parquetdir_uses_owner_artifact_root() -> Resu
     let v: Value =
         serde_json::from_slice(&status.stdout).context("prep --status stdout must be JSON")?;
     let data = v.get("data").ok_or_else(|| anyhow!("missing data: {v}"))?;
+    let aux = data
+        .get("auxiliary")
+        .ok_or_else(|| anyhow!("missing prep auxiliary: {data}"))?;
     assert_eq!(
-        data.get("cache_root").and_then(Value::as_str),
+        aux.get("cache_root").and_then(Value::as_str),
         Some(owner_root.to_string_lossy().as_ref()),
-        "prep --status must inspect the owning report cache root: {data}"
+        "prep --status must inspect the owning report cache root: {aux}"
     );
     Ok(())
 }
@@ -321,9 +337,17 @@ fn nsys_artifact_prep_status_reports_cold_then_warm_state() -> Result<()> {
     let v: Value = serde_json::from_slice(&out.stdout)
         .context("prep --status (cold) stdout must be valid JSON")?;
     let data = v.get("data").ok_or_else(|| anyhow!("missing data: {v}"))?;
-    let parquet = data
+    let aux = data
+        .get("auxiliary")
+        .ok_or_else(|| anyhow!("missing prep auxiliary: {data}"))?;
+    assert_eq!(
+        aux.get("prepared").and_then(Value::as_bool),
+        Some(false),
+        "prep --status must be read-only: {aux}"
+    );
+    let parquet = aux
         .get("parquet_cache")
-        .ok_or_else(|| anyhow!("missing parquet_cache: {data}"))?;
+        .ok_or_else(|| anyhow!("missing parquet_cache: {aux}"))?;
     assert_eq!(
         parquet.get("present").and_then(Value::as_bool),
         Some(true),
@@ -337,9 +361,7 @@ fn nsys_artifact_prep_status_reports_cold_then_warm_state() -> Result<()> {
         !tables.is_empty(),
         "parquet_cache.tables should list the input parquet tables: {parquet}"
     );
-    let meta = data
-        .get("meta_cache")
-        .ok_or_else(|| anyhow!("missing meta_cache: {data}"))?;
+    let meta = prep_sidecar_row(data, "sidecar|meta-cache")?;
     assert_eq!(
         meta.get("present").and_then(Value::as_bool),
         Some(false),
@@ -358,17 +380,23 @@ fn nsys_artifact_prep_status_reports_cold_then_warm_state() -> Result<()> {
     let v: Value = serde_json::from_slice(&out.stdout)
         .context("prep --status (warm) stdout must be valid JSON")?;
     let data = v.get("data").ok_or_else(|| anyhow!("missing data: {v}"))?;
-    let parquet = data
+    let aux = data
+        .get("auxiliary")
+        .ok_or_else(|| anyhow!("missing prep auxiliary: {data}"))?;
+    assert_eq!(
+        aux.get("prepared").and_then(Value::as_bool),
+        Some(false),
+        "prep --status must report prepared=false: {aux}"
+    );
+    let parquet = aux
         .get("parquet_cache")
-        .ok_or_else(|| anyhow!("missing parquet_cache: {data}"))?;
+        .ok_or_else(|| anyhow!("missing parquet_cache: {aux}"))?;
     assert_eq!(
         parquet.get("present").and_then(Value::as_bool),
         Some(true),
         "parquet_cache.present must stay true: {parquet}"
     );
-    let meta = data
-        .get("meta_cache")
-        .ok_or_else(|| anyhow!("missing meta_cache: {data}"))?;
+    let meta = prep_sidecar_row(data, "sidecar|meta-cache")?;
     assert_eq!(
         meta.get("present").and_then(Value::as_bool),
         Some(true),
@@ -393,6 +421,17 @@ fn nsys_artifact_prep_status_reports_cold_then_warm_state() -> Result<()> {
     assert_eq!(
         meta_expected, meta_on_disk,
         "warm meta cache version must match expected"
+    );
+    let gpu_work = prep_sidecar_row(data, "sidecar|gpu-work-events")?;
+    assert_eq!(
+        gpu_work.get("present").and_then(Value::as_bool),
+        Some(true),
+        "prep should build gpu-work-events sidecar: {gpu_work}"
+    );
+    assert_eq!(
+        gpu_work.get("fingerprint_match").and_then(Value::as_bool),
+        Some(true),
+        "gpu-work-events sidecar must match fingerprint: {gpu_work}"
     );
     Ok(())
 }

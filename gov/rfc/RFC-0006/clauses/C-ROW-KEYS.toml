@@ -57,6 +57,8 @@ An NSys trace-scope `gaps` row key MUST use `gap|@<start_ns>`.
 
 An NSys `gaps.auxiliary.streams[]` row key MUST use `stream|dev:<n>|stream:<n>`.
 
+An NSys `prep` row key MUST use `sidecar|<sidecar-id>`.
+
 An NSys `correlate` result row key MUST use the seed row identifier.
 
 An EventRef embedded under an NSys `correlate` result MUST use `<row_id>` as its key.
@@ -85,4 +87,4 @@ A command that emits a canonical NSys list row and is not listed in this clause 
 
 A command that emits a stable NSys auxiliary list whose rows carry `key` MUST define that auxiliary row key format before the command or mode is advanced as a stable public surface.
 
-**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but intentionally leaves concrete formats to source and verb contracts. These NSys formats are equality keys for cross-trace comparison, not a general key-parsing language. Metrics bucket arrays are documented here because they are stable auxiliary lists used for time-series comparison."""
+**Rationale:** [[RFC-0003:C-ROW-KEY]] requires comparable rows to carry stable keys but intentionally leaves concrete formats to source and verb contracts. These NSys formats are equality keys for cross-trace comparison, not a general key-parsing language. `prep` sidecar rows are included because agents use them to compare cache readiness across repeated trace-analysis sessions. Metrics bucket arrays are documented here because they are stable auxiliary lists used for time-series comparison."""

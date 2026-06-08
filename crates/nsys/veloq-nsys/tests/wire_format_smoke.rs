@@ -18,16 +18,9 @@
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 
-const NON_CANONICAL_PUBLIC_TARGETS: &[&str] = &[
-    "ncu-command",
-    "metrics",
-    "prep",
-    "prep-status",
-    "correlation-stats",
-];
+const NON_CANONICAL_PUBLIC_TARGETS: &[&str] = &["ncu-command", "metrics", "correlation-stats"];
 
-const SINGLETON_PUBLIC_TARGETS: &[&str] =
-    &["ncu-command", "prep", "prep-status", "correlation-stats"];
+const SINGLETON_PUBLIC_TARGETS: &[&str] = &["ncu-command", "correlation-stats"];
 
 struct SchemaDoc {
     target: &'static str,

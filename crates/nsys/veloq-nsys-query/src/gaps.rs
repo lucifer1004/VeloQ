@@ -35,6 +35,7 @@
 use crate::query_sql::exec;
 use duckdb::types::Value;
 use serde::Serialize;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use veloq_core::{
     Direction, SortKeyDef, SortKeySpec, SortSpec,
@@ -339,13 +340,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
     // busy. Runtime API calls (cudaLaunchKernel, cudaMemcpyAsync) are
     // CPU-side and don't count; sync events are CPU blocking and
     // intentionally excluded from the "device in flight" definition.
-    let mut subqueries: Vec<String> = Vec::new();
-    for kind in [EventKind::Kernel, EventKind::Memcpy, EventKind::Memset] {
-        if trace.table_exists(kind.table()) {
-            subqueries.push(per_kind_select(kind)?);
-        }
-    }
-    if subqueries.is_empty() {
+    let Some(event_source) = gpu_event_source(&trace, abs_window)? else {
         return Ok(GapsResponse {
             min_ns: req.min_ns,
             scope: req.scope.as_str(),
@@ -357,21 +352,24 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
                 streams: Vec::new(),
             },
         });
-    }
-    let union = subqueries.join(" UNION ALL ");
+    };
+    let union = event_source.sql.as_str();
 
     let (sql, params) = match req.scope {
-        GapScope::Stream => build_stream_sql(&union, &req, abs_window)?,
+        GapScope::Stream => build_stream_sql(union, &req, abs_window)?,
         GapScope::Device => {
-            build_unified_sql(&union, &req, abs_window, /*partition_device=*/ true)?
+            build_unified_sql(union, &req, abs_window, /*partition_device=*/ true)?
         }
         GapScope::Trace => {
-            build_unified_sql(&union, &req, abs_window, /*partition_device=*/ false)?
+            build_unified_sql(union, &req, abs_window, /*partition_device=*/ false)?
         }
     };
 
-    let (gaps, total_matched) =
+    let (mut gaps, total_matched) =
         hydrate_gap_rows(trace.conn(), &sql, &params, req.scope, req.limit)?;
+    if event_source.needs_name_hydration {
+        hydrate_gap_neighbor_names(&trace, &mut gaps)?;
+    }
 
     let span_ns = match abs_window {
         Some((s, e)) => (e - s).max(0),
@@ -380,7 +378,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
             origins.primary.duration_ns().max(0)
         }
     };
-    let streams = compute_stream_activity(&trace, &union, &req, abs_window, span_ns)?;
+    let streams = compute_stream_activity(&trace, union, &req, abs_window, span_ns)?;
 
     Ok(GapsResponse {
         min_ns: req.min_ns,
@@ -486,6 +484,76 @@ fn gap_from_sql_row(scope: GapScope, row: GapSqlRow) -> NsysQueryResult<Gap> {
             timestamp_ns: row.end_ns,
             stream_id: row.next_stream_id,
         },
+    })
+}
+
+fn hydrate_gap_neighbor_names(trace: &Trace, gaps: &mut [Gap]) -> NsysQueryResult<()> {
+    if gaps.is_empty() {
+        return Ok(());
+    }
+
+    let mut ids_by_kind: HashMap<EventKind, BTreeSet<i64>> = HashMap::new();
+    for gap in gaps.iter() {
+        ids_by_kind
+            .entry(gap.prev.row_id.kind)
+            .or_default()
+            .insert(gap.prev.row_id.rowid);
+        ids_by_kind
+            .entry(gap.next.row_id.kind)
+            .or_default()
+            .insert(gap.next.row_id.rowid);
+    }
+
+    let mut names: HashMap<RowId, String> = HashMap::new();
+    for (kind, ids) in ids_by_kind {
+        if ids.is_empty() || !trace.table_exists(kind.table()) {
+            continue;
+        }
+        let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let table = kind.table();
+        let name_expr = crate::kind_sql::display_name_expr(kind);
+        let joins = crate::kind_sql::name_joins(kind);
+        let sql = format!(
+            r#"
+            SELECT
+                t.rowid AS row_id,
+                {name_expr} AS name
+            FROM nsight.{table} t {joins}
+            WHERE t.rowid IN ({placeholders})
+            "#
+        );
+        let params: Vec<Value> = ids.into_iter().map(Value::BigInt).collect();
+        for row in exec::query_rows(
+            trace.conn(),
+            &sql,
+            &params,
+            exec::GAPS_NAME_LOOKUP,
+            gap_name_sql_row,
+        )? {
+            names.insert(RowId::new(kind, row.row_id), row.name);
+        }
+    }
+
+    for gap in gaps {
+        if let Some(name) = names.get(&gap.prev.row_id) {
+            gap.prev.name.clone_from(name);
+        }
+        if let Some(name) = names.get(&gap.next.row_id) {
+            gap.next.name.clone_from(name);
+        }
+    }
+    Ok(())
+}
+
+struct GapNameSqlRow {
+    row_id: i64,
+    name: String,
+}
+
+fn gap_name_sql_row(row: &duckdb::Row<'_>) -> Result<GapNameSqlRow, duckdb::Error> {
+    Ok(GapNameSqlRow {
+        row_id: row.get(0)?,
+        name: row.get(1)?,
     })
 }
 
@@ -597,6 +665,76 @@ fn stream_activity_sql_row(row: &duckdb::Row<'_>) -> Result<StreamActivitySqlRow
         stream_id: row.get(1)?,
         busy_ns: row.get(2)?,
     })
+}
+
+struct GpuEventSource {
+    sql: String,
+    needs_name_hydration: bool,
+}
+
+fn gpu_event_source(
+    trace: &Trace,
+    abs_window: Option<(i64, i64)>,
+) -> NsysQueryResult<Option<GpuEventSource>> {
+    if veloq_nsys_data::gpu_work_events::view_available(trace) {
+        return Ok(Some(sidecar_gpu_event_source()));
+    }
+
+    // Full-trace gaps already pays the whole-trace scan cost; lazily
+    // building the normalized event sidecar makes the first full query
+    // useful for future exploratory gaps calls. Windowed cold queries
+    // keep the direct local-frontier SQL path to avoid adding prep cost
+    // to the common small-window workflow.
+    if abs_window.is_none() {
+        match veloq_nsys_data::gpu_work_events::ensure_sidecar(trace) {
+            Ok(_) => {
+                if veloq_nsys_data::gpu_work_events::view_available(trace) {
+                    return Ok(Some(sidecar_gpu_event_source()));
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "gpu_work_events: lazy sidecar build skipped; falling back to raw gaps SQL: {err:#}"
+                );
+            }
+        }
+    }
+
+    cold_gpu_event_source(trace)
+}
+
+fn sidecar_gpu_event_source() -> GpuEventSource {
+    GpuEventSource {
+        sql: r#"
+            SELECT
+                kind,
+                row_id,
+                device_id,
+                stream_id,
+                CAST('' AS VARCHAR) AS name,
+                start_ns,
+                end_ns
+            FROM nsight.gpu_work_events
+        "#
+        .to_string(),
+        needs_name_hydration: true,
+    }
+}
+
+fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource>> {
+    let mut subqueries: Vec<String> = Vec::new();
+    for kind in [EventKind::Kernel, EventKind::Memcpy, EventKind::Memset] {
+        if trace.table_exists(kind.table()) {
+            subqueries.push(per_kind_select(kind)?);
+        }
+    }
+    if subqueries.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(GpuEventSource {
+        sql: subqueries.join(" UNION ALL "),
+        needs_name_hydration: false,
+    }))
 }
 
 fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {

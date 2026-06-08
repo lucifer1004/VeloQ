@@ -271,8 +271,9 @@ The first command on a new `.nsys-rep` runs `nsys export -t parquetdir`,
 caching `<trace>.nsys-rep.veloq/parquetdir/<TABLE>.parquet` for reuse;
 passing that generated `parquetdir/` back resolves to the owning
 `.nsys-rep`, so sidecars stay under one artifact root. `veloq prep
-<trace>` exports upfront; `veloq clean <trace>` removes the generated
-products for one report.
+<trace>` exports upfront and reports registered sidecar readiness in
+`data.rows[]`; `veloq clean <trace>` removes the generated products
+for one report.
 
 ## Response envelope
 
@@ -281,7 +282,7 @@ Every successful JSON call returns the source-qualified v1 envelope:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v1" },
+  "source": { "kind": "nsys", "version": "v2" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },
@@ -299,9 +300,11 @@ Every successful JSON call returns the source-qualified v1 envelope:
   (`"nsys"`, `"ncu"`, `"pytorch"`, or `"veloq"` for meta verbs).
 - `source.version` — per-source wire-format version. Bumps
   independently from the envelope when the source's payload shapes
-  change. Currently NSys reports `v1` (the NVTX domain dimension on
-  `stats --group-by nvtx-path` rows — domain-qualified key plus resolved
-  `domain_id`/`domain_pid`/`domain_name`) and NCU reports `v1` (the
+  change. Currently NSys reports `v2` (`v1` introduced the NVTX domain
+  dimension on `stats --group-by nvtx-path` rows; `v2` makes `prep` and
+  `prep --status` canonical list responses where `data.rows[]` carries
+  registered sidecar readiness keyed as `sidecar|<sidecar-id>`) and NCU
+  reports `v1` (the
   `ncu_report`-native wire — `inspect` carries no section catalog and
   `summary.auxiliary.session` keeps only the NCU version; each
   `ncu inspect` metric's
@@ -341,7 +344,7 @@ Errors share the same shape, with `data` replaced by `error`:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v1" },
+  "source": { "kind": "nsys", "version": "v2" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "error": {
@@ -378,7 +381,7 @@ without a JSON envelope.
 | `slices`            | Per-NVTX-range CPU bounds + attributed GPU work                                                                                                                                         |
 | `hardware`          | CPU / GPU / NIC inventory from the trace's `TARGET_INFO_*` tables                                                                                                                       |
 | `metrics`           | GPU/NIC PM counters, CPU IP samples, or CPU scheduler events — hotspot summary, time series, callchain via `inspect`                                                                    |
-| `prep`              | Build the Parquet + metadata caches eagerly                                                                                                                                             |
+| `prep`              | Build the Parquet cache + registered sidecars eagerly; `--status` reports sidecar readiness without building                                                                            |
 | `correlation-stats` | Build/load the correlation index and report counts                                                                                                                                      |
 | `schema <target>`   | Strict JSON Schema for one NSys verb's response                                                                                                                                         |
 

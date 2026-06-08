@@ -239,6 +239,47 @@ fn stream_time_window_preserves_cross_window_gap() -> Result<()> {
 }
 
 #[test]
+fn warm_gpu_work_sidecar_preserves_windowed_gap_rows() -> Result<()> {
+    let trace = fixture::minimal_gpu()?;
+    let req = GapsRequest {
+        scope: GapScope::Stream,
+        device: Some(0),
+        stream: Some(7),
+        min_ns: 1,
+        time_window: Some(TimeWindow::parse("@105ms-@109ms")?),
+        limit: 100,
+        ..Default::default()
+    };
+
+    let cold = run(trace.path(), req.clone())?;
+    {
+        let handle = veloq_nsys_data::Trace::open(trace.path())?;
+        veloq_nsys_data::gpu_work_events::ensure_sidecar(&handle)?;
+    }
+    let warm = run(trace.path(), req)?;
+
+    assert_eq!(warm.total_matched, cold.total_matched);
+    assert_eq!(warm.rows.len(), cold.rows.len());
+    let cold_gap = cold
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("cold query returned no rows"))?;
+    let warm_gap = warm
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("warm query returned no rows"))?;
+    assert_eq!(warm_gap.key, cold_gap.key);
+    assert_eq!(warm_gap.start_ns, cold_gap.start_ns);
+    assert_eq!(warm_gap.end_ns, cold_gap.end_ns);
+    assert_eq!(warm_gap.duration_ns, cold_gap.duration_ns);
+    assert_eq!(warm_gap.prev.row_id, cold_gap.prev.row_id);
+    assert_eq!(warm_gap.prev.name, cold_gap.prev.name);
+    assert_eq!(warm_gap.next.row_id, cold_gap.next.row_id);
+    assert_eq!(warm_gap.next.name, cold_gap.next.name);
+    Ok(())
+}
+
+#[test]
 fn trace_scope_omits_both_axes() -> Result<()> {
     let trace = fixture::minimal_gpu()?;
     let r = run(

@@ -33,7 +33,7 @@ use veloq_nsys_query::{EventKind, RowId};
 use crate::cli::Cmd;
 use crate::error::{NsysSourceError, NsysSourceResult};
 use crate::output::{emit, emit_meta, render, render_with_meta};
-use crate::payloads::{CorrelationStatsPayload, PrepPayload, SchemaPayload};
+use crate::payloads::{CorrelationStatsPayload, SchemaPayload};
 use crate::schema::schema_value_for;
 use crate::views;
 use meta::{meta_with_scope, projected_scope, run_guards};
@@ -42,7 +42,7 @@ use next_steps::{
     stats_next_steps,
 };
 use parse::{kinds_csv, parse_duration_filter, parse_row_id, parse_sort_spec};
-use prep_status::collect_prep_status;
+use prep_status::collect_prep_response;
 use scope::{
     resolve_or_refuse, scope_request_from, scope_request_from_device,
     scope_request_from_device_with_implicit_all,
@@ -700,37 +700,17 @@ pub fn run(
         }
 
         Cmd::Prep { status, .. } => {
+            let started = std::time::Instant::now();
             if status {
-                let data = collect_prep_status(trace)?;
-                render(fmt, trace, trace_span, "prep", data, views::key_value_view)?;
+                let data =
+                    collect_prep_response(trace, false, started.elapsed().as_millis() as u64)?;
+                render(fmt, trace, trace_span, "prep", data, views::prep_view)?;
             } else {
-                let started = std::time::Instant::now();
                 let trace_handle = veloq_nsys_data::Trace::open(trace)?;
-                // Warm the metadata sidecar so the next `summary` (or
-                // any command that consults the meta cache) runs
-                // zero-SQL. `build_or_load` is idempotent: when the
-                // cache exists and matches the trace mtime/size, this
-                // is a deserialise plus a few bincode allocations.
-                trace_handle.meta_cache()?;
-                let meta_cache_path = veloq_nsys_data::meta_cache::path_for(trace_handle.path())
-                    .display()
-                    .to_string();
+                veloq_nsys_data::sidecar_registry::ensure_prep_sidecars(&trace_handle)?;
                 let elapsed_ms = started.elapsed().as_millis() as u64;
-                render(
-                    fmt,
-                    trace,
-                    trace_span,
-                    "prep",
-                    PrepPayload {
-                        elapsed_ms,
-                        cache_root: veloq_core::artifact_dir_for(trace_handle.path())
-                            .display()
-                            .to_string(),
-                        parquet_tables: trace_handle.tables().to_vec(),
-                        meta_cache_path,
-                    },
-                    views::key_value_view,
-                )?;
+                let data = collect_prep_response(trace_handle.path(), true, elapsed_ms)?;
+                render(fmt, trace, trace_span, "prep", data, views::prep_view)?;
             }
         }
 

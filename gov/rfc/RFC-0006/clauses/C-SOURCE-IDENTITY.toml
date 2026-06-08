@@ -11,11 +11,11 @@ since = "0.1.0"
 text = """
 NSys success responses MUST set `source.kind` to `nsys`.
 
-NSys success responses MUST set `source.version` to `v1` for the wire contract specified by this RFC.
+NSys success responses MUST set `source.version` to `v2` for the wire contract specified by this RFC version.
 
 NSys handled error responses MUST set `source.kind` to `nsys` when source context is known and no explicit raw-output exception applies.
 
-NSys handled error responses MUST set `source.version` to `v1` when source context is known and no explicit raw-output exception applies.
+NSys handled error responses MUST set `source.version` to `v2` when source context is known and no explicit raw-output exception applies.
 
 The NSys source namespace MUST be `nsys`.
 
@@ -37,4 +37,8 @@ The NSys `schema` command MUST NOT require a trace input.
 
 The NSys `schema` command MUST omit `trace` and `trace_span` from its envelope.
 
-**Rationale:** Source identity, source version, and command IDs are the dispatch context agents use after parsing an envelope. Hoisted aliases are a CLI convenience; they must not create a second wire identity for the same source command."""
+Source version `v1` was the initial stable NSys wire contract.
+
+Source version `v2` supersedes `v1` by changing NSys `prep` and `prep --status` to the canonical list response defined by [[RFC-0006:C-ARTIFACTS]].
+
+**Rationale:** Source identity, source version, and command IDs are the dispatch context agents use after parsing an envelope. Hoisted aliases are a CLI convenience; they must not create a second wire identity for the same source command. Version `v2` marks the breaking cleanup that makes NSys `prep` and `prep --status` sidecar-readiness lists instead of singleton cache summaries."""

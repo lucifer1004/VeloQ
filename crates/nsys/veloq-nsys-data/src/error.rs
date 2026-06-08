@@ -84,6 +84,13 @@ pub enum NsysDataError {
         source: duckdb::Error,
     },
 
+    #[error("gpu-work-events view could not be registered from {path}")]
+    GpuWorkEventsViewRegister {
+        path: String,
+        #[source]
+        source: duckdb::Error,
+    },
+
     #[error("sidecar cache operation failed")]
     SidecarCache {
         #[source]
@@ -499,6 +506,88 @@ pub enum NsysDataError {
         source: arrow::error::ArrowError,
     },
 
+    #[error("gpu-work-events sidecar missing {column} column in {path}")]
+    GpuWorkEventsColumnMissing { path: String, column: String },
+
+    #[error(
+        "gpu-work-events sidecar column {column} in {path} has type {actual}; expected {expected}"
+    )]
+    GpuWorkEventsColumnTypeMismatch {
+        path: String,
+        column: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("gpu-work-events could not fingerprint trace: {path}")]
+    GpuWorkEventsTraceFingerprint {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("gpu-work-events sidecar RecordBatch could not be assembled")]
+    GpuWorkEventsRecordBatch {
+        #[source]
+        source: arrow::error::ArrowError,
+    },
+
+    #[error("gpu-work-events sidecar temp file could not be created: {path}")]
+    GpuWorkEventsSidecarCreate {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("gpu-work-events parquet writer could not be opened for {path}")]
+    GpuWorkEventsWriterOpen {
+        path: String,
+        #[source]
+        source: parquet::errors::ParquetError,
+    },
+
+    #[error("gpu-work-events parquet writer could not write batch to {path}")]
+    GpuWorkEventsWriterWrite {
+        path: String,
+        #[source]
+        source: parquet::errors::ParquetError,
+    },
+
+    #[error("gpu-work-events parquet writer could not close {path}")]
+    GpuWorkEventsWriterClose {
+        path: String,
+        #[source]
+        source: parquet::errors::ParquetError,
+    },
+
+    #[error("gpu-work-events sidecar could not be opened: {path}")]
+    GpuWorkEventsSidecarOpen {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("gpu-work-events parquet reader could not be opened for {path}")]
+    GpuWorkEventsReaderOpen {
+        path: String,
+        #[source]
+        source: parquet::errors::ParquetError,
+    },
+
+    #[error("gpu-work-events parquet reader could not be built for {path}")]
+    GpuWorkEventsReaderBuild {
+        path: String,
+        #[source]
+        source: parquet::errors::ParquetError,
+    },
+
+    #[error("gpu-work-events parquet reader could not read batch from {path}")]
+    GpuWorkEventsBatchRead {
+        path: String,
+        #[source]
+        source: arrow::error::ArrowError,
+    },
+
     #[error(
         "no schema adapter matched the trace; StandardAdapter did not recognise the canonical 3.x columns"
     )]
@@ -563,6 +652,16 @@ impl NsysDataError {
 
     pub fn nvtx_tree_view_register(path: impl std::fmt::Display, source: duckdb::Error) -> Self {
         Self::NvtxTreeViewRegister {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_view_register(
+        path: impl std::fmt::Display,
+        source: duckdb::Error,
+    ) -> Self {
+        Self::GpuWorkEventsViewRegister {
             path: path.to_string(),
             source,
         }
@@ -1266,6 +1365,136 @@ impl NsysDataError {
             source,
         }
     }
+
+    pub fn gpu_work_events_rows_prepare(table: impl Into<String>, source: duckdb::Error) -> Self {
+        Self::duckdb_prepare("gpu work events", table, source)
+    }
+
+    pub fn gpu_work_events_rows_query(table: impl Into<String>, source: duckdb::Error) -> Self {
+        Self::duckdb_query("gpu work events", table, source)
+    }
+
+    pub fn gpu_work_events_rows_read(table: impl Into<String>, source: duckdb::Error) -> Self {
+        Self::duckdb_read("gpu work events", table, source)
+    }
+
+    pub fn gpu_work_events_column_missing(
+        path: impl std::fmt::Display,
+        column: impl Into<String>,
+    ) -> Self {
+        Self::GpuWorkEventsColumnMissing {
+            path: path.to_string(),
+            column: column.into(),
+        }
+    }
+
+    pub fn gpu_work_events_column_type_mismatch(
+        path: impl std::fmt::Display,
+        column: impl Into<String>,
+        expected: impl Into<String>,
+        actual: impl Into<String>,
+    ) -> Self {
+        Self::GpuWorkEventsColumnTypeMismatch {
+            path: path.to_string(),
+            column: column.into(),
+            expected: expected.into(),
+            actual: actual.into(),
+        }
+    }
+
+    pub fn gpu_work_events_trace_fingerprint(
+        path: impl std::fmt::Display,
+        source: std::io::Error,
+    ) -> Self {
+        Self::GpuWorkEventsTraceFingerprint {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_record_batch(source: arrow::error::ArrowError) -> Self {
+        Self::GpuWorkEventsRecordBatch { source }
+    }
+
+    pub fn gpu_work_events_sidecar_create(
+        path: impl std::fmt::Display,
+        source: std::io::Error,
+    ) -> Self {
+        Self::GpuWorkEventsSidecarCreate {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_writer_open(
+        path: impl std::fmt::Display,
+        source: parquet::errors::ParquetError,
+    ) -> Self {
+        Self::GpuWorkEventsWriterOpen {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_writer_write(
+        path: impl std::fmt::Display,
+        source: parquet::errors::ParquetError,
+    ) -> Self {
+        Self::GpuWorkEventsWriterWrite {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_writer_close(
+        path: impl std::fmt::Display,
+        source: parquet::errors::ParquetError,
+    ) -> Self {
+        Self::GpuWorkEventsWriterClose {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_sidecar_open(
+        path: impl std::fmt::Display,
+        source: std::io::Error,
+    ) -> Self {
+        Self::GpuWorkEventsSidecarOpen {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_reader_open(
+        path: impl std::fmt::Display,
+        source: parquet::errors::ParquetError,
+    ) -> Self {
+        Self::GpuWorkEventsReaderOpen {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_reader_build(
+        path: impl std::fmt::Display,
+        source: parquet::errors::ParquetError,
+    ) -> Self {
+        Self::GpuWorkEventsReaderBuild {
+            path: path.to_string(),
+            source,
+        }
+    }
+
+    pub fn gpu_work_events_batch_read(
+        path: impl std::fmt::Display,
+        source: arrow::error::ArrowError,
+    ) -> Self {
+        Self::GpuWorkEventsBatchRead {
+            path: path.to_string(),
+            source,
+        }
+    }
 }
 
 impl From<veloq_data::DataError> for NsysDataError {
@@ -1292,6 +1521,9 @@ impl VeloqDiagnostic for NsysDataError {
             Self::ParquetViewCreate { .. } => ErrorCode::new("nsys.data.parquet-view-create"),
             Self::NvtxTreeViewRegister { .. } => {
                 ErrorCode::new("nsys.data.nvtx-tree-view-register")
+            }
+            Self::GpuWorkEventsViewRegister { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-view-register")
             }
             Self::SidecarCache { .. } => ErrorCode::new("nsys.data.sidecar-cache"),
             Self::SidecarOperation { .. } => ErrorCode::new("nsys.data.sidecar-operation"),
@@ -1442,6 +1674,42 @@ impl VeloqDiagnostic for NsysDataError {
             Self::NvtxTreeReaderOpen { .. } => ErrorCode::new("nsys.data.nvtx-tree-reader-open"),
             Self::NvtxTreeReaderBuild { .. } => ErrorCode::new("nsys.data.nvtx-tree-reader-build"),
             Self::NvtxTreeBatchRead { .. } => ErrorCode::new("nsys.data.nvtx-tree-batch-read"),
+            Self::GpuWorkEventsColumnMissing { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-column-missing")
+            }
+            Self::GpuWorkEventsColumnTypeMismatch { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-column-type-mismatch")
+            }
+            Self::GpuWorkEventsTraceFingerprint { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-trace-fingerprint")
+            }
+            Self::GpuWorkEventsRecordBatch { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-record-batch")
+            }
+            Self::GpuWorkEventsSidecarCreate { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-sidecar-create")
+            }
+            Self::GpuWorkEventsWriterOpen { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-writer-open")
+            }
+            Self::GpuWorkEventsWriterWrite { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-writer-write")
+            }
+            Self::GpuWorkEventsWriterClose { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-writer-close")
+            }
+            Self::GpuWorkEventsSidecarOpen { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-sidecar-open")
+            }
+            Self::GpuWorkEventsReaderOpen { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-reader-open")
+            }
+            Self::GpuWorkEventsReaderBuild { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-reader-build")
+            }
+            Self::GpuWorkEventsBatchRead { .. } => {
+                ErrorCode::new("nsys.data.gpu-work-events-batch-read")
+            }
             Self::SchemaAdapterUnmatched => ErrorCode::new("nsys.data.schema-adapter-unmatched"),
         }
     }

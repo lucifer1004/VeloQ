@@ -221,15 +221,16 @@ pub enum Cmd {
         trace_arg: TraceArg,
     },
 
-    /// Prepare a trace for fast queries: export to a parquetdir and warm the metadata cache (`--status` inspects cache state without building).
+    /// Prepare a trace for fast queries: export to a parquetdir and warm registered sidecars (`--status` inspects readiness without building).
     Prep {
         #[command(flatten)]
         trace_arg: TraceArg,
 
         /// Report cache state without building anything. Exits with
-        /// `0` regardless of cache state; check `parquet_cache.present`
-        /// / `parquet_cache.tables` and `meta_cache.fingerprint_match`
-        /// / `meta_cache.format_version_on_disk` in the response.
+        /// `0` regardless of cache state; check
+        /// `auxiliary.parquet_cache` plus `rows[]` sidecar readiness
+        /// fields such as `fingerprint_match` and
+        /// `format_version_on_disk` in the response.
         #[arg(long)]
         status: bool,
     },

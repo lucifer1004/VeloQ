@@ -71,6 +71,7 @@ version).
    | `metrics` nic               | `nic_counter\|nic:<id>\|port:<id>\|metric:<idx>`                                                                                                                                                              |
    | `metrics` cpu-sampling      | bare `<symbol>` / `<module-basename>` / `<tid>` / `<cpu>` per `--group-by`                                                                                                                                    |
    | `metrics` cpu-sched         | `tid:<id>` / `cpu:<id>` / `state:<name>` per `--group-by`                                                                                                                                                     |
+   | `prep`                      | `sidecar\|<sidecar-id>`                                                                                                                                                                                       |
    | `ncu summary`               | `totals` (single-row summary)                                                                                                                                                                                 |
    | `ncu launches`              | `launch:<idx>`                                                                                                                                                                                                |
    | `ncu inspect`               | `launch:<idx>`                                                                                                                                                                                                |
@@ -112,9 +113,13 @@ version).
 
 3. **Per-source version (`SourceRef.version`)**: bumps independently
    from `ENVELOPE_VERSION` on any breaking shape change to that
-   source's payloads. Today NSys is `v1` (`stats --group-by nvtx-path`
-   rows carry the NVTX domain dimension — domain-qualified key plus
-   resolved `domain_id`/`domain_pid`/`domain_name`); NCU is `v1` — the
+   source's payloads. Today NSys is `v2`: `v1` introduced the NVTX
+   domain dimension on `stats --group-by nvtx-path` rows
+   (domain-qualified key plus resolved
+   `domain_id`/`domain_pid`/`domain_name`), and `v2` changes
+   `prep` / `prep --status` to the canonical sidecar-readiness list
+   response (`data.rows[]` with `sidecar|<sidecar-id>` keys,
+   plus command-level context under `data.auxiliary`). NCU is `v1` — the
    `ncu_report`-native wire (`inspect` drops the
    section catalog and cpu/python stacks, `summary.auxiliary.session`
    keeps only the NCU version), with the wire reporting each `ncu inspect` metric's `metric_type` /
@@ -286,6 +291,10 @@ Not shipped yet:
       capabilities, hardware, per-table counts, NVTX nesting
       (`HashMap<i64, NvtxEntry { depth, iter_index }>`). Built
       by `summary` / `prep`.
+    - `<trace>.veloq/gpu-work-events.parquet` — normalized
+      kernel/memcpy/memset intervals for repeated `gaps` queries.
+      Built by `prep` or lazily by full-trace `gaps`; small-window
+      cold `gaps` queries use the direct local-window SQL path.
     - `<trace>.veloq/nvtx-parent.parquet` — `RuntimeNvtxParent`;
       runtime-row → enclosing NVTX chains for grouped stats paths.
     - `<trace>.veloq/nvtx-tree.parquet` — `NvtxTree`; flattened
