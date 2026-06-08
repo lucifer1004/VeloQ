@@ -42,7 +42,10 @@
 use crate::{NsysDataResult, Trace};
 use std::collections::HashSet;
 use thiserror::Error;
-use veloq_core::{AppliedScope, Warning, WarningCode, WarningSeverity};
+use veloq_core::{AppliedScope, AxisUsage, Warning, WarningCode, WarningSeverity};
+
+const NO_AXES: &[&str] = &[];
+const DEVICE_AXIS: &[&str] = &["device"];
 
 /// Caller-supplied scope inputs the resolver actually reasons about.
 /// Mirrors the public fields of
@@ -148,10 +151,8 @@ pub fn resolve_scope(
             // than the generic ambiguity error because `--all-devices`
             // is not a valid recovery for a stream-local filter.
             (None, n) => {
-                if let Some(stream) = req.stream {
-                    return Err(ResolveError::probe(
-                        crate::NsysDataError::scope_stream_requires_device(stream),
-                    ));
+                if let Some(err) = stream_parent_error(req.stream, NO_AXES) {
+                    return Err(ResolveError::probe(err));
                 }
                 if req.implicit_all_devices {
                     (None, vec!["device".to_string()])
@@ -170,10 +171,13 @@ pub fn resolve_scope(
         }
     };
 
-    if let (Some(stream), None) = (req.stream, resolved_device) {
-        return Err(ResolveError::probe(
-            crate::NsysDataError::scope_stream_requires_device(stream),
-        ));
+    let fixed_axes = if resolved_device.is_some() {
+        DEVICE_AXIS
+    } else {
+        NO_AXES
+    };
+    if let Some(err) = stream_parent_error(req.stream, fixed_axes) {
+        return Err(ResolveError::probe(err));
     }
 
     // Cross-axis bridge: when a single device is locked in, look up
@@ -201,6 +205,17 @@ pub fn resolve_scope(
             aggregated_over,
         },
     })
+}
+
+fn stream_parent_error(
+    stream: Option<i64>,
+    fixed_axes: &[&'static str],
+) -> Option<crate::NsysDataError> {
+    let stream = stream?;
+    AxisUsage::new(fixed_axes, NO_AXES)
+        .validate_filter("stream", DEVICE_AXIS)
+        .err()
+        .map(|_| crate::NsysDataError::scope_stream_requires_device(stream))
 }
 
 /// Outcome wrapper so callers can distinguish "structured refusal"

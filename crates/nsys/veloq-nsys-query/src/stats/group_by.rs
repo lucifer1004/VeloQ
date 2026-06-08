@@ -1,7 +1,10 @@
 use super::HIST_BOUNDARIES_NS;
 use super::sql::NVTX_STYLE_EXPR;
 use crate::{NsysQueryError, NsysQueryResult};
-use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
+use veloq_core::{AxisUsage, Direction, SortKeyDef, SortKeySpec, SortSpec};
+
+const NO_AXES: &[&str] = &[];
+const DEVICE_AXIS: &[&str] = &["device"];
 
 /// Identity dimension: how the kernel name folds across rows.
 /// Mutually exclusive (only one can be active in any `--group-by`).
@@ -558,20 +561,26 @@ impl GroupBy {
         verb: &'static str,
         device: Option<i32>,
     ) -> NsysQueryResult<()> {
-        if device.is_some() || self.device {
-            return Ok(());
-        }
-        let axis = if self.stream {
-            Some("stream")
-        } else if self.context {
-            Some("context")
+        let fixed = if device.is_some() {
+            DEVICE_AXIS
         } else {
-            None
+            NO_AXES
         };
-        if let Some(axis) = axis {
-            return Err(crate::NsysQueryError::StatsGroupByDeviceParentRequired { verb, axis });
-        }
-        Ok(())
+        let projected = if self.device { DEVICE_AXIS } else { NO_AXES };
+        let usage = AxisUsage::new(fixed, projected);
+        let result = if self.stream {
+            usage.validate_projection("stream", DEVICE_AXIS)
+        } else if self.context {
+            usage.validate_projection("context", DEVICE_AXIS)
+        } else {
+            Ok(())
+        };
+        result.map_err(
+            |err| crate::NsysQueryError::StatsGroupByDeviceParentRequired {
+                verb,
+                axis: err.axis(),
+            },
+        )
     }
 
     pub fn from_arg(s: &str) -> NsysQueryResult<Self> {

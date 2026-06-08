@@ -29,8 +29,8 @@ pub use envelope::{
 };
 pub use meta::{AppliedScope, NextStep, ResponseMeta, Warning, WarningCode, WarningSeverity};
 pub use query::{
-    LimitError, LimitRef, LimitedRows, NameFilterRef, NameMatchError, NameMatcher, TimelineBucket,
-    WindowRef, timeline_bucket_key,
+    AxisParentError, AxisUsage, LimitError, LimitRef, LimitedRows, NameFilterRef, NameMatchError,
+    NameMatcher, TimelineBucket, WindowRef, timeline_bucket_key,
 };
 pub use shell::shell_quote;
 pub use sidecar::{SidecarCache, SidecarError, SidecarHeader, SidecarResult, SourceFingerprint};
