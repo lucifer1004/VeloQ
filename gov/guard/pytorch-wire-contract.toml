@@ -17,5 +17,5 @@ refs = [
 ]
 
 [check]
-command = "bash -c 'cargo test --profile ci -p veloq-pytorch --test source_schema_smoke && cargo test --profile ci -p veloq-pytorch --test wire_format_smoke && cargo test --profile ci -p veloq-pytorch-query && cargo test --profile ci -p veloq-pytorch-data && cargo test --profile ci -p veloq --test cli_smoke pytorch_'"
+command = "bash -c 'cargo test --profile ci -p veloq-pytorch -p veloq-pytorch-query -p veloq-pytorch-data && cargo test --profile ci -p veloq --test cli_smoke pytorch_'"
 timeout_secs = 900

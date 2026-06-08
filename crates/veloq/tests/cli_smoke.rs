@@ -19,7 +19,7 @@
 //! via `env!("CARGO_BIN_EXE_<bin>")`, a Cargo built-in. No `assert_cmd`
 //! dep needed.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use duckdb::{Connection, params};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -96,6 +96,59 @@ fn assert_error_code(out: &Output, expected: &str) -> Result<Value> {
         v.pointer("/error/code").and_then(Value::as_str),
         Some(expected),
         "unexpected error code for {expected}: {v}"
+    );
+    Ok(v)
+}
+
+fn assert_schema_envelope(
+    out: &Output,
+    command: &str,
+    source_kind: &str,
+    source_version: &str,
+    target: &str,
+) -> Result<Value> {
+    assert!(
+        out.status.success(),
+        "{command} {target} should succeed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value =
+        serde_json::from_slice(&out.stdout).context("schema stdout must be valid JSON")?;
+    assert_eq!(
+        v.get("schema").and_then(Value::as_str),
+        Some("v1"),
+        "schema envelope must advertise v1: {v}",
+    );
+    assert_eq!(v.get("command").and_then(Value::as_str), Some(command));
+    assert_eq!(
+        v.pointer("/source/kind").and_then(Value::as_str),
+        Some(source_kind),
+        "schema envelope has wrong source kind: {v}",
+    );
+    assert_eq!(
+        v.pointer("/source/version").and_then(Value::as_str),
+        Some(source_version),
+        "schema envelope has wrong source version: {v}",
+    );
+    assert!(
+        v.get("trace").is_none(),
+        "schema envelope must omit trace: {v}",
+    );
+    assert!(
+        v.get("trace_span").is_none(),
+        "schema envelope must omit trace_span: {v}",
+    );
+    assert_eq!(
+        v.pointer("/data/target").and_then(Value::as_str),
+        Some(target),
+        "schema payload has wrong target: {v}",
+    );
+    let schema = v
+        .pointer("/data/schema")
+        .ok_or_else(|| anyhow!("schema response missing schema document: {v}"))?;
+    assert!(
+        schema.is_object(),
+        "schema response must carry a JSON Schema object: {v}",
     );
     Ok(v)
 }

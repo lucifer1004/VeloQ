@@ -1,4 +1,7 @@
-use super::{assert_error_code, build_graph_replay_trace, build_minimal_trace, run_veloq};
+use super::{
+    assert_error_code, assert_schema_envelope, build_graph_replay_trace, build_minimal_trace,
+    run_veloq,
+};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
@@ -19,49 +22,16 @@ fn help_exits_zero() -> Result<()> {
 }
 
 #[test]
-fn schema_endpoint_emits_envelope_without_trace() -> Result<()> {
+fn nsys_schema_endpoint_emits_standard_meta_envelope() -> Result<()> {
     let out = run_veloq(["schema", "summary"])?;
-    assert!(
-        out.status.success(),
-        "schema should succeed without a trace"
-    );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("schema stdout must be valid JSON")?;
-    assert_eq!(
-        v.get("command").and_then(Value::as_str),
-        Some("nsys.schema"),
-    );
-    assert_eq!(
-        v.get("source")
-            .and_then(|s| s.get("kind"))
-            .and_then(Value::as_str),
-        Some("nsys"),
-    );
-    assert_eq!(
-        v.get("source")
-            .and_then(|s| s.get("version"))
-            .and_then(Value::as_str),
-        Some("v1"),
-    );
-    assert!(v.get("schema").is_some(), "envelope missing `schema` key");
-    assert!(v.get("data").is_some(), "envelope missing `data` payload");
-    assert!(
-        v.get("trace").is_none(),
-        "schema envelope must omit `trace` (meta endpoint): {v}",
-    );
+    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", "summary")?;
     Ok(())
 }
 
 #[test]
-fn graph_replays_schema_endpoint_is_registered() -> Result<()> {
+fn nsys_graph_replays_schema_endpoint_is_registered() -> Result<()> {
     let out = run_veloq(["schema", "graph-replays"])?;
-    assert!(out.status.success());
-    let v: Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(
-        v.pointer("/data/target").and_then(Value::as_str),
-        Some("graph-replays")
-    );
-    assert!(v.pointer("/data/schema").is_some());
+    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", "graph-replays")?;
     Ok(())
 }
 
@@ -88,26 +58,12 @@ fn nsys_namespace_routes_default_source_verbs() -> Result<()> {
     );
 
     let schema = run_veloq(["nsys", "schema", "summary"])?;
-    assert!(
-        schema.status.success(),
-        "nsys schema failed: stderr={}",
-        String::from_utf8_lossy(&schema.stderr)
-    );
-    let v: Value =
-        serde_json::from_slice(&schema.stdout).context("nsys schema stdout must be valid JSON")?;
-    assert_eq!(
-        v.get("command").and_then(Value::as_str),
-        Some("nsys.schema"),
-    );
-    assert!(
-        v.get("trace").is_none(),
-        "nsys schema envelope must omit trace: {v}"
-    );
+    let _ = assert_schema_envelope(&schema, "nsys.schema", "nsys", "v1", "summary")?;
     Ok(())
 }
 
 #[test]
-fn graph_replays_cli_renders_json_table_and_csv() -> Result<()> {
+fn nsys_graph_replays_cli_renders_json_table_and_csv() -> Result<()> {
     let (_trace_dir, trace) = build_graph_replay_trace()?;
     let trace_arg = trace.to_string_lossy();
 
@@ -156,36 +112,16 @@ fn graph_replays_cli_renders_json_table_and_csv() -> Result<()> {
 }
 
 #[test]
-fn schema_endpoint_covers_cli_side_nsys_payloads() -> Result<()> {
+fn nsys_schema_endpoint_covers_cli_side_payloads() -> Result<()> {
     for target in ["prep", "correlation-stats", "ncu-command"] {
         let out = run_veloq(["schema", target])?;
-        assert!(
-            out.status.success(),
-            "schema {target} should succeed: stderr={}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let v: Value = serde_json::from_slice(&out.stdout)
-            .with_context(|| format!("schema {target} stdout must be valid JSON"))?;
-        assert_eq!(
-            v.get("command").and_then(Value::as_str),
-            Some("nsys.schema"),
-        );
-        assert_eq!(
-            v.get("data")
-                .and_then(|d| d.get("target"))
-                .and_then(Value::as_str),
-            Some(target),
-        );
-        assert!(
-            v.get("data").and_then(|d| d.get("schema")).is_some(),
-            "schema endpoint missing schema document for {target}: {v}"
-        );
+        let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v1", target)?;
     }
     Ok(())
 }
 
 #[test]
-fn summary_happy_path_emits_full_envelope() -> Result<()> {
+fn nsys_summary_happy_path_emits_full_envelope() -> Result<()> {
     let (_trace_dir, trace) = build_minimal_trace()?;
     let out = run_veloq(["summary", &trace.to_string_lossy()])?;
     assert!(
@@ -236,22 +172,6 @@ fn summary_happy_path_emits_full_envelope() -> Result<()> {
             .and_then(|t| t.get("path"))
             .and_then(Value::as_str),
         Some(trace.to_string_lossy().as_ref())
-    );
-    Ok(())
-}
-
-#[test]
-fn schema_envelope_advertises_version_and_omits_trace_span() -> Result<()> {
-    // Meta verbs don't read a trace; the envelope must report `v1`
-    // (current schema) AND omit `trace_span` (no trace to span).
-    let out = run_veloq(["schema", "summary"])?;
-    assert!(out.status.success());
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("schema stdout must be valid JSON")?;
-    assert_eq!(v.get("schema").and_then(Value::as_str), Some("v1"));
-    assert!(
-        v.get("trace_span").is_none(),
-        "meta-verb envelope must omit trace_span: {v}",
     );
     Ok(())
 }
@@ -404,7 +324,7 @@ fn format_csv_dispatch_changes_stdout_shape() -> Result<()> {
 }
 
 #[test]
-fn schema_bad_target_omits_trace_field() -> Result<()> {
+fn nsys_schema_bad_target_omits_trace_field() -> Result<()> {
     // Regression test for `veloq schema <bad-target>` fabricating
     // `envelope.trace.path == ""` instead of omitting `trace` on the
     // error envelope (the success envelope omitted it correctly; the

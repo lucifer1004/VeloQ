@@ -1,4 +1,4 @@
-use super::{assert_error_code, run_veloq};
+use super::{assert_error_code, assert_schema_envelope, run_veloq};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 
@@ -117,36 +117,9 @@ fn ncu_summary_csv_emits_native_totals_projection() -> Result<()> {
 }
 
 #[test]
-fn ncu_schema_endpoint_emits_envelope_without_trace() -> Result<()> {
+fn ncu_schema_endpoint_emits_standard_meta_envelope() -> Result<()> {
     let out = run_veloq(["ncu", "schema", "summary"])?;
-    assert!(
-        out.status.success(),
-        "ncu schema summary should succeed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("ncu schema stdout must be valid JSON")?;
-    assert_eq!(v.get("command").and_then(Value::as_str), Some("ncu.schema"),);
-    assert_eq!(
-        v.get("source")
-            .and_then(|s| s.get("kind"))
-            .and_then(Value::as_str),
-        Some("ncu"),
-    );
-    assert!(
-        v.get("trace").is_none(),
-        "ncu schema envelope must omit trace: {v}"
-    );
-    assert_eq!(
-        v.get("data")
-            .and_then(|d| d.get("target"))
-            .and_then(Value::as_str),
-        Some("summary"),
-    );
-    assert!(
-        v.get("data").and_then(|d| d.get("schema")).is_some(),
-        "ncu schema response missing schema document: {v}"
-    );
+    let _ = assert_schema_envelope(&out, "ncu.schema", "ncu", "v1", "summary")?;
     Ok(())
 }
 

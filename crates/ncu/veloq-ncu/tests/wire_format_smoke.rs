@@ -4,6 +4,13 @@
 //! `veloq ncu schema <target>`. They pin VeloQ's own contract
 //! invariants: canonical list shape, row keys, tagged inspect rows,
 //! and explicit outer discriminators for untagged row unions.
+//!
+//! Boundary: the canonical list check is source-neutral. The
+//! discriminator tests are NCU-specific: `inspect` uses a row-level
+//! `type` tag, while `metrics`, `source-metrics`, and `warp-stalls`
+//! use outer root discriminators to disambiguate untagged row unions.
+//! The JSON Schema traversal helpers stay test-local until a common
+//! abstraction can preserve that distinction clearly.
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -162,6 +169,15 @@ fn tag_const_values(row_schema: &Value, tag: &str) -> Result<Vec<String>> {
     Ok(values)
 }
 
+fn assert_tag_values_include(values: &[String], expected: &[&str], label: &str) -> Result<()> {
+    for expected_value in expected {
+        if !values.iter().any(|value| value == expected_value) {
+            anyhow::bail!("{label} missing `{expected_value}` variant");
+        }
+    }
+    Ok(())
+}
+
 fn assert_required_field_in_some_variant(
     doc: &SchemaDoc,
     variants: &[Value],
@@ -207,12 +223,7 @@ fn inspect_rows_expose_type_tagged_variants() -> Result<()> {
     let doc = SchemaDoc::for_target("inspect")?;
     let row = doc.rows_item()?;
     let values = tag_const_values(&row, "type")?;
-    for expected in ["launch", "not_found"] {
-        if !values.iter().any(|value| value == expected) {
-            anyhow::bail!("inspect rows missing `{expected}` type variant");
-        }
-    }
-    Ok(())
+    assert_tag_values_include(&values, &["launch", "not_found"], "inspect rows")
 }
 
 #[test]

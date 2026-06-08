@@ -1,4 +1,4 @@
-use super::{assert_error_code, run_veloq};
+use super::{assert_error_code, assert_schema_envelope, run_veloq};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -77,45 +77,9 @@ fn assert_pytorch_rank_scope_error(
 }
 
 #[test]
-fn pytorch_schema_endpoint_emits_envelope_without_trace() -> Result<()> {
+fn pytorch_schema_endpoint_emits_standard_meta_envelope() -> Result<()> {
     let out = run_veloq(["pytorch", "schema", "summary"])?;
-    assert!(
-        out.status.success(),
-        "pytorch schema summary should succeed: stderr={}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value =
-        serde_json::from_slice(&out.stdout).context("pytorch schema stdout must be valid JSON")?;
-    assert_eq!(
-        v.get("command").and_then(Value::as_str),
-        Some("pytorch.schema"),
-    );
-    assert_eq!(
-        v.get("source")
-            .and_then(|s| s.get("kind"))
-            .and_then(Value::as_str),
-        Some("pytorch"),
-    );
-    assert_eq!(
-        v.get("source")
-            .and_then(|s| s.get("version"))
-            .and_then(Value::as_str),
-        Some("v0"),
-    );
-    assert!(
-        v.get("trace").is_none(),
-        "pytorch schema envelope must omit trace: {v}"
-    );
-    assert_eq!(
-        v.get("data")
-            .and_then(|d| d.get("target"))
-            .and_then(Value::as_str),
-        Some("summary"),
-    );
-    assert!(
-        v.get("data").and_then(|d| d.get("schema")).is_some(),
-        "pytorch schema response missing schema document: {v}"
-    );
+    let _ = assert_schema_envelope(&out, "pytorch.schema", "pytorch", "v0", "summary")?;
     Ok(())
 }
 

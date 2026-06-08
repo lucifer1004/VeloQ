@@ -34,7 +34,7 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
 }
 
 #[test]
-fn info_probes_capabilities_for_parquetdir_traces() -> Result<()> {
+fn nsys_artifact_info_probes_capabilities_for_parquetdir_traces() -> Result<()> {
     // `info` reports the cheap probe: source detection + filesystem
     // facts + (for `_pqtdir/` NSys traces) the same capability bitmap
     // `summary.auxiliary.capabilities` carries — computed via parquet
@@ -76,7 +76,7 @@ fn info_probes_capabilities_for_parquetdir_traces() -> Result<()> {
 }
 
 #[test]
-fn info_probes_capabilities_for_generated_parquetdir_alias() -> Result<()> {
+fn nsys_artifact_info_probes_capabilities_for_generated_parquetdir_alias() -> Result<()> {
     let (_trace_dir, _report, generated_pqtdir) = build_generated_parquetdir_alias()?;
     let trace_path = generated_pqtdir.to_string_lossy().to_string();
     let out = run_veloq(["info", &trace_path])?;
@@ -104,7 +104,7 @@ fn info_probes_capabilities_for_generated_parquetdir_alias() -> Result<()> {
 }
 
 #[test]
-fn info_does_not_detect_orphan_generated_parquetdir_alias() -> Result<()> {
+fn nsys_artifact_info_does_not_detect_orphan_generated_parquetdir_alias() -> Result<()> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let generated_pqtdir = dir.path().join("missing.nsys-rep.veloq/parquetdir");
     std::fs::create_dir_all(&generated_pqtdir).context("create generated parquetdir")?;
@@ -140,7 +140,7 @@ fn info_does_not_detect_orphan_generated_parquetdir_alias() -> Result<()> {
 }
 
 #[test]
-fn info_omits_capabilities_for_missing_trace() -> Result<()> {
+fn nsys_artifact_info_omits_capabilities_for_missing_trace() -> Result<()> {
     // A non-existent path detects as nsys (extension match) but the
     // capability probe is gated on `exists` — the response should
     // omit the field entirely rather than emit an all-false bitmap.
@@ -160,7 +160,7 @@ fn info_omits_capabilities_for_missing_trace() -> Result<()> {
 }
 
 #[test]
-fn prep_on_generated_parquetdir_uses_owner_artifact_root() -> Result<()> {
+fn nsys_artifact_prep_on_generated_parquetdir_uses_owner_artifact_root() -> Result<()> {
     let (_trace_dir, report, generated_pqtdir) = build_generated_parquetdir_alias()?;
     let trace_path = generated_pqtdir.to_string_lossy().to_string();
     let owner_root = veloq_core::artifact_dir_for(&report);
@@ -206,7 +206,7 @@ fn prep_on_generated_parquetdir_uses_owner_artifact_root() -> Result<()> {
 }
 
 #[test]
-fn clean_removes_only_veloq_artifact_root() -> Result<()> {
+fn nsys_artifact_clean_removes_only_veloq_artifact_root() -> Result<()> {
     let (_trace_dir, trace) = build_minimal_trace()?;
     let trace_path = trace.to_string_lossy().to_string();
     let prep = run_veloq(["prep", &trace_path])?;
@@ -267,7 +267,7 @@ fn clean_removes_only_veloq_artifact_root() -> Result<()> {
 }
 
 #[test]
-fn clean_generated_parquetdir_removes_owner_artifact_root() -> Result<()> {
+fn nsys_artifact_clean_generated_parquetdir_removes_owner_artifact_root() -> Result<()> {
     let (_trace_dir, report, generated_pqtdir) = build_generated_parquetdir_alias()?;
     let trace_path = generated_pqtdir.to_string_lossy().to_string();
     let owner_root = veloq_core::artifact_dir_for(&report);
@@ -304,7 +304,7 @@ fn clean_generated_parquetdir_removes_owner_artifact_root() -> Result<()> {
 }
 
 #[test]
-fn prep_status_reports_cold_then_warm_state() -> Result<()> {
+fn nsys_artifact_prep_status_reports_cold_then_warm_state() -> Result<()> {
     // `--status` is the read-only inspection form. The parquetdir is
     // the input itself (always `present`); the
     // veloq-managed sidecar that flips cold→warm is the meta cache.
@@ -398,7 +398,7 @@ fn prep_status_reports_cold_then_warm_state() -> Result<()> {
 }
 
 #[test]
-fn cold_summary_emits_trace_span_on_first_run() -> Result<()> {
+fn nsys_artifact_cold_summary_emits_trace_span_on_first_run() -> Result<()> {
     // Regression: `summary` against a never-prepped trace used to
     // omit `trace_span` because `Source::compute_trace_span` only
     // consulted an existing sidecar. The verb itself builds the
@@ -531,20 +531,20 @@ fn assert_child_output_stays_off_stdout(out: &Output, command: &str) -> Result<(
 
 #[cfg(unix)]
 #[test]
-fn cold_nsys_rep_summary_export_keeps_child_output_off_stdout() -> Result<()> {
+fn nsys_artifact_cold_nsys_rep_summary_export_keeps_child_output_off_stdout() -> Result<()> {
     let out = run_cold_nsys_rep_with_fake_export("summary")?;
     assert_child_output_stays_off_stdout(&out, "nsys.summary")
 }
 
 #[cfg(unix)]
 #[test]
-fn cold_nsys_rep_prep_export_keeps_child_output_off_stdout() -> Result<()> {
+fn nsys_artifact_cold_nsys_rep_prep_export_keeps_child_output_off_stdout() -> Result<()> {
     let out = run_cold_nsys_rep_with_fake_export("prep")?;
     assert_child_output_stays_off_stdout(&out, "nsys.prep")
 }
 
 #[test]
-fn warm_summary_emits_trace_span_after_prep() -> Result<()> {
+fn nsys_artifact_warm_summary_emits_trace_span_after_prep() -> Result<()> {
     // First call to `prep` writes the metadata cache so the
     // envelope-level `trace_span` becomes available on the next run.
     // This verifies the contract that warm traces carry the

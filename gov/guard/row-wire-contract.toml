@@ -6,5 +6,5 @@ title = "row wire contract"
 refs = ["RFC-0003"]
 
 [check]
-command = "bash -c 'cargo test --profile ci -p veloq-nsys-query --test wire_format_smoke && cargo test --profile ci -p veloq-nsys --test wire_format_smoke && cargo test --profile ci -p veloq-ncu --test wire_format_smoke && cargo test --profile ci -p veloq-pytorch --test wire_format_smoke'"
+command = "cargo test --profile ci -p veloq-nsys-query -p veloq-nsys -p veloq-ncu -p veloq-pytorch --test wire_format_smoke"
 timeout_secs = 900

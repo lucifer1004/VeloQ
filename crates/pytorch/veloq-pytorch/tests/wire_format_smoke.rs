@@ -5,6 +5,12 @@
 //! invariants: canonical list shape, row keys, and agent-visible
 //! discriminators. They deliberately do not validate fixture payloads
 //! against schemas; that would mostly test serde/schemars behavior.
+//!
+//! Boundary: the canonical list check is source-neutral. The remaining
+//! tests are PyTorch-specific: `search` keeps an open string event
+//! `type`, while `slices` exposes source-specific mode variants. The
+//! JSON Schema traversal helpers stay test-local until a common
+//! abstraction can preserve those boundaries without hiding them.
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
@@ -147,6 +153,15 @@ fn tag_const_values(row_schema: &Value, tag: &str) -> Result<Vec<String>> {
     Ok(values)
 }
 
+fn assert_tag_values_include(values: &[String], expected: &[&str], label: &str) -> Result<()> {
+    for expected_value in expected {
+        if !values.iter().any(|value| value == expected_value) {
+            anyhow::bail!("{label} missing `{expected_value}` variant");
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn every_schema_target_is_canonical_list_with_keyed_rows() -> Result<()> {
     for target in veloq_pytorch::schema_targets::TARGETS {
@@ -174,10 +189,5 @@ fn slices_rows_expose_mode_tagged_variants() -> Result<()> {
     let doc = SchemaDoc::for_target("slices")?;
     let row = doc.rows_item()?;
     let values = tag_const_values(&row, "mode")?;
-    for expected in ["instance", "aggregate"] {
-        if !values.iter().any(|value| value == expected) {
-            anyhow::bail!("slices rows missing `{expected}` mode variant");
-        }
-    }
-    Ok(())
+    assert_tag_values_include(&values, &["instance", "aggregate"], "slices rows")
 }

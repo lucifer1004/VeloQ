@@ -6,6 +6,14 @@
 //! non-list exceptions. They deliberately do not validate fixture
 //! payloads against schemas; that would mostly test serde/schemars
 //! behavior.
+//!
+//! Boundary: the first tests below cover source-neutral list
+//! invariants (`count`, `total_matched`, `rows`, row `key`). The
+//! remaining tests are intentionally NSys-specific: hidden targets,
+//! operational singleton payloads, source-tagged metrics bodies, and
+//! NSys event-kind discriminators. The JSON Schema traversal helpers
+//! stay test-local for now; cross-source extraction would obscure
+//! those source-specific boundaries more than it would help.
 
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
