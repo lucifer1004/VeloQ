@@ -42,8 +42,6 @@ use veloq_core::{
     time::{TimeWindow, parse_duration_ns},
 };
 use veloq_nsys_data::Trace;
-use veloq_query::duckdb::list as duckdb_list;
-use veloq_query::sql::total_matched_bigint_expr;
 
 use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 
@@ -355,7 +353,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
     };
     let union = event_source.sql.as_str();
 
-    let (sql, params) = match req.scope {
+    let gap_sql = match req.scope {
         GapScope::Stream => build_stream_sql(union, &req, abs_window)?,
         GapScope::Device => {
             build_unified_sql(union, &req, abs_window, /*partition_device=*/ true)?
@@ -365,11 +363,20 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
         }
     };
 
-    let (mut gaps, total_matched) =
-        hydrate_gap_rows(trace.conn(), &sql, &params, req.scope, req.limit)?;
+    let mut gaps = hydrate_gap_rows(
+        trace.conn(),
+        &gap_sql.rows_sql,
+        &gap_sql.rows_params,
+        req.scope,
+    )?;
+    let total_from_rows = truncate_gap_rows_to_limit(&mut gaps, req.limit);
     if event_source.needs_name_hydration {
         hydrate_gap_neighbor_names(&trace, &mut gaps)?;
     }
+    let total_matched = match total_from_rows {
+        Some(total) => total,
+        None => hydrate_gap_total(trace.conn(), &gap_sql.total_sql, &gap_sql.total_params)?,
+    };
 
     let span_ns = match abs_window {
         Some((s, e)) => (e - s).max(0),
@@ -396,16 +403,39 @@ fn hydrate_gap_rows(
     sql: &str,
     params: &[Value],
     scope: GapScope,
-    _limit: usize,
-) -> NsysQueryResult<(Vec<Gap>, i64)> {
+) -> NsysQueryResult<Vec<Gap>> {
     let rows = exec::query_rows(conn, sql, params, exec::GAPS_GAP, gap_sql_row)?;
-    duckdb_list::split_rows_and_total::<i64, _, _, _>(
-        rows,
-        duckdb_list::TotalCarrier::First,
-        |row| row.total_matched,
-        duckdb_list::infallible_count_error,
-        |row| gap_from_sql_row(scope, row),
-    )
+    rows.into_iter()
+        .map(|row| gap_from_sql_row(scope, row))
+        .collect::<NsysQueryResult<Vec<_>>>()
+}
+
+fn truncate_gap_rows_to_limit(gaps: &mut Vec<Gap>, limit: usize) -> Option<i64> {
+    if gaps.len() > limit {
+        gaps.truncate(limit);
+        None
+    } else {
+        Some(usize_to_i64_saturating(gaps.len()))
+    }
+}
+
+fn limit_probe_value(limit: usize) -> i64 {
+    usize_to_i64_saturating(limit.saturating_add(1))
+}
+
+fn usize_to_i64_saturating(value: usize) -> i64 {
+    match i64::try_from(value) {
+        Ok(value) => value,
+        Err(_) => i64::MAX,
+    }
+}
+
+fn hydrate_gap_total(
+    conn: &duckdb::Connection,
+    sql: &str,
+    params: &[Value],
+) -> NsysQueryResult<i64> {
+    Ok(exec::query_optional_row(conn, sql, params, exec::GAPS_GAP, |row| row.get(0))?.unwrap_or(0))
 }
 
 struct GapSqlRow {
@@ -422,17 +452,15 @@ struct GapSqlRow {
     next_row_num: i64,
     next_name: String,
     next_stream_id: i64,
-    total_matched: i64,
 }
 
 fn gap_sql_row(row: &duckdb::Row<'_>) -> Result<GapSqlRow, duckdb::Error> {
-    // Column layout is the same across all three SQL paths:
+    // Column layout is stable across scope SQL paths.
     //   0 device_id (i32, NULLABLE under scope=trace)
     //   1 stream_id (i64, NULLABLE under scope=device|trace)
     //   2 start_ns  3 end_ns  4 duration_ns
     //   5 prev_kind 6 prev_row 7 prev_name 8 prev_stream_id
     //   9 next_kind 10 next_row 11 next_name 12 next_stream_id
-    //   13 total_matched
     Ok(GapSqlRow {
         device_id: row.get(0)?,
         stream_id: row.get(1)?,
@@ -447,7 +475,6 @@ fn gap_sql_row(row: &duckdb::Row<'_>) -> Result<GapSqlRow, duckdb::Error> {
         next_row_num: row.get(10)?,
         next_name: row.get(11)?,
         next_stream_id: row.get(12)?,
-        total_matched: row.get(13)?,
     })
 }
 
@@ -744,31 +771,43 @@ fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {
     }
 }
 
-/// SQL fragment emitting (kind, row_id, device_id, stream_id, name,
-/// start_ns, end_ns) for one event table. Name resolution + memcpy
-/// copyKind labels come from `kind_sql` so the three GPU branches stay
-/// in sync with the other commands.
-///
-/// Build the per-stream `--scope stream` SQL: `LEAD()` between
-/// consecutive events on the same (device, stream). Every emitted
-/// column matches the 14-column layout the row reader expects.
-fn build_stream_sql(
-    union: &str,
-    req: &GapsRequest,
-    abs_window: Option<(i64, i64)>,
-) -> NsysQueryResult<(String, Vec<Value>)> {
-    let mut where_parts: Vec<String> = Vec::new();
-    let (event_ctes, event_source, mut params) = build_stream_event_input(union, req, abs_window);
+/// SQL and bind params for a gaps row query plus its minimal count
+/// query. The count query is only executed when the row query proves
+/// `LIMIT` truncated the result set.
+struct GapSqlQuery {
+    rows_sql: String,
+    rows_params: Vec<Value>,
+    total_sql: String,
+    total_params: Vec<Value>,
+}
 
+fn push_gap_filters(
+    params: &mut Vec<Value>,
+    abs_window: Option<(i64, i64)>,
+    min_ns: i64,
+) -> String {
+    let mut where_parts: Vec<String> = Vec::new();
     if let Some((s, e)) = abs_window {
         where_parts.push("gap_start_ns < ? AND gap_end_ns > ?".to_string());
         params.push(Value::BigInt(e));
         params.push(Value::BigInt(s));
     }
     where_parts.push("gap_ns >= ?".to_string());
-    params.push(Value::BigInt(req.min_ns));
-    let where_clause = format!("WHERE {}", where_parts.join(" AND "));
-    params.push(Value::BigInt(req.limit as i64));
+    params.push(Value::BigInt(min_ns));
+    format!("WHERE {}", where_parts.join(" AND "))
+}
+
+/// Build the per-stream `--scope stream` SQL: `LEAD()` between
+/// consecutive events on the same (device, stream).
+fn build_stream_sql(
+    union: &str,
+    req: &GapsRequest,
+    abs_window: Option<(i64, i64)>,
+) -> NsysQueryResult<GapSqlQuery> {
+    let (event_ctes, event_source, mut rows_params) =
+        build_stream_event_input(union, req, abs_window);
+    let where_clause = push_gap_filters(&mut rows_params, abs_window, req.min_ns);
+    rows_params.push(Value::BigInt(limit_probe_value(req.limit)));
 
     let sort_spec = req
         .sort
@@ -776,7 +815,7 @@ fn build_stream_sql(
         .unwrap_or_else(|| SortSpec::single("duration"));
     let order_by = gaps_sort_sql(&sort_spec)?;
 
-    let sql = format!(
+    let rows_sql = format!(
         r#"
         WITH {event_ctes},
         sequenced AS (
@@ -808,15 +847,50 @@ fn build_stream_sql(
         SELECT
             device_id, stream_id, gap_start_ns, gap_end_ns, gap_ns,
             prev_kind, prev_row_id, prev_name, prev_stream_id,
-            next_kind, next_row_id, next_name, next_stream_id,
-            {total_matched}
+            next_kind, next_row_id, next_name, next_stream_id
         FROM clipped
         ORDER BY {order_by}
         LIMIT ?
-        "#,
-        total_matched = total_matched_bigint_expr(),
+        "#
     );
-    Ok((sql, params))
+
+    let (total_event_ctes, total_event_source, mut total_params) =
+        build_stream_event_input(union, req, abs_window);
+    let total_where_clause = push_gap_filters(&mut total_params, abs_window, req.min_ns);
+    let total_sql = format!(
+        r#"
+        WITH {total_event_ctes},
+        sequenced AS (
+            SELECT
+                start_ns, end_ns,
+                LEAD(start_ns) OVER w AS next_start_ns
+            FROM {total_event_source}
+            WINDOW w AS (PARTITION BY device_id, stream_id ORDER BY start_ns, row_id)
+        ),
+        filtered AS (
+            SELECT
+                end_ns AS gap_start_ns,
+                next_start_ns AS gap_end_ns,
+                next_start_ns - end_ns AS gap_ns
+            FROM sequenced
+            WHERE next_start_ns IS NOT NULL
+        ),
+        clipped AS (
+            SELECT 1
+            FROM filtered
+            {total_where_clause}
+        )
+        SELECT CAST(COUNT(*) AS BIGINT) AS total_matched
+        FROM clipped
+        "#
+    );
+
+    Ok(GapSqlQuery {
+        rows_sql,
+        rows_params,
+        total_sql,
+        total_params,
+    })
 }
 
 /// Build the `--scope device` (`partition_device=true`) or `--scope
@@ -836,25 +910,17 @@ fn build_unified_sql(
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
     partition_device: bool,
-) -> NsysQueryResult<(String, Vec<Value>)> {
+) -> NsysQueryResult<GapSqlQuery> {
     let partition = if partition_device {
         "PARTITION BY device_id ORDER BY start_ns, row_id"
     } else {
         "ORDER BY start_ns, row_id"
     };
 
-    let mut where_parts: Vec<String> = Vec::new();
-    let (event_ctes, event_source, mut params) =
+    let (event_ctes, event_source, mut rows_params) =
         build_unified_event_input(union, req, abs_window, partition_device);
-    if let Some((s, e)) = abs_window {
-        where_parts.push("gap_start_ns < ? AND gap_end_ns > ?".to_string());
-        params.push(Value::BigInt(e));
-        params.push(Value::BigInt(s));
-    }
-    where_parts.push("gap_ns >= ?".to_string());
-    params.push(Value::BigInt(req.min_ns));
-    let where_clause = format!("WHERE {}", where_parts.join(" AND "));
-    params.push(Value::BigInt(req.limit as i64));
+    let where_clause = push_gap_filters(&mut rows_params, abs_window, req.min_ns);
+    rows_params.push(Value::BigInt(limit_probe_value(req.limit)));
 
     let sort_spec = req
         .sort
@@ -875,7 +941,7 @@ fn build_unified_sql(
         "CAST(NULL AS INTEGER)"
     };
 
-    let sql = format!(
+    let rows_sql = format!(
         r#"
         WITH {event_ctes},
         with_prev AS (
@@ -910,15 +976,50 @@ fn build_unified_sql(
         SELECT
             device_id, stream_id, gap_start_ns, gap_end_ns, gap_ns,
             prev_kind, prev_row_id, prev_name, prev_stream_id,
-            next_kind, next_row_id, next_name, next_stream_id,
-            {total_matched}
+            next_kind, next_row_id, next_name, next_stream_id
         FROM clipped
         ORDER BY {order_by}
         LIMIT ?
-        "#,
-        total_matched = total_matched_bigint_expr(),
+        "#
     );
-    Ok((sql, params))
+
+    let (total_event_ctes, total_event_source, mut total_params) =
+        build_unified_event_input(union, req, abs_window, partition_device);
+    let total_where_clause = push_gap_filters(&mut total_params, abs_window, req.min_ns);
+    let total_sql = format!(
+        r#"
+        WITH {total_event_ctes},
+        with_prev AS (
+            SELECT
+                start_ns, end_ns,
+                MAX(end_ns) OVER win AS prev_max_end
+            FROM {total_event_source}
+            WINDOW win AS ({partition} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
+        ),
+        filtered AS (
+            SELECT
+                prev_max_end AS gap_start_ns,
+                start_ns AS gap_end_ns,
+                start_ns - prev_max_end AS gap_ns
+            FROM with_prev
+            WHERE prev_max_end IS NOT NULL AND start_ns > prev_max_end
+        ),
+        clipped AS (
+            SELECT 1
+            FROM filtered
+            {total_where_clause}
+        )
+        SELECT CAST(COUNT(*) AS BIGINT) AS total_matched
+        FROM clipped
+        "#
+    );
+
+    Ok(GapSqlQuery {
+        rows_sql,
+        rows_params,
+        total_sql,
+        total_params,
+    })
 }
 
 const GAP_EVENT_COLUMNS: &str = "kind, row_id, device_id, stream_id, name, start_ns, end_ns";
@@ -1157,6 +1258,11 @@ fn build_unified_event_input(
     )
 }
 
+/// SQL fragment emitting (kind, row_id, device_id, stream_id, name,
+/// start_ns, end_ns) for one event table. Name resolution + memcpy
+/// copyKind labels come from `kind_sql` so the three GPU branches stay
+/// in sync with the other commands.
+///
 /// Returns an error when called with a non-GPU kind. Upstream filters
 /// to kernel/memcpy/memset, but the workspace's no-panic policy
 /// routes the precondition through `Result` instead of `unreachable!`.
@@ -1209,8 +1315,7 @@ mod tests {
              'kernel' AS next_kind, \
              2::BIGINT AS next_row_id, \
              'next' AS next_name, \
-             8::BIGINT AS next_stream_id, \
-             1::BIGINT AS total_matched"
+             8::BIGINT AS next_stream_id"
         )
     }
 
@@ -1223,6 +1328,46 @@ mod tests {
         )
     }
 
+    fn test_gap(start_ns: i64) -> Gap {
+        Gap {
+            key: format!("gap|dev:0|@{start_ns}"),
+            device_id: Some(0),
+            stream_id: None,
+            start_ns,
+            end_ns: start_ns + 10,
+            duration_ns: 10,
+            prev: GapNeighbor {
+                row_id: RowId::new(EventKind::Kernel, start_ns),
+                name: "prev".to_string(),
+                timestamp_ns: start_ns,
+                stream_id: 7,
+            },
+            next: GapNeighbor {
+                row_id: RowId::new(EventKind::Kernel, start_ns + 1),
+                name: "next".to_string(),
+                timestamp_ns: start_ns + 10,
+                stream_id: 8,
+            },
+        }
+    }
+
+    #[test]
+    fn limit_saturation_uses_rows_when_not_truncated() {
+        let mut gaps = vec![test_gap(1), test_gap(2)];
+
+        assert_eq!(truncate_gap_rows_to_limit(&mut gaps, 3), Some(2));
+        assert_eq!(gaps.len(), 2);
+    }
+
+    #[test]
+    fn limit_saturation_truncates_and_defers_total_when_truncated() {
+        let mut gaps = vec![test_gap(1), test_gap(2), test_gap(3)];
+
+        assert_eq!(truncate_gap_rows_to_limit(&mut gaps, 2), None);
+        assert_eq!(gaps.len(), 2);
+        assert!(gaps.iter().all(|gap| gap.start_ns <= 2));
+    }
+
     #[test]
     fn unified_window_input_pushes_scope_before_sweep() -> Result<()> {
         let req = GapsRequest {
@@ -1231,23 +1376,31 @@ mod tests {
             limit: 7,
             ..Default::default()
         };
-        let (sql, params) = build_unified_sql(
+        let query = build_unified_sql(
             "SELECT * FROM synthetic_gpu_events",
             &req,
             Some((10, 20)),
             true,
         )?;
 
-        assert!(sql.contains("scoped_events AS"));
-        assert!(sql.contains("prefix_events AS"));
-        assert!(sql.contains("suffix_events AS"));
-        assert!(sql.contains("local_events AS"));
-        assert!(sql.contains("FROM local_events"));
-        assert!(sql.contains("GROUP BY device_id"));
-        assert!(!sql.contains("ROW_NUMBER()"));
-        assert!(sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert!(query.rows_sql.contains("scoped_events AS"));
+        assert!(query.rows_sql.contains("prefix_events AS"));
+        assert!(query.rows_sql.contains("suffix_events AS"));
+        assert!(query.rows_sql.contains("local_events AS"));
+        assert!(query.rows_sql.contains("FROM local_events"));
+        assert!(query.rows_sql.contains("GROUP BY device_id"));
+        assert!(!query.rows_sql.contains("ROW_NUMBER()"));
+        assert!(!query.rows_sql.contains("COUNT(*) OVER"));
+        assert!(query.rows_sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert!(query.total_sql.contains("FROM local_events"));
+        assert!(query.total_sql.contains("MAX(end_ns) OVER win"));
+        assert!(
+            query
+                .total_sql
+                .contains("CAST(COUNT(*) AS BIGINT) AS total_matched")
+        );
         assert_eq!(
-            params,
+            query.total_params,
             vec![
                 Value::Int(2),
                 Value::BigInt(10),
@@ -1257,8 +1410,40 @@ mod tests {
                 Value::BigInt(20),
                 Value::BigInt(10),
                 Value::BigInt(42),
-                Value::BigInt(7),
             ]
+        );
+        assert_eq!(
+            query.rows_params,
+            vec![
+                Value::Int(2),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(42),
+                Value::BigInt(8),
+            ]
+        );
+
+        let full_trace_query = build_unified_sql(
+            "SELECT * FROM synthetic_gpu_events",
+            &GapsRequest {
+                min_ns: 42,
+                device: Some(2),
+                limit: 7,
+                ..Default::default()
+            },
+            None,
+            true,
+        )?;
+        assert!(!full_trace_query.rows_sql.contains("COUNT(*) OVER"));
+        assert!(full_trace_query.total_sql.contains("MAX(end_ns) OVER win"));
+        assert!(!full_trace_query.total_sql.contains("arg_max("));
+        assert_eq!(
+            full_trace_query.total_params,
+            vec![Value::Int(2), Value::BigInt(42)]
         );
         Ok(())
     }
@@ -1273,18 +1458,26 @@ mod tests {
             limit: 7,
             ..Default::default()
         };
-        let (sql, params) =
-            build_stream_sql("SELECT * FROM synthetic_gpu_events", &req, Some((10, 20)))?;
+        let query = build_stream_sql("SELECT * FROM synthetic_gpu_events", &req, Some((10, 20)))?;
 
-        assert!(sql.contains("scoped_events AS"));
-        assert!(sql.contains("prefix_events AS"));
-        assert!(sql.contains("suffix_events AS"));
-        assert!(sql.contains("local_events AS"));
-        assert!(sql.contains("FROM local_events"));
-        assert!(sql.contains("PARTITION BY device_id, stream_id"));
-        assert!(sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert!(query.rows_sql.contains("scoped_events AS"));
+        assert!(query.rows_sql.contains("prefix_events AS"));
+        assert!(query.rows_sql.contains("suffix_events AS"));
+        assert!(query.rows_sql.contains("local_events AS"));
+        assert!(query.rows_sql.contains("FROM local_events"));
+        assert!(query.rows_sql.contains("PARTITION BY device_id, stream_id"));
+        assert!(!query.rows_sql.contains("COUNT(*) OVER"));
+        assert!(query.rows_sql.contains("WHERE start_ns < ? AND end_ns > ?"));
+        assert!(query.total_sql.contains("FROM local_events"));
+        assert!(query.total_sql.contains("LEAD(start_ns) OVER w"));
+        assert!(!query.total_sql.contains("LEAD(kind)"));
+        assert!(
+            query
+                .total_sql
+                .contains("CAST(COUNT(*) AS BIGINT) AS total_matched")
+        );
         assert_eq!(
-            params,
+            query.total_params,
             vec![
                 Value::Int(2),
                 Value::BigInt(143),
@@ -1295,8 +1488,42 @@ mod tests {
                 Value::BigInt(20),
                 Value::BigInt(10),
                 Value::BigInt(42),
-                Value::BigInt(7),
             ]
+        );
+        assert_eq!(
+            query.rows_params,
+            vec![
+                Value::Int(2),
+                Value::BigInt(143),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(20),
+                Value::BigInt(10),
+                Value::BigInt(42),
+                Value::BigInt(8),
+            ]
+        );
+
+        let full_trace_query = build_stream_sql(
+            "SELECT * FROM synthetic_gpu_events",
+            &GapsRequest {
+                scope: GapScope::Stream,
+                min_ns: 42,
+                device: Some(2),
+                stream: Some(143),
+                limit: 7,
+                ..Default::default()
+            },
+            None,
+        )?;
+        assert!(!full_trace_query.rows_sql.contains("COUNT(*) OVER"));
+        assert!(full_trace_query.total_sql.contains("LEAD(start_ns) OVER w"));
+        assert!(!full_trace_query.total_sql.contains("LEAD(kind)"));
+        assert_eq!(
+            full_trace_query.total_params,
+            vec![Value::Int(2), Value::BigInt(143), Value::BigInt(42)]
         );
         Ok(())
     }
@@ -1340,8 +1567,8 @@ mod tests {
     fn hydrate_gap_rows_prepare_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
 
-        let err = match hydrate_gap_rows(&conn, "SELECT * FROM", &[], GapScope::Device, 100) {
-            Ok((rows, _)) => anyhow::bail!(
+        let err = match hydrate_gap_rows(&conn, "SELECT * FROM", &[], GapScope::Device) {
+            Ok(rows) => anyhow::bail!(
                 "malformed gaps SQL should not hydrate successfully: {} rows",
                 rows.len()
             ),
@@ -1375,11 +1602,10 @@ mod tests {
                    'kernel' AS next_kind, \
                    2::BIGINT AS next_row_id, \
                    'next' AS next_name, \
-                   8::BIGINT AS next_stream_id, \
-                   1::BIGINT AS total_matched";
+                   8::BIGINT AS next_stream_id";
 
-        let err = match hydrate_gap_rows(&conn, sql, &[], GapScope::Device, 100) {
-            Ok((rows, _)) => anyhow::bail!(
+        let err = match hydrate_gap_rows(&conn, sql, &[], GapScope::Device) {
+            Ok(rows) => anyhow::bail!(
                 "unbound gaps SQL parameter should not hydrate successfully: {} rows",
                 rows.len()
             ),
@@ -1402,8 +1628,8 @@ mod tests {
         let conn = duckdb::Connection::open_in_memory()?;
         let sql = gap_hydration_sql("'not-duration'", "'kernel'");
 
-        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device, 100) {
-            Ok((rows, _)) => anyhow::bail!(
+        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device) {
+            Ok(rows) => anyhow::bail!(
                 "malformed gaps row should not hydrate successfully: {} rows",
                 rows.len()
             ),
@@ -1426,8 +1652,8 @@ mod tests {
         let conn = duckdb::Connection::open_in_memory()?;
         let sql = gap_hydration_sql("10::BIGINT", "'bogus'");
 
-        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device, 100) {
-            Ok((rows, _)) => anyhow::bail!(
+        let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device) {
+            Ok(rows) => anyhow::bail!(
                 "unknown gaps kind tag should not hydrate successfully: {} rows",
                 rows.len()
             ),
