@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+
+[content]
+text = """
+This RFC specifies the Nsight Compute source wire contract for VeloQ.
+It refines the product, CLI I/O, list identity, source, and artifact contracts in [[RFC-0001]], [[RFC-0002]], [[RFC-0003]], [[RFC-0004]], and [[RFC-0005]] for the NCU source.
+
+**Scope:** This RFC covers the stable NCU source identity, supported input form, source-owned command IDs, NCU launch row identifiers, concrete NCU row key formats, metric enum-name fields, generated artifacts, source-specific output exceptions, and compatibility rules for source version `v1`. It does not prescribe private helper script implementation, Python discovery internals, private cache lock mechanics, raw `ncu_report` object layout, disassembly pipeline internals, or full response field inventories beyond the invariants named here; full response field inventories are exposed by the NCU `schema` targets.
+
+**Rationale:** NCU is a shipped VeloQ source with a stable `v1` source version. Agents need source-specific launch identity, metric enum semantics, and cache behavior documented so they can compare kernel reports and drill into launches without reverse-engineering the native sidecar implementation."""

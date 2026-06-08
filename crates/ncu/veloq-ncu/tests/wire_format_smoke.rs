@@ -14,6 +14,7 @@ use veloq_ncu::lists::{GraphsResponse, RangesResponse, SourcesResponse};
 use veloq_ncu::metrics::MetricsResponse;
 use veloq_ncu::native::NativeSummaryResponse;
 use veloq_ncu::source_metrics::SourceMetricsResponse;
+use veloq_ncu::warp_stalls::WarpStallsResponse;
 
 fn check_rows_have_key<T: schemars::JsonSchema>() -> anyhow::Result<()> {
     let type_name = std::any::type_name::<T>();
@@ -75,5 +76,6 @@ fn every_primary_rows_item_carries_key() -> anyhow::Result<()> {
     check_rows_have_key::<SourcesResponse>()?;
     check_rows_have_key::<MetricsResponse>()?;
     check_rows_have_key::<SourceMetricsResponse>()?;
+    check_rows_have_key::<WarpStallsResponse>()?;
     Ok(())
 }

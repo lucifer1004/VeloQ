@@ -1,0 +1,33 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-ID"
+title = "Launch row identifiers"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+An NCU launch identifier exposed as `row_id` MUST use the `launch:<idx>` string form.
+
+The `<idx>` component MUST be a base-10 non-negative integer string.
+
+An NCU `launch:<idx>` row identifier MUST refer to the zero-based launch position in the native launch list for the opened report.
+
+An NCU `launches.rows[]` row `key` MUST equal its `row_id`.
+
+An NCU `launches.rows[]` row `row_id` MUST be accepted by NCU `inspect`.
+
+An NCU `inspect` request for an out-of-range `launch:<idx>` row identifier MUST return a success response.
+
+An NCU `inspect` response for an out-of-range launch row identifier MUST include a row tagged with `type: "not_found"`.
+
+An NCU `inspect` not-found row MUST carry `key` equal to the requested row identifier.
+
+An NCU `inspect` not-found row MUST carry `row_id` equal to the requested row identifier.
+
+NCU drill commands other than `inspect` MAY reject malformed, unsupported-kind, or out-of-range launch row identifiers with handled diagnostic errors.
+
+An NCU launch row identifier MUST NOT expose a packed binary key in place of the human-readable `launch:<idx>` form.
+
+**Rationale:** Agents commonly take `ncu launches` rows and pass their `row_id` to `inspect`, `disasm`, `source-metrics`, or `warp-stalls`. A readable launch identifier keeps drill workflows simple while allowing strict errors for verbs that cannot produce partial batches."""

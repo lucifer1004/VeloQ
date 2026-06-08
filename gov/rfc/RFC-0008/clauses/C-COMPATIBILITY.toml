@@ -1,0 +1,35 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMPATIBILITY"
+title = "Compatibility"
+kind = "normative"
+status = "active"
+
+[content]
+text = """
+Adding optional NCU response fields MAY remain compatible with source version `v1` when existing field meanings, row identifiers, row keys, command IDs, and error envelope semantics are preserved.
+
+Adding a new stable NCU command or stable schema target MAY remain compatible with source version `v1` when it conforms to this RFC and the source contracts it references.
+
+Changing `source.kind`, the `ncu` namespace, or the `ncu.<verb>` command ID form MUST be treated as breaking.
+
+Removing or renaming a command listed in [[RFC-0008:C-COMMAND-SURFACE]] MUST be treated as breaking.
+
+Changing `launch:<idx>` row identifier syntax or the zero-based native launch position meaning MUST be treated as breaking.
+
+Changing a row key format listed in [[RFC-0008:C-ROW-KEYS]] MUST be treated as breaking unless the change is limited to a row shape that was explicitly unstable.
+
+Changing NCU metric enum-name fields to integer-only fields MUST be treated as breaking.
+
+Changing the relationship between metric enum-name fields and their auxiliary raw code fields MUST be treated as breaking.
+
+Changing supported input detection so NCU no longer claims `.ncu-rep` paths MUST be treated as breaking.
+
+Changing NCU artifact ownership so generated NCU artifacts leave the report artifact root MUST be treated as breaking.
+
+Changing JSON-mode NCU successes or handled failures away from the VeloQ envelope contract MUST be treated as breaking.
+
+Changing the NCU `trace_span` policy from omitted to populated MAY remain compatible only when the added field follows [[RFC-0002]] envelope extension rules and does not change existing field meanings.
+
+**Rationale:** The NCU source is already `v1`. Compatibility needs to distinguish additive schema growth from changes that would break agent dispatch, row joins, drill commands, metric filters, or cache ownership assumptions."""
