@@ -32,20 +32,20 @@ pub(crate) struct StatsEventScan {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct EventScanFilterOptions {
+pub(crate) struct EventScanFilterOptions<'a> {
     pub(crate) abs_window: Option<(i64, i64)>,
     pub(crate) device: Option<i32>,
     pub(crate) stream: Option<i64>,
     pub(crate) nvtx_scope: crate::nvtx_attribution::NvtxScope,
-    pub(crate) nvtx_policy: NvtxFilterPolicy,
+    pub(crate) nvtx_policy: NvtxFilterPolicy<'a>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum NvtxFilterPolicy {
+pub(crate) enum NvtxFilterPolicy<'a> {
     EmptyWhenUnsupported,
     ErrorUnlessKindIn {
         verb: &'static str,
-        allowed: &'static [EventKind],
+        allowed: &'a [EventKind],
     },
 }
 
@@ -149,7 +149,7 @@ pub(crate) fn stats_event_scan(
 /// NVTX attribution predicates do not introduce bind params.
 pub(crate) fn event_scan_filter(
     sem: EventSemantics,
-    options: EventScanFilterOptions,
+    options: EventScanFilterOptions<'_>,
     intrinsic_predicates: &[&str],
 ) -> NsysQueryResult<SqlFilter> {
     let mut filter = SqlFilter::default();
@@ -240,7 +240,7 @@ fn push_nvtx_attribution_filter(
     filter: &mut SqlFilter,
     sem: EventSemantics,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
-    policy: NvtxFilterPolicy,
+    policy: NvtxFilterPolicy<'_>,
 ) -> NsysQueryResult<()> {
     if !nvtx_scope.is_attributed() {
         return Ok(());

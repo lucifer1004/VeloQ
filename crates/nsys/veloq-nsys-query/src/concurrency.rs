@@ -20,20 +20,10 @@ use std::path::Path;
 use veloq_core::time::TimeWindow;
 use veloq_nsys_data::Trace;
 
-use crate::{EventKind, NsysQueryError, NsysQueryResult};
-
-/// GPU-busy kinds, matching `timeline::ALLOWED_KINDS`. `kernel` and
-/// `graph` are compute; `memcpy` and `memset` are copy.
-const KINDS: [EventKind; 4] = [
-    EventKind::Kernel,
-    EventKind::Memcpy,
-    EventKind::Memset,
-    EventKind::Graph,
-];
-
-fn is_compute(kind: EventKind) -> bool {
-    matches!(kind, EventKind::Kernel | EventKind::Graph)
-}
+use crate::{
+    NsysQueryError, NsysQueryResult,
+    query_sql::gpu_work::{GpuWorkClass, GpuWorkSet},
+};
 
 #[derive(Debug, Clone)]
 pub struct ConcurrencyRequest {
@@ -184,16 +174,20 @@ fn union_only(intervals: &mut [(i64, i64)]) -> i64 {
 /// exist in the trace. Projects `(device_id, stream_id, is_compute,
 /// start_ns, end_ns)`, clipping each event to the window and keeping
 /// only events whose body overlaps it.
-fn fetch_sql(trace: &Trace, abs_window: Option<(i64, i64)>) -> (String, Vec<Value>) {
+fn fetch_sql(
+    trace: &Trace,
+    abs_window: Option<(i64, i64)>,
+) -> NsysQueryResult<(String, Vec<Value>)> {
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
+    let work = GpuWorkSet::from_data_definition()?;
     let mut subqueries: Vec<String> = Vec::new();
-    for kind in KINDS {
-        if !trace.table_exists(kind.table()) {
-            continue;
-        }
+    for kind in work.present_in(trace) {
         let table = kind.table();
-        let compute = i32::from(is_compute(kind));
+        let compute = match work.class(kind)? {
+            GpuWorkClass::Compute => 1,
+            GpuWorkClass::Copy => 0,
+        };
         subqueries.push(format!(
             "SELECT {dev} AS device_id, {stm} AS stream_id, \
              {compute} AS is_compute, t.start AS start_ns, t.\"end\" AS end_ns \
@@ -201,7 +195,7 @@ fn fetch_sql(trace: &Trace, abs_window: Option<(i64, i64)>) -> (String, Vec<Valu
         ));
     }
     if subqueries.is_empty() {
-        return (String::new(), Vec::new());
+        return Ok((String::new(), Vec::new()));
     }
     let union = subqueries.join(" UNION ALL ");
 
@@ -232,7 +226,7 @@ fn fetch_sql(trace: &Trace, abs_window: Option<(i64, i64)>) -> (String, Vec<Valu
          {start_expr} AS s_ns, {end_expr} AS e_ns \
          FROM events {where_clause}"
     );
-    (sql, params)
+    Ok((sql, params))
 }
 
 /// Per-device accumulator of clipped intervals.
@@ -313,7 +307,7 @@ pub fn run<P: AsRef<Path>>(
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
 
-    let (sql, params) = fetch_sql(&trace, abs_window);
+    let (sql, params) = fetch_sql(&trace, abs_window)?;
     if sql.is_empty() {
         return Ok(ConcurrencyResponse {
             count: 0,

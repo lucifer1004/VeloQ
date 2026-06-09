@@ -32,7 +32,7 @@
 //! stream (rare in real captures) produces a non-positive gap that
 //! the threshold filter drops.
 
-use crate::query_sql::exec;
+use crate::query_sql::{exec, gpu_work::GpuWorkSet};
 use duckdb::types::Value;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -41,7 +41,7 @@ use veloq_core::{
     Direction, SortKeyDef, SortKeySpec, SortSpec,
     time::{TimeWindow, parse_duration_ns},
 };
-use veloq_nsys_data::{GPU_WORK_INTERVAL_KINDS, GpuWorkKind, Trace};
+use veloq_nsys_data::Trace;
 
 use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 
@@ -750,12 +750,10 @@ fn sidecar_gpu_event_source() -> GpuEventSource {
 }
 
 fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource>> {
+    let work = GpuWorkSet::from_data_definition()?;
     let mut subqueries: Vec<String> = Vec::new();
-    for work in GPU_WORK_INTERVAL_KINDS {
-        if trace.table_exists(work.table) {
-            let kind = event_kind_for_gpu_work(work)?;
-            subqueries.push(per_kind_select(kind)?);
-        }
+    for kind in work.present_in(trace) {
+        subqueries.push(per_kind_select(kind)?);
     }
     if subqueries.is_empty() {
         return Ok(None);
@@ -771,17 +769,6 @@ fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {
         Some(kind) => Ok(kind),
         None => Err(NsysQueryError::internal_sql_kind_tag_invalid("gaps", s)),
     }
-}
-
-fn event_kind_for_gpu_work(work: &GpuWorkKind) -> NsysQueryResult<EventKind> {
-    let kind = EventKind::parse(work.label)
-        .ok_or_else(|| NsysQueryError::internal_sql_kind_tag_invalid("gaps", work.label))?;
-    if kind.table() != work.table {
-        return Err(NsysQueryError::internal_unsupported_kind(
-            "gaps", work.label,
-        ));
-    }
-    Ok(kind)
 }
 
 /// SQL and bind params for a gaps row query plus its minimal count

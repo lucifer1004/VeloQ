@@ -8,5 +8,6 @@
 pub(crate) mod event_scan;
 pub(crate) mod event_semantics;
 pub(crate) mod exec;
+pub(crate) mod gpu_work;
 pub(crate) mod sample_scan;
 pub(crate) mod sort;

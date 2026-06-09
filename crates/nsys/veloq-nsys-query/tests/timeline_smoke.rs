@@ -83,10 +83,9 @@ fn rejects_zero_or_negative_bucket() -> Result<()> {
 #[test]
 fn nvtx_with_graph_only_trace_returns_empty_not_error() -> Result<()> {
     use veloq_nsys_query::KindFilter;
-    // KindFilter::All + --nvtx: Graph is in ALLOWED_KINDS for
-    // timeline but not in the attributable set, so the narrowing
-    // should drop it. Resulting kinds empty → response is empty,
-    // not an error.
+    // KindFilter::All + --nvtx: Graph is in timeline's GPU-busy set
+    // but not in the attributable set, so the narrowing should drop
+    // it. Resulting kinds empty → response is empty, not an error.
     let trace = fixture::graph_only_with_nvtx()?;
     let req = TimelineRequest {
         interval_ns: 50_000_000,

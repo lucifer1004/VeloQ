@@ -19,7 +19,7 @@
 use crate::query_sql::{
     event_scan::{EventScanFilterOptions, NvtxFilterPolicy, event_scan_filter},
     event_semantics::EventSemantics,
-    exec,
+    exec, gpu_work,
 };
 use crate::{EventKind, KindFilter, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
@@ -29,20 +29,6 @@ use veloq_core::{time::TimeWindow, timeline_bucket_key};
 use veloq_nsys_data::Trace;
 use veloq_query::duckdb::list as duckdb_list;
 use veloq_query::sql::{SqlFragment, total_matched_bigint_expr, window};
-
-/// Kinds `timeline` is willing to bucket. GPU-busy-time kinds only:
-/// `Sync` is intentionally excluded because synchronisation events are
-/// CPU-side waits, not GPU activity. `Graph` is included because, in
-/// `--cuda-graph-trace=graph` captures, graph_trace rows are the only
-/// per-execution record of work that ran on the GPU during a graph
-/// launch.
-pub const ALLOWED_KINDS: [EventKind; 4] = [
-    EventKind::Kernel,
-    EventKind::Memcpy,
-    EventKind::Memset,
-    EventKind::Graph,
-];
-const NVTX_ATTRIBUTABLE_KINDS: &[EventKind] = &ALLOWED_KINDS;
 
 #[derive(Debug, Clone)]
 pub struct TimelineRequest {
@@ -87,6 +73,45 @@ impl TimelineRequest {
             return Err(NsysQueryError::TimelineIntervalTooSmall { interval_ns: ns });
         }
         Ok(ns)
+    }
+}
+
+pub struct TimelineKindPolicy {
+    allowed: Vec<EventKind>,
+}
+
+impl TimelineKindPolicy {
+    pub fn from_gpu_work_definition() -> NsysQueryResult<Self> {
+        Ok(Self {
+            allowed: gpu_work::GpuWorkSet::from_data_definition()?
+                .kinds()
+                .to_vec(),
+        })
+    }
+
+    pub fn allowed(&self) -> &[EventKind] {
+        &self.allowed
+    }
+
+    fn validate_explicit(&self, kinds: &KindFilter) -> NsysQueryResult<()> {
+        if let KindFilter::Only(v) = kinds {
+            for k in v {
+                if !self.allowed.contains(k) {
+                    return Err(NsysQueryError::TimelineKindNotAllowed { kind: k.as_str() });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        kinds: &KindFilter,
+        nvtx: Option<&str>,
+        trace: &Trace,
+    ) -> NsysQueryResult<Vec<EventKind>> {
+        self.validate_explicit(kinds)?;
+        crate::kind_policy::resolve_nvtx_kinds(kinds, nvtx, self.allowed(), trace, "timeline")
     }
 }
 
@@ -147,26 +172,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
 
-    // Filter requested kinds against timeline's allow-list (GPU
-    // only). The shared `--type` + `--nvtx` resolver in
+    // Filter requested kinds against timeline's allow-list (GPU-busy
+    // interval kinds only). The shared `--type` + `--nvtx` resolver in
     // `kind_policy` does the rest: explicit non-attributable kinds
     // bail when `--nvtx` is set, `KindFilter::All` narrows
     // implicitly to the attributable set, and missing tables drop
     // out silently.
-    if let KindFilter::Only(v) = &req.kinds {
-        for k in v {
-            if !ALLOWED_KINDS.contains(k) {
-                return Err(NsysQueryError::TimelineKindNotAllowed { kind: k.as_str() });
-            }
-        }
-    }
-    let kinds = crate::kind_policy::resolve_nvtx_kinds(
-        &req.kinds,
-        req.nvtx.as_deref(),
-        &ALLOWED_KINDS,
-        &trace,
-        "timeline",
-    )?;
+    let kind_policy = TimelineKindPolicy::from_gpu_work_definition()?;
+    let kinds = kind_policy.resolve(&req.kinds, req.nvtx.as_deref(), &trace)?;
     if kinds.is_empty() {
         return Ok(TimelineResponse {
             interval_ns: req.interval_ns,
@@ -207,7 +220,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
-        let fragment = per_kind_select(*kind, abs_window, nvtx_scope, req.device, req.stream)?;
+        let fragment = per_kind_select(
+            *kind,
+            abs_window,
+            nvtx_scope,
+            req.device,
+            req.stream,
+            kind_policy.allowed(),
+        )?;
         subqueries.push(fragment.sql);
         per_kind_params.extend(fragment.params);
     }
@@ -371,6 +391,7 @@ fn per_kind_select(
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
     device: Option<i32>,
     stream: Option<i64>,
+    allowed_kinds: &[EventKind],
 ) -> NsysQueryResult<SqlFragment> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
         return Err(NsysQueryError::internal_unsupported_kind(
@@ -389,7 +410,7 @@ fn per_kind_select(
             nvtx_scope,
             nvtx_policy: NvtxFilterPolicy::ErrorUnlessKindIn {
                 verb: "timeline",
-                allowed: NVTX_ATTRIBUTABLE_KINDS,
+                allowed: allowed_kinds,
             },
         },
         &[],

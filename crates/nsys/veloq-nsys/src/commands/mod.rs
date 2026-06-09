@@ -570,7 +570,9 @@ pub fn run(
             };
             let interval_ns =
                 veloq_nsys_query::timeline::TimelineRequest::parse_interval(&interval)?;
-            let kinds = gpu.kinds(&veloq_nsys_query::timeline::ALLOWED_KINDS)?;
+            let kind_policy =
+                veloq_nsys_query::timeline::TimelineKindPolicy::from_gpu_work_definition()?;
+            let kinds = gpu.kinds(kind_policy.allowed())?;
             let kind_echo = kinds_csv(&kinds);
             let data = veloq_nsys_query::timeline::run(
                 trace,

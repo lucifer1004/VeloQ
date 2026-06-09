@@ -1,0 +1,28 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-010"
+title = "Remove thin NSys GPU work wrappers"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Clean up the NSys GPU work query adapter introduced for timeline/concurrency alignment by replacing one-line forwarding helpers with a cohesive adapter shape. Preserve the shared GPU-busy semantics, JSON shape, and sidecar/source versions."
+
+[[content.acceptance_criteria]]
+text = "GPU work query adapter exposes cohesive derived state instead of one-line forwarding helpers"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "timeline, concurrency, and gaps consume the cohesive adapter without local hard-coded busy kind lists"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "targeted nsys query checks and govctl check pass"
+status = "done"
+category = "chore"
