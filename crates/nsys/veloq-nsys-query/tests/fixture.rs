@@ -577,6 +577,55 @@ pub fn concurrency_overlap() -> Result<Fixture> {
     finalize_to_pqtdir(&conn, dir)
 }
 
+/// Two-device fixture for concurrency scope filtering. Device 0 and
+/// device 1 both have work, with different durations so tests can
+/// assert the selected device's measures directly.
+pub fn concurrency_two_devices() -> Result<Fixture> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
+    setup_canonical_schema(&conn)?;
+    conn.execute(
+        "INSERT INTO StringIds (id, value) VALUES (?, ?)",
+        params![1i64, "k"],
+    )?;
+
+    for (device, start_ns, end_ns, stream_id, correlation_id) in &[
+        (0i32, 0i64, 10_000_000i64, 7i64, 1i64),
+        (1i32, 20_000_000i64, 50_000_000i64, 9i64, 2i64),
+    ] {
+        conn.execute(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+             (start, \"end\", deviceId, contextId, streamId, \
+              shortName, demangledName, gridX, gridY, gridZ, \
+              blockX, blockY, blockZ, correlationId, \
+              registersPerThread, staticSharedMemory, dynamicSharedMemory, globalPid) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                *start_ns,
+                *end_ns,
+                *device,
+                0i64,
+                *stream_id,
+                1i64,
+                1i64,
+                1i64,
+                1i64,
+                1i64,
+                128i64,
+                1i64,
+                1i64,
+                *correlation_id,
+                32i64,
+                0i64,
+                0i64,
+                0i64,
+            ],
+        )?;
+    }
+
+    finalize_to_pqtdir(&conn, dir)
+}
+
 /// Minimal NVTX-attribution fixture: two NVTX ranges, each with a
 /// runtime launch and a kernel attributed via correlationId. Range A
 /// runs 100..200ms, range B runs 300..400ms — well-separated so a
