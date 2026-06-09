@@ -419,6 +419,11 @@ const GAPS_BLURB: &str = "Find GPU idle bubbles. Three scopes via `--scope`:\n\
                          - `trace`: across all devices, gap = window where no device ran GPU \
                          work. Multi-GPU rig idle analysis.\n\
                          \n\
+                         GPU work counts kernel + memcpy + memset + graph-trace, so \
+                         `--cuda-graph-trace=graph` counts graph-trace intervals as \
+                         busy (graph-only workloads no longer report phantom idle) and a \
+                         gap's `prev`/`next` may be `kind: graph`.\n\
+                         \n\
                          Each gap reports duration + `prev`/`next` events (with stream context). \
                          Under unified scopes the bracketing events may live on different \
                          streams — `prev.stream_id` / `next.stream_id` make that visible.";

@@ -83,8 +83,8 @@ fn emit_err(
     match err {
         PytorchSourceError::Command(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
-        PytorchSourceError::Query(PytorchQueryError::MultiRankRequiresScope) => {
-            emit_rank_scope_error(verb, trace, trace_span, fmt);
+        PytorchSourceError::Query(rank_err @ PytorchQueryError::MultiRankRequiresScope) => {
+            emit_rank_scope_error(verb, trace, trace_span, rank_err, fmt);
         }
         PytorchSourceError::Query(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Tabular(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
@@ -98,9 +98,14 @@ fn emit_rank_scope_error(
     verb: &str,
     trace: Option<&Path>,
     trace_span: Option<TraceSpan>,
+    err: &PytorchQueryError,
     fmt: OutputFormat,
 ) {
-    let message = "pytorch trace has multiple ranks; use `--rank <n>` or `--all-ranks`";
+    use veloq_core::VeloqDiagnostic;
+    // Source the message, code, and hint from the typed error's
+    // VeloqDiagnostic impl so this enriched envelope cannot drift from
+    // the generic `emit_diagnostic` path for the same variant.
+    let message = err.to_string();
     let trace_arg = trace
         .map(|path| shell_quote(&path.display().to_string()))
         .unwrap_or_else(|| "<trace>".to_string());
@@ -123,20 +128,15 @@ fn emit_rank_scope_error(
             warnings: vec![Warning {
                 severity: WarningSeverity::Warn,
                 code: WarningCode::MultiRankAmbiguous,
-                message: message.to_string(),
+                message: message.clone(),
             }],
             ..ResponseMeta::default()
         }),
-        message,
+        message.clone(),
         Vec::new(),
     );
-    env.error.code = Some(veloq_core::ErrorCode::new(
-        "pytorch.query.rank-scope-required",
-    ));
-    env.error.hint = Some(
-        "Rerun with `--all-ranks` for an explicit aggregate, or `--rank 0` for one rank"
-            .to_string(),
-    );
+    env.error.code = Some(err.code());
+    env.error.hint = err.hint().map(|hint| hint.into_owned());
     if !matches!(fmt, OutputFormat::Json) {
         eprintln!("veloq: {message}");
     }

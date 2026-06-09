@@ -568,19 +568,24 @@ impl GroupBy {
         };
         let projected = if self.device { DEVICE_AXIS } else { NO_AXES };
         let usage = AxisUsage::new(fixed, projected);
-        let result = if self.stream {
-            usage.validate_projection("stream", DEVICE_AXIS)
-        } else if self.context {
-            usage.validate_projection("context", DEVICE_AXIS)
-        } else {
-            Ok(())
-        };
-        result.map_err(
-            |err| crate::NsysQueryError::StatsGroupByDeviceParentRequired {
-                verb,
-                axis: err.axis(),
-            },
-        )
+        // Validate every active device-local child axis independently.
+        // `stream` and `context` each require the device parent, so a
+        // dropped `else if` (or a future child axis with a different
+        // parent) can't silently skip a check. `stream` is validated
+        // first so its name is the one surfaced when several offend.
+        for (active, axis) in [(self.stream, "stream"), (self.context, "context")] {
+            if active {
+                usage
+                    .validate_projection(axis, DEVICE_AXIS)
+                    .map_err(
+                        |err| crate::NsysQueryError::StatsGroupByDeviceParentRequired {
+                            verb,
+                            axis: err.axis(),
+                        },
+                    )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn from_arg(s: &str) -> NsysQueryResult<Self> {

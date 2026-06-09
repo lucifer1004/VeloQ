@@ -89,6 +89,26 @@ fn time_window_clips_events_before_bucket_bounds() -> Result<()> {
 }
 
 #[test]
+fn time_window_with_no_in_window_work_returns_empty_not_error() -> Result<()> {
+    let trace = fixture::minimal_gpu()?;
+    // @126..129ms falls entirely inside the idle gap between the 125.2ms
+    // memset and the 130ms kernel — zero GPU work overlaps it. After
+    // clip-before-bucket the bounds CTE sees no rows, so the bucket
+    // range must collapse to an empty result, not a degenerate range()
+    // or an error.
+    let req = TimelineRequest {
+        interval_ns: 1_000_000,
+        time_window: Some(TimeWindow::parse("@126ms-@129ms")?),
+        ..Default::default()
+    };
+    let r = veloq_nsys_query::timeline::run(trace.path(), req)?;
+    assert_eq!(r.time_window_ns, Some((126_000_000, 129_000_000)));
+    assert_eq!(r.count, 0, "rows: {:?}", r.rows);
+    assert!(r.rows.is_empty());
+    Ok(())
+}
+
+#[test]
 fn rejects_zero_or_negative_bucket() -> Result<()> {
     let trace = fixture::minimal_gpu()?;
     let req = TimelineRequest {

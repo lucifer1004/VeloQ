@@ -104,7 +104,11 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   kernels get `graph_id: null` and roll into their own row.
 - **`gaps` scopes**: default `--scope device` is cross-stream
   (gap = no stream running GPU work on that device), so an idle
-  peer stream does not produce phantom gaps. `--scope stream`
+  peer stream does not produce phantom gaps. GPU work counts
+  kernel + memcpy + memset + graph-trace, so `--cuda-graph-trace=graph`
+  counts graph-trace intervals as busy (graph-only workloads
+  no longer show phantom idle) and a gap's `prev` / `next` may be
+  `kind: graph`. `--scope stream`
   reverts to per-(device, stream) for starvation diagnostics —
   with overlap on the same stream (rare; CUDA Graphs may do this)
   producing non-positive gaps that `--min-duration` drops.

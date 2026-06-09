@@ -497,6 +497,52 @@ mod tests {
     }
 
     #[test]
+    fn windowed_per_kind_select_binds_clip_params_before_overlap_params() -> Result<()> {
+        // The windowed projection clips bounds with GREATEST/LEAST in
+        // the SELECT (binding window start,end) ahead of the overlap
+        // WHERE clause (which binds end,start). Lock the exact bind
+        // vector + ordering so a future refactor can't silently desync
+        // the placeholders against their SQL positions.
+        let allowed = [
+            EventKind::Kernel,
+            EventKind::Memcpy,
+            EventKind::Memset,
+            EventKind::Graph,
+        ];
+        let fragment = per_kind_select(
+            EventKind::Kernel,
+            Some((10, 20)),
+            crate::nvtx_attribution::NvtxScope::None,
+            None,
+            None,
+            &allowed,
+        )?;
+        assert_eq!(
+            fragment.params,
+            vec![
+                Value::BigInt(10), // GREATEST(t.start, ?) — clip start
+                Value::BigInt(20), // LEAST(t."end", ?)    — clip end
+                Value::BigInt(20), // WHERE t.start < ?     — overlap end
+                Value::BigInt(10), // WHERE t."end" > ?     — overlap start
+            ]
+        );
+        let clip_pos = fragment
+            .sql
+            .find("GREATEST(t.start, ?)")
+            .ok_or_else(|| anyhow::anyhow!("clip expr missing from SQL: {}", fragment.sql))?;
+        let where_pos = fragment
+            .sql
+            .find("WHERE")
+            .ok_or_else(|| anyhow::anyhow!("WHERE missing from SQL: {}", fragment.sql))?;
+        assert!(
+            clip_pos < where_pos,
+            "clip placeholders must precede WHERE placeholders: {}",
+            fragment.sql
+        );
+        Ok(())
+    }
+
+    #[test]
     fn parse_interval_invalid_literal_returns_typed_error() -> anyhow::Result<()> {
         let err = match TimelineRequest::parse_interval("bogus") {
             Ok(ns) => anyhow::bail!("expected invalid interval to fail, got {ns} ns"),

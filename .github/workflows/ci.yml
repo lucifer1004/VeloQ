@@ -8,7 +8,7 @@ on:
 
 env:
   RUST_VERSION: "1.89.0"
-  GOVCTL_VERSION: "0.9.3"
+  GOVCTL_VERSION: "0.9.4"
   CARGO_TERM_COLOR: always
 
 permissions:
@@ -16,14 +16,15 @@ permissions:
 
 jobs:
   # Governance check + fmt + clippy + the full workspace test suite.
-  # Glibc image: rust's musl host triple blocks proc-macro compilation;
+  # Glibc image: rust's musl host triple blocks proc-macro compilation.
+  # Use trixie because govctl's Linux GNU release requires glibc 2.39;
   # release binaries stay musl-static via the release workflow's cross
   # build.
   test:
     name: gov + fmt + clippy + test
     runs-on: ubuntu-latest
     container:
-      image: rust:1.89.0-slim-bookworm
+      image: rust:1.89.0-slim-trixie
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
@@ -37,9 +38,11 @@ jobs:
         with:
           repo: govctl-org/govctl
           tag: v${{ env.GOVCTL_VERSION }}
-          asset-name: govctl-v${{ env.GOVCTL_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          # v3 filters extracted files by asset-name too; the archive's
+          # executable is named plain `govctl`.
+          asset-name: govctl
           binaries-location: govctl-v${{ env.GOVCTL_VERSION }}-x86_64-unknown-linux-gnu
-          digest: f401c4e646a6a02ed3b6028d766a6c13b49d7c98e7e38467b330ab1ac9caa869
+          digest: de84c36ed6651d1044111bfdacbb112eb1d0ddd23baf4981bfaab823da8e5940
           cache: enable
       - run: govctl --version
       - run: govctl check

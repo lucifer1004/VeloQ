@@ -292,7 +292,8 @@ Not shipped yet:
       (`HashMap<i64, NvtxEntry { depth, iter_index }>`). Built
       by `summary` / `prep`.
     - `<trace>.veloq/gpu-work-events.parquet` — normalized
-      kernel/memcpy/memset intervals for repeated `gaps` queries.
+      kernel/memcpy/memset/graph-trace intervals for repeated `gaps`
+      queries.
       Built by `prep` or lazily by full-trace `gaps`; small-window
       cold `gaps` queries use the direct local-window SQL path.
     - `<trace>.veloq/nvtx-parent.parquet` — `RuntimeNvtxParent`;
