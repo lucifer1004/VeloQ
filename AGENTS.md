@@ -56,6 +56,7 @@ version).
    | `search`                    | `<row_id>` (e.g. `kernel:1234`)                                                                                                                                                                               |
    | `inspect`                   | `<row_id>` (matches the requested row_id; `NotFound` same)                                                                                                                                                    |
    | `timeline`                  | `bucket\|<start_ns>..<end_ns>`                                                                                                                                                                                |
+   | `viz timeline`              | `figure\|timeline\|<start_ns>..<end_ns>\|req:<fingerprint>`                                                                                                                                                   |
    | `concurrency`               | `concurrency\|dev:<n>` (per device; nested `streams[]` carry `stream_id`, no key)                                                                                                                             |
    | `slices` instance           | `slice\|<name>\|@<cpu_start_ns>`                                                                                                                                                                              |
    | `slices` aggregate          | `scope\|<name>` / `scope\|path:<path>` per `--group-by`                                                                                                                                                       |
@@ -215,7 +216,7 @@ NSys verbs (registered in `crates/nsys/veloq-nsys/src/cli.rs`,
 hoisted to the top level as the default source):
 
 - [x] `summary` / `stats` / `search` / `inspect` / `correlate`
-- [x] `gaps` / `slices` / `timeline` / `concurrency` / `graph-replays` / `hardware` / `metrics`
+- [x] `gaps` / `slices` / `timeline` / `viz timeline` / `concurrency` / `graph-replays` / `hardware` / `metrics`
 - [x] `prep` / `correlation-stats` / `nsys ncu-command`
 - [x] `schema <target>`
 
@@ -296,6 +297,9 @@ Not shipped yet:
       queries.
       Built by `prep` or lazily by full-trace `gaps`; small-window
       cold `gaps` queries use the direct local-window SQL path.
+    - `<trace>.veloq/figures/nsys/timeline/*.svg` — report-ready
+      static timeline figures built by `viz timeline`. Response rows
+      return paths relative to the artifact root.
     - `<trace>.veloq/nvtx-parent.parquet` — `RuntimeNvtxParent`;
       runtime-row → enclosing NVTX chains for grouped stats paths.
     - `<trace>.veloq/nvtx-tree.parquet` — `NvtxTree`; flattened

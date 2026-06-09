@@ -1,0 +1,47 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0009"
+title = "NSys static timeline visualization artifact contract"
+version = "0.1.0"
+status = "draft"
+phase = "spec"
+owners = ["@Zihua Wu"]
+created = "2026-06-09"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+    "RFC-0004",
+    "RFC-0005",
+    "RFC-0006",
+    "RFC-0002:C-EXCEPTIONS",
+    "RFC-0005:C-ARTIFACT-ROOT",
+    "RFC-0005:C-LEAK-SAFETY",
+    "RFC-0002:C-SUCCESS-RESPONSE",
+    "RFC-0003:C-LIST-SHAPE",
+    "RFC-0004:C-COMMAND-SURFACE",
+    "RFC-0006:C-SUPPORTED-INPUTS",
+]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-COMMAND-SURFACE.toml",
+    "clauses/C-TRACK-SPECS.toml",
+    "clauses/C-TRACK-TREE.toml",
+    "clauses/C-ARTIFACTS.toml",
+    "clauses/C-RENDER-LIMITS.toml",
+    "clauses/C-LABEL-POLICY.toml",
+    "clauses/C-SOURCE-ABSTRACTION.toml",
+    "clauses/C-COMPATIBILITY.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-09"
+notes = "Initial draft"

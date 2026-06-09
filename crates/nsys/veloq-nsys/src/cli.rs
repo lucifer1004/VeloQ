@@ -296,6 +296,12 @@ pub enum Cmd {
         common: CommonFilters,
     },
 
+    /// Export report-ready static visualization artifacts.
+    Viz {
+        #[command(subcommand)]
+        command: VizCmd,
+    },
+
     /// Per-NVTX-range CPU bounds plus attributed GPU work; `--aggregate` for per-scope distributions.
     Slices {
         #[command(flatten)]
@@ -421,6 +427,54 @@ pub enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+pub enum VizCmd {
+    /// Export a bounded NSys timeline window as an SVG figure artifact.
+    Timeline {
+        #[command(flatten)]
+        trace_arg: TraceArg,
+
+        /// Start of the timeline window. Required with --to.
+        #[arg(long, value_name = "TIME")]
+        from: Option<String>,
+
+        /// End of the timeline window. Required with --from.
+        #[arg(long, value_name = "TIME")]
+        to: Option<String>,
+
+        /// Timeline track spec. Repeat for multiple tracks. Defaults
+        /// to gpu:device=all, cuda-streams:device=all,top=8, and
+        /// gaps-overlay:device=all.
+        #[arg(long = "track", value_name = "SPEC")]
+        tracks: Vec<String>,
+
+        /// SVG width in pixels. The renderer clamps very small widths
+        /// to its minimum usable canvas.
+        #[arg(long = "width", default_value_t = 1200)]
+        width_px: u32,
+
+        /// Maximum rendered track rows before lower-priority rows are omitted.
+        #[arg(long = "max-tracks", default_value_t = 64)]
+        max_tracks: usize,
+
+        /// Maximum rendered visual items before selected evidence is aggregated by omission.
+        #[arg(long = "max-items", default_value_t = 5000)]
+        max_items: usize,
+
+        /// Minimum interval width in pixels. Sub-threshold intervals render as ticks, not stretched bars.
+        #[arg(long = "min-interval-px", default_value_t = 1.0)]
+        min_interval_px: f64,
+
+        /// Minimum bar width required before drawing an interval label.
+        #[arg(long = "min-label-px", default_value_t = 48.0)]
+        min_label_px: f64,
+
+        /// Maximum characters to render inside one interval label.
+        #[arg(long = "max-label-chars", default_value_t = 32)]
+        max_label_chars: usize,
+    },
+}
+
 impl Cmd {
     /// Stable subcommand label used in the JSON envelope's `command`
     /// field. `Cmd::Stats` inspects `by` so the size-mode envelope
@@ -443,6 +497,9 @@ impl Cmd {
             Cmd::Concurrency { .. } => "concurrency",
             Cmd::Gaps { .. } => "gaps",
             Cmd::Timeline { .. } => "timeline",
+            Cmd::Viz {
+                command: VizCmd::Timeline { .. },
+            } => "viz.timeline",
             Cmd::Slices { .. } => "slices",
             Cmd::Hardware { .. } => "hardware",
             Cmd::Metrics { .. } => "metrics",
@@ -473,6 +530,9 @@ impl Cmd {
             | Cmd::Timeline { trace_arg, .. }
             | Cmd::Slices { trace_arg, .. }
             | Cmd::Metrics { trace_arg, .. } => Some(&trace_arg.trace),
+            Cmd::Viz {
+                command: VizCmd::Timeline { trace_arg, .. },
+            } => Some(&trace_arg.trace),
             Cmd::Schema { .. } => None,
         }
     }

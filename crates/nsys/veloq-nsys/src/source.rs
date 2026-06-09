@@ -153,12 +153,15 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn stable_command_surface_matches_rfc_0006() {
+    fn command_surface_matches_governing_rfcs() {
         let actual: BTreeSet<String> = NsysSource
             .cli()
             .get_subcommands()
             .map(|cmd| cmd.get_name().to_string())
             .collect();
+        // RFC-0006 owns the stable NSys command surface. RFC-0009
+        // allows the visible draft `viz` subtree while the static
+        // timeline artifact contract is still being proven out.
         let expected: BTreeSet<String> = [
             "concurrency",
             "correlate",
@@ -176,6 +179,7 @@ mod tests {
             "stats",
             "summary",
             "timeline",
+            "viz",
         ]
         .into_iter()
         .map(String::from)

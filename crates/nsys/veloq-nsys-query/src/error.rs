@@ -170,6 +170,39 @@ pub enum NsysQueryError {
     #[error("timeline only buckets GPU kinds (kernel/memcpy/memset/graph); got `{kind}`")]
     TimelineKindNotAllowed { kind: &'static str },
 
+    #[error("viz timeline requires --from and --to")]
+    VizTimelineWindowRequired,
+
+    #[error("unknown viz timeline track kind `{kind}`")]
+    VizTimelineUnknownTrackKind { kind: String },
+
+    #[error("invalid viz timeline track selector `{selector}`; expected name=value")]
+    VizTimelineInvalidSelector { selector: String },
+
+    #[error("unknown selector `{selector}` for viz timeline track `{kind}`")]
+    VizTimelineUnknownSelector { kind: String, selector: String },
+
+    #[error("viz timeline selector `{selector}` must be a non-negative integer")]
+    VizTimelineSelectorNonNegativeInt { selector: String },
+
+    #[error("viz timeline selector `{selector}` must be a positive integer")]
+    VizTimelineSelectorPositiveInt { selector: String },
+
+    #[error("viz timeline track `cuda-stream` requires `device=<id>`")]
+    VizTimelineCudaStreamDeviceRequired,
+
+    #[error("viz timeline track `cuda-stream` requires `stream=<id>`")]
+    VizTimelineCudaStreamStreamRequired,
+
+    #[error("viz timeline track `cuda-stream` does not accept `device=all`")]
+    VizTimelineCudaStreamDeviceAll,
+
+    #[error("visualization artifact failed")]
+    VizTimelineArtifact {
+        #[source]
+        source: veloq_core::VisualizationError,
+    },
+
     #[error("unknown --group-by `{group_by}` for slices --aggregate (expected: name, path)")]
     SlicesUnknownGroupBy { group_by: String },
 
@@ -800,6 +833,34 @@ impl VeloqDiagnostic for NsysQueryError {
             Self::TimelineKindNotAllowed { .. } => {
                 ErrorCode::new("nsys.query.timeline-kind-not-allowed")
             }
+            Self::VizTimelineWindowRequired => {
+                ErrorCode::new("nsys.query.viz-timeline-window-required")
+            }
+            Self::VizTimelineUnknownTrackKind { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-unknown-track-kind")
+            }
+            Self::VizTimelineInvalidSelector { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-invalid-selector")
+            }
+            Self::VizTimelineUnknownSelector { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-unknown-selector")
+            }
+            Self::VizTimelineSelectorNonNegativeInt { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-selector-non-negative-int")
+            }
+            Self::VizTimelineSelectorPositiveInt { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-selector-positive-int")
+            }
+            Self::VizTimelineCudaStreamDeviceRequired => {
+                ErrorCode::new("nsys.query.viz-timeline-cuda-stream-device-required")
+            }
+            Self::VizTimelineCudaStreamStreamRequired => {
+                ErrorCode::new("nsys.query.viz-timeline-cuda-stream-stream-required")
+            }
+            Self::VizTimelineCudaStreamDeviceAll => {
+                ErrorCode::new("nsys.query.viz-timeline-cuda-stream-device-all")
+            }
+            Self::VizTimelineArtifact { source } => source.code(),
             Self::SlicesUnknownGroupBy { .. } => {
                 ErrorCode::new("nsys.query.slices-unknown-group-by")
             }

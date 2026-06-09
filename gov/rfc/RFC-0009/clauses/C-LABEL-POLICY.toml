@@ -1,0 +1,50 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-LABEL-POLICY"
+title = "Label and minimum-width policy"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The renderer MUST apply a label policy to visible item labels.
+
+The label policy MUST distinguish item geometry visibility from item label visibility.
+
+The label policy MUST have a minimum item-label width threshold.
+
+The renderer MUST apply a documented label collision policy before emitting the SVG.
+
+The label collision policy MUST prevent two visible item label boxes on the same rendered track row from overlapping horizontally.
+
+The renderer MUST suppress visible item labels when the item is too narrow for the selected label mode.
+
+The renderer MAY truncate visible item labels when the item is wide enough for a label but too narrow for the full label.
+
+The command MUST report the effective label policy in the JSON response.
+
+The success payload `data.auxiliary.label_policy.mode` field MUST report label mode.
+
+The success payload `data.auxiliary.label_policy.min_label_px` field MUST report minimum item-label width in pixels.
+
+The command MUST report the number of suppressed visible item labels.
+
+The command MUST report the number of truncated visible item labels.
+
+The SVG SHOULD preserve the full item name in an SVG metadata element or tooltip-compatible element when the full name is available.
+
+The SVG SHOULD preserve the item row id or stable event reference in metadata when the item maps to a queryable NSys event.
+
+Track labels MUST be governed separately from item labels.
+
+Track labels MUST remain visible when the corresponding track row is rendered.
+
+The command MAY support label modes such as automatic labels, no item labels, compact labels, and full labels.
+
+A full-label mode MUST still preserve the non-overlap requirement.
+
+The renderer SHOULD prefer short resolved names over demangled or fully qualified names for default visible item labels when a shorter resolved name is available.
+
+**Rationale:** Kernel names, API names, and NVTX labels can be much longer than their visible intervals. A report figure should not become unreadable because labels collide, but the full evidence identity must remain available to agents and humans inspecting the SVG."""

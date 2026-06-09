@@ -29,8 +29,8 @@ you are developing VeloQ itself.
 
 `veloq prep T` only warms caches. After prep, continue with VeloQ verbs:
 `summary`, `stats`, `search`, `inspect`, `correlate`, `timeline`,
-`slices`, `gaps`, `metrics`, `hardware`, or a `veloq recipes <id>`
-workflow.
+`viz timeline`, `slices`, `gaps`, `metrics`, `hardware`, or a
+`veloq recipes <id>` workflow.
 
 If no VeloQ verb can answer the question, first report the VeloQ
 coverage gap and the closest command or recipe you tried. Use raw-table
@@ -149,6 +149,19 @@ veloq search T --type memcpy --limit 5000 |
 
 Run `veloq schema search` for the full per-kind payload schema.
 
+**Timeline figures for reports**: after you have a bounded window from
+`timeline`, `gaps`, `search`, or an NVTX slice, run
+`veloq viz timeline T --from <start> --to <end>` to export an SVG under
+the trace artifact root. Use the JSON response row's `path` for the
+artifact and read `data.auxiliary.resolved_tracks` plus each track's
+`role`. Treat `summary` tracks as rollups, `detail` tracks as concrete
+lanes such as CUDA streams, `annotation` tracks as context, and idle
+gaps as overlays rather than ordinary events. Also read the row counters
+(`aggregated`, `omitted_track_count`, `suppressed_label_count`,
+`truncated_label_count`) before embedding it. Mention those counters
+when they are non-zero; the figure is static evidence, not a GUI-style
+interactive timeline.
+
 **Name search on large traces**: prefer `--name-regex 'foo'` over the
 `--name '*foo*'` glob. Regex lets VeloQ resolve the matching names once
 and prune the scan before name resolution, so it runs several times
@@ -222,6 +235,7 @@ Start by classifying the symptom, then gather the minimum evidence:
 | "What dominates wall time?"                | `summary` → `stats --limit 20` → `stats --group-by demangled`                                                                                                                                                                                                                                                                             |
 | GPU idle bubbles                           | `gaps --min-duration ...` → `correlate <next.row_id>` → inspect launch/runtime context                                                                                                                                                                                                                                                    |
 | Poor overlap / "are my streams concurrent" | `concurrency` → per-device `overlap_ns` / `max_concurrency`, per-stream overlap (same-stream PDL), and `compute_vs_copy` (is copy hidden behind compute). Extraction-only; compute ratios in jq                                                                                                                                           |
+| Report-ready visual timeline               | First identify a narrow window with `timeline` / `gaps` / `search` / `slices`, then `viz timeline --from ... --to ...`; cite both the textual evidence and the SVG row metadata                                                                                                                                                         |
 | CPU blocked on GPU                         | `stats --type sync` → `search --type sync --sort duration:desc` → `correlate sync:N`                                                                                                                                                                                                                                                      |
 | Iteration-to-iteration regression          | Require NVTX. `slices --name ...` → compare root ranges → scoped `stats --nvtx ...`. For nested same-name ranges use `stats --group-by nvtx-path` or `slices --aggregate --group-by path`. For per-kernel attribution: `inspect kernel:N` (default-on `nvtx_context.iter_index`) or `search --type kernel --with-nvtx` for a batched view |
 | CUDA Graph behavior                        | Probe graph capability bits → `veloq recipes graph-replay-survey` or `graph-replay-hotspots`; use cookbook only for extra interpretation                                                                                                                                                                                                  |
@@ -237,9 +251,12 @@ For a broad first pass:
    kernel time, idle time, copies, synchronization, or graph behavior.
 3. Use `correlate` and `inspect` only after you have a concrete
    `row_id`; they answer why a visible timeline event happened.
-4. Use PM counters and CPU sampling only if the trace captured them,
+4. When writing a report, export `viz timeline` for the selected
+   bounded window and cite its resolved tracks/counters alongside the
+   textual commands.
+5. Use PM counters and CPU sampling only if the trace captured them,
    and only quote them after checking coverage/trust signals.
-5. Stop using NSys when the question becomes instruction mix,
+6. Stop using NSys when the question becomes instruction mix,
    occupancy, memory transaction efficiency, source lines, or warp
    stalls; those are NCU/kernel-analysis questions. If you have the
    selected kernel row, `veloq nsys ncu-command T kernel:N --print`

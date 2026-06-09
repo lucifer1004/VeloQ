@@ -19,7 +19,7 @@ covers the Perfetto-style Chrome trace shape used by PyTorch profiler.
 
 ## Status
 
-16 NSys verbs (timeline analysis, kernel overlap, NCU handoff, prep/cache helpers, and schema) +
+17 NSys verbs (timeline analysis, static timeline figures, kernel overlap, NCU handoff, prep/cache helpers, and schema) +
 11 NCU verbs (`summary`, `launches`, `inspect`, `metrics`, `disasm`,
 `ranges`, `graphs`, `sources`, `source-metrics`, `warp-stalls`,
 plus `schema`) +
@@ -192,8 +192,13 @@ veloq stats path/to/trace.nsys-rep --limit 10 --format table
 # equivalent --name '*...*' glob (identical results).
 veloq search path/to/trace.nsys-rep --type kernel --name-regex 'gemm' --sort duration:desc --limit 10
 
+# Export a bounded timeline window as a report-ready SVG artifact.
+# The JSON row returns the SVG path relative to <trace>.veloq/; resolved
+# tracks carry roles such as group, summary, detail, and annotation.
+veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000
+
 # Discover canonical workflows (nvtx-breakdown, gpu-idle-audit,
-# memcpy-asymmetry, cold-kernel-hotspot, ...)
+# timeline-figure-report, memcpy-asymmetry, cold-kernel-hotspot, ...)
 veloq recipes
 veloq recipes nvtx-breakdown
 
@@ -376,6 +381,7 @@ without a JSON envelope.
 | `ncu-command`       | Generate a native `ncu` rerun command for one selected kernel event                                                                                                                     |
 | `gaps`              | GPU idle bubbles. Default `--scope device` is cross-stream (no phantom gaps from idle peer streams); `--scope stream` for per-stream starvation; `--scope trace` for multi-GPU rig idle |
 | `timeline`          | Time-bucketed GPU activity (busy ns + per-kind breakdown per bucket)                                                                                                                    |
+| `viz timeline`      | Export a bounded NSys timeline window as an SVG artifact with resolved track roles, render metadata, and label counters                                                                   |
 | `concurrency`       | Kernel/transfer overlap: per-device union vs sum busy time, peak concurrency, per-stream (incl. same-stream PDL) + compute/copy overlap. Extraction-only (ratios in jq)                 |
 | `graph-replays`     | CUDA Graph replay decomposition: per-replay GPU work keyed by `(device, context, correlationId)`, across both `--cuda-graph-trace=graph` and `=node` captures                           |
 | `slices`            | Per-NVTX-range CPU bounds + attributed GPU work                                                                                                                                         |

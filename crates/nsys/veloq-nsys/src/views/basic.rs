@@ -2,7 +2,7 @@ use crate::views::meta::{push_nvtx_scope_meta, push_time_window_meta};
 use veloq_core::tabular::{TabularView, cell_opt, push_count_meta};
 use veloq_nsys_query::{
     concurrency::ConcurrencyResponse, gaps::GapsResponse, search::SearchResponse,
-    timeline::TimelineResponse,
+    timeline::TimelineResponse, viz_timeline::VizTimelineResponse,
 };
 
 pub fn search_view(data: &SearchResponse) -> TabularView {
@@ -141,5 +141,43 @@ pub fn gaps_view(data: &GapsResponse) -> TabularView {
     v.push_meta("min_ns", data.min_ns.to_string());
     push_count_meta(&mut v, data.count, data.total_matched);
     push_time_window_meta(&mut v, data.time_window_ns);
+    v
+}
+
+pub fn viz_timeline_view(data: &VizTimelineResponse) -> TabularView {
+    let mut v = TabularView::new(vec![
+        "path",
+        "format",
+        "track_count",
+        "rendered_item_count",
+        "total_item_count",
+        "aggregated",
+        "omitted_track_count",
+        "suppressed_label_count",
+        "truncated_label_count",
+    ]);
+    for row in &data.rows {
+        v.push_row(vec![
+            row.path.clone(),
+            row.format.clone(),
+            row.track_count.to_string(),
+            row.rendered_item_count.to_string(),
+            row.total_item_count.to_string(),
+            row.aggregated.to_string(),
+            row.omitted_track_count.to_string(),
+            row.suppressed_label_count.to_string(),
+            row.truncated_label_count.to_string(),
+        ]);
+        v.push_meta("time_window_ns", format!("{:?}", row.time_window_ns));
+    }
+    push_count_meta(&mut v, data.count, data.total_matched);
+    v.push_meta(
+        "requested_tracks",
+        data.auxiliary.requested_tracks.len().to_string(),
+    );
+    v.push_meta(
+        "resolved_tracks",
+        data.auxiliary.resolved_tracks.len().to_string(),
+    );
     v
 }

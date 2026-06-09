@@ -34,6 +34,44 @@ choose the canonical recipe before borrowing extended examples here.
 Envelope shape (`data.rows[]+key`, `data.auxiliary`, `trace_span`) is
 in [`../SKILL.md`](../SKILL.md).
 
+## Report Timeline Figure
+
+Use `veloq viz timeline` only after you have already selected a bounded
+window with textual evidence. The command writes an SVG under the trace
+artifact root and returns a normal JSON envelope; stdout is not the SVG.
+
+```bash
+veloq viz timeline T --from @100000000 --to @120000000 \
+  --track gpu:device=all \
+  --track cuda-streams:device=all,top=8 \
+  --track gaps-overlay:device=all \
+  | jq '.data.rows[0] as $row | {
+      path: $row.path,
+      tracks: $row.track_count,
+      rendered: $row.rendered_item_count,
+      total: $row.total_item_count,
+      aggregated: $row.aggregated,
+      omitted_tracks: $row.omitted_track_count,
+      suppressed_labels: $row.suppressed_label_count,
+      truncated_labels: $row.truncated_label_count,
+      resolved_tracks: .data.auxiliary.resolved_tracks
+    }'
+```
+
+The returned `path` is relative to `<trace>.veloq/`. If aggregation,
+omitted tracks, suppressed labels, or truncated labels are non-zero,
+say so in the report. Very narrow events render as ticks instead of
+being stretched into fake-width bars.
+
+Use `data.auxiliary.resolved_tracks[].role` when interpreting the
+figure: `group` rows are ownership context, `summary` rows are rollups
+such as GPU busy activity, `detail` rows are concrete lanes such as CUDA
+streams, `annotation` rows are CUDA API or NVTX context, and idle gaps
+are overlays. A kernel may appear in both a summary rollup and a stream
+detail row; that is a rollup/detail relationship, not duplicate work.
+This is a static report figure, not an interactive Nsight GUI
+replacement.
+
 ## Kernel Hotspots
 
 ```bash

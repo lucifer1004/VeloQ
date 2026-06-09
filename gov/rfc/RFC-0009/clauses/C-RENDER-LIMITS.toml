@@ -1,0 +1,50 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-RENDER-LIMITS"
+title = "Render limits and aggregation"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The command MUST apply render limits before emitting the SVG artifact.
+
+The command MUST have a maximum rendered track count.
+
+The command MUST have a maximum rendered visual item count.
+
+The command MUST report the effective render limits in the JSON response.
+
+The command MUST report when the selected evidence exceeded a render limit.
+
+The command MUST preserve a successful empty visualization as a success response rather than an error when the request is valid and no selected evidence overlaps the window.
+
+The renderer MUST NOT silently stretch a short interval into a misleading long-duration rectangle solely to satisfy a minimum visible width.
+
+Intervals whose screen width is below the minimum interval rendering threshold SHOULD be rendered as ticks, density marks, or aggregated bins.
+
+Aggregated bins MUST visually distinguish aggregated evidence from individual intervals.
+
+Aggregated bins MUST preserve metadata for the represented item count.
+
+Aggregated bins MUST preserve metadata for the represented time span.
+
+The command MUST document default render policy values for output width, maximum tracks, maximum items, minimum interval width, and aggregation behavior.
+
+The success payload `data.auxiliary.render_policy.width_px` field MUST report output width in pixels.
+
+The success payload `data.auxiliary.render_policy.max_tracks` field MUST report the maximum rendered track count.
+
+The success payload `data.auxiliary.render_policy.max_items` field MUST report the maximum rendered visual item count.
+
+The success payload `data.auxiliary.render_policy.min_interval_px` field MUST report the minimum interval rendering threshold in pixels.
+
+The success payload `data.auxiliary.render_policy.aggregation` field MUST report the aggregation behavior.
+
+The command MAY allow users to override render limits.
+
+The command MUST reject render-limit overrides that would make the output unbounded.
+
+**Rationale:** Static SVGs are only useful when the figure remains legible. Large traces can contain far more events than a report figure can show, so the command needs explicit limits and honest aggregation instead of rendering an unreadable or misleading image."""

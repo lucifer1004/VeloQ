@@ -1,0 +1,47 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-003"
+title = "Update agent guidance for NSys timeline figures"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-09"
+refs = [
+    "ADR-0001",
+    "RFC-0001:C-AGENT-CONTRACT",
+    "RFC-0005:C-LEAK-SAFETY",
+    "RFC-0009:C-ARTIFACTS",
+    "RFC-0009:C-TRACK-TREE",
+    "RFC-0009:C-RENDER-LIMITS",
+    "RFC-0009:C-LABEL-POLICY",
+]
+depends_on = ["WI-2026-06-09-002"]
+
+[content]
+description = "Update user- and agent-facing guidance after the `NSys` timeline figure command exists. This work teaches agents when to request `SVG` timeline figures, how to embed them in reports, and how to interpret aggregation, label suppression, and track metadata without changing the command contract."
+
+[[content.acceptance_criteria]]
+text = "Update the `NSys` profile-analysis skill to guide agents toward timeline `SVG` figures for report evidence when a bounded window is known"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Add the `timeline-figure-report` recipe to the compiled recipe registry showing textual VeloQ evidence plus an exported `NSys` timeline `SVG` figure workflow"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Document aggregation, label suppression, and track metadata interpretation without promising GUI-style interactivity"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Rendered governance docs and skill references stay free of local/private path leakage"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"

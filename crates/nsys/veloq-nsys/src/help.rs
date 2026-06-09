@@ -476,6 +476,29 @@ fn long_about_timeline() -> String {
     )
 }
 
+const VIZ_TIMELINE_BLURB: &str = "Export a bounded NSys timeline window as a report-ready SVG artifact. \
+     The JSON response stays in the VeloQ envelope and points at a generated SVG under the trace artifact root. \
+     Resolved tracks carry roles so GPU summary rollups, stream details, annotations, and overlays can be interpreted separately. \
+     Intervals below --min-interval-px render as ticks, not stretched bars; label suppression, truncation, \
+     aggregation, and omitted-track counts are reported in the response.";
+const VIZ_TIMELINE_EXAMPLES: &[&str] = &[
+    "veloq viz timeline T --from @100000000 --to @110000000",
+    "veloq viz timeline T --from 1s --to 1.1s --track gpu:device=0 --track cuda-streams:device=0,top=6",
+];
+
+fn long_about_viz_timeline() -> String {
+    use veloq_nsys_query::viz_timeline::VizTimelineResponse;
+    long_about_for::<VizTimelineResponse>(
+        VIZ_TIMELINE_BLURB,
+        LongAboutOpts {
+            verb: "viz.timeline",
+            has_time_window: true,
+            examples: VIZ_TIMELINE_EXAMPLES,
+            ..Default::default()
+        },
+    )
+}
+
 const SLICES_BLURB: &str = "For each NVTX range matching --name, return CPU host-thread bounds \
                            + per-(device, stream) GPU work attributed via correlationId. \
                            The headline regression-hunt tool: compare two iterations' \
@@ -652,6 +675,9 @@ pub fn inject_long_about(cmd: clap::Command) -> clap::Command {
         .mut_subcommand("concurrency", |c| c.long_about(long_about_concurrency()))
         .mut_subcommand("gaps", |c| c.long_about(long_about_gaps()))
         .mut_subcommand("timeline", |c| c.long_about(long_about_timeline()))
+        .mut_subcommand("viz", |c| {
+            c.mut_subcommand("timeline", |c| c.long_about(long_about_viz_timeline()))
+        })
         .mut_subcommand("slices", |c| c.long_about(long_about_slices()))
         .mut_subcommand("hardware", |c| c.long_about(long_about_hardware()))
         .mut_subcommand("metrics", |c| c.long_about(long_about_metrics()))

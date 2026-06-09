@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-ABSTRACTION"
+title = "Source-neutral visualization boundary"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC MUST NOT be interpreted as specifying PyTorch visualization behavior.
+
+This RFC MUST NOT be interpreted as specifying NCU visualization behavior.
+
+NSys visualization track kinds and selectors MUST be treated as NSys source-specific contract.
+
+Future sources that expose visualization commands MUST define their own command IDs, track kinds, selector semantics, response rows, artifact locations, and compatibility rules before those commands are treated as stable.
+
+Source-specific evidence selection MUST remain owned by the source whose profile evidence is being visualized.
+
+Rendering reuse MUST NOT cause PyTorch, NCU, or future sources to inherit NSys-specific axis hierarchy rules unless those rules are explicitly specified for that source.
+
+Visualization output for one source MUST NOT depend on another source's track kinds, selectors, or axis hierarchy rules unless that dependency is explicitly specified for the producing source.
+
+**Rationale:** A reusable visualization architecture is valuable, but the external contract belongs to each source. Keeping NSys track semantics source-specific lets the first implementation move quickly while preserving a clean boundary for future PyTorch visualization work."""

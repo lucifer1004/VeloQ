@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies the NSys static timeline visualization artifact contract. It defines a source-owned command for exporting a bounded timeline window as an SVG figure, the machine-readable response shape that describes that figure, the track specification model used to request Nsight Systems-style timeline tracks, and the rendering constraints that keep the figure usable for agent-authored reports.
+
+**Scope:** This RFC covers the NSys `viz timeline` command contract, track selector syntax, track tree resolution, SVG artifact ownership, render limits, label and minimum-width behavior, and compatibility boundaries. It does not specify an interactive GUI, a notebook view, PyTorch visualization behavior, NCU visualization behavior, private renderer implementation types, private SQL helper layout, or pixel-perfect SVG styling.
+
+**Rationale:** VeloQ already exposes structured evidence for agents, but final reports often need a compact visual timeline to communicate temporal alignment, idle spans, stream activity, and annotation context. A static SVG artifact gives agents a report-ready figure while preserving VeloQ's CLI, JSON, artifact-lifecycle, and non-GUI boundaries."""

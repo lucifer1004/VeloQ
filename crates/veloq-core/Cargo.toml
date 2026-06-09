@@ -47,3 +47,4 @@ toml = "1.1.2"
 
 [dev-dependencies]
 anyhow.workspace = true
+tempfile.workspace = true

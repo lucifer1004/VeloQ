@@ -119,6 +119,27 @@ related_verbs = ["gaps", "inspect"]
 trace_shape = ["has_kernels"]
 
 [[recipe]]
+id = "timeline-figure-report"
+title = "Export a bounded NSys timeline SVG for report evidence"
+body = """
+# First pick a narrow window with textual evidence (`timeline`, `gaps`,
+# `search`, or an NVTX slice). Then export the same window as an SVG
+# artifact for the report. The response row's `path` is relative to
+# the trace's VeloQ artifact root.
+veloq viz timeline <trace> --from @<start-ns> --to @<end-ns> \\
+  --track gpu:device=all \\
+  --track cuda-streams:device=all,top=8 \\
+  --track gaps-overlay:device=all
+
+# Read `.data.auxiliary.resolved_tracks` and the row counters before
+# embedding the SVG. Non-zero aggregation, omitted tracks, suppressed
+# labels, or truncated labels should be mentioned in the report.
+"""
+keywords = ["figure", "svg", "timeline", "report", "visual"]
+related_verbs = ["viz.timeline", "timeline", "gaps", "search"]
+trace_shape = ["has_kernels"]
+
+[[recipe]]
 id = "cold-kernel-hotspot"
 title = "Find the hottest kernel, then queue an NCU rerun"
 body = """

@@ -1,0 +1,124 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ARTIFACTS"
+title = "SVG artifact and response contract"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The `nsys viz timeline` command MUST emit a VeloQ success envelope in JSON mode.
+
+The success envelope MUST conform to VeloQ's success envelope contract.
+
+The success payload MUST use VeloQ's canonical list shape.
+
+The success payload `data.rows[]` MUST contain one primary figure row for each generated SVG artifact.
+
+Each primary figure row MUST carry a `key`.
+
+Each primary figure row key MUST identify the figure as an NSys timeline visualization.
+
+Each primary figure row key MUST use the form `figure|timeline|<start_ns>..<end_ns>|req:<request_fingerprint>`.
+
+The `<request_fingerprint>` component MUST be a lowercase hexadecimal string of at least 16 characters.
+
+The `<request_fingerprint>` component MUST be derived from the resolved time window, requested track specifications, output-affecting render options, and output-affecting label options.
+
+Each primary figure row key MUST be stable across equivalent requests over equivalent input evidence.
+
+Each primary figure row MUST carry the SVG artifact `path`.
+
+The primary figure row `path` field MUST be a string.
+
+Each primary figure row MUST carry `format` with value `svg`.
+
+Each primary figure row MUST carry the resolved `time_window_ns`.
+
+The primary figure row `time_window_ns` field MUST be a two-element array of signed integer nanoseconds in `[start_ns, end_ns]` order.
+
+Each primary figure row MUST carry `track_count`.
+
+The primary figure row `track_count` field MUST be a non-negative integer.
+
+The primary figure row `track_count` field MUST count resolved rendered track rows.
+
+Each primary figure row MUST carry `rendered_item_count`.
+
+The primary figure row `rendered_item_count` field MUST be a non-negative integer.
+
+The primary figure row `rendered_item_count` field MUST count visual items emitted into the SVG.
+
+Each primary figure row MUST carry `total_item_count`.
+
+The primary figure row `total_item_count` field MUST be a non-negative integer.
+
+The primary figure row `total_item_count` field MUST count selected source evidence items before item render limits are applied.
+
+Each primary figure row MUST carry `aggregated`.
+
+The primary figure row `aggregated` field MUST be a boolean.
+
+The primary figure row `aggregated` field MUST be true when any selected evidence was represented by an aggregate visual item.
+
+Each primary figure row MUST carry `omitted_track_count`.
+
+The primary figure row `omitted_track_count` field MUST be a non-negative integer.
+
+Each primary figure row MUST carry `suppressed_label_count`.
+
+The primary figure row `suppressed_label_count` field MUST be a non-negative integer.
+
+Each primary figure row MUST carry `truncated_label_count`.
+
+The primary figure row `truncated_label_count` field MUST be a non-negative integer.
+
+The success payload `data.auxiliary` MUST carry the requested track specifications.
+
+The success payload `data.auxiliary.requested_tracks` field MUST be an array of strings.
+
+The success payload `data.auxiliary` MUST carry the resolved track set.
+
+The success payload `data.auxiliary.resolved_tracks` field MUST be an array of objects.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `track_key`.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `label`.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `kind`.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `role`.
+
+The `role` field MUST identify the resolved track role using one of the stable role names defined by the track-tree contract.
+
+Each `data.auxiliary.resolved_tracks[]` object SHOULD carry source axes when source axes apply to that track.
+
+The success payload `data.auxiliary` MUST carry the effective render policy.
+
+The success payload `data.auxiliary.render_policy` field MUST be an object.
+
+The success payload `data.auxiliary` MUST carry the effective label policy.
+
+The success payload `data.auxiliary.label_policy` field MUST be an object.
+
+Each primary figure row MUST report whether aggregation, omission, label suppression, or label truncation occurred.
+
+When `--out` is absent, the SVG artifact MUST be written under the VeloQ artifact root for the resolved NSys source path.
+
+When `--out` is absent, the default SVG artifact path MUST be under a source-local `figures/nsys/timeline/` child of the artifact root.
+
+When `--out` is present, the response MUST still identify the generated SVG path.
+
+The command MUST NOT expose a partially written SVG artifact as a successful result.
+
+The command MUST avoid leaving a corrupt partial SVG at the final output path after a handled failure when the destination filesystem permits atomic replacement.
+
+The SVG artifact MUST NOT embed private absolute source paths, hostnames, or local machine identifiers unless the user explicitly requested those values in visible labels.
+
+The SVG artifact MUST include non-private metadata for the VeloQ command, source kind, source version, resolved time window, resolved track keys, resolved track roles, render policy, and label policy used to create the figure.
+
+**Rationale:** The SVG is a generated artifact, while stdout remains the agent-readable response. The row shape lets agents attach the figure to a report, check whether the figure is complete or aggregated, and clean generated files through the existing artifact lifecycle.
+
+*Since: v0.1.0*"""

@@ -25,12 +25,13 @@ mod prep_status;
 mod scope;
 
 use std::path::Path;
-use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, guards};
+use veloq_core::time::{TimePoint, TimeWindow};
+use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, VizAggregation, VizLabelMode, guards};
 use veloq_nsys_query::search::SearchRequest;
 use veloq_nsys_query::stats::{ALLOWED_KINDS as STATS_ALLOWED_KINDS, GroupBy, StatsRequest};
 use veloq_nsys_query::{EventKind, RowId};
 
-use crate::cli::Cmd;
+use crate::cli::{Cmd, VizCmd};
 use crate::error::{NsysSourceError, NsysSourceResult};
 use crate::output::{emit, emit_meta, render, render_with_meta};
 use crate::payloads::{CorrelationStatsPayload, SchemaPayload};
@@ -625,6 +626,50 @@ pub fn run(
             )?;
         }
 
+        Cmd::Viz {
+            command:
+                VizCmd::Timeline {
+                    from,
+                    to,
+                    tracks,
+                    width_px,
+                    max_tracks,
+                    max_items,
+                    min_interval_px,
+                    min_label_px,
+                    max_label_chars,
+                    ..
+                },
+        } => {
+            let data = veloq_nsys_query::viz_timeline::run(
+                trace,
+                veloq_nsys_query::viz_timeline::VizTimelineRequest {
+                    time_window: viz_time_window(from.as_deref(), to.as_deref())?,
+                    tracks,
+                    render_policy: veloq_core::VizRenderPolicy {
+                        width_px,
+                        max_tracks,
+                        max_items,
+                        min_interval_px,
+                        aggregation: VizAggregation::ItemLimit,
+                    },
+                    label_policy: veloq_core::VizLabelPolicy {
+                        mode: VizLabelMode::Auto,
+                        min_label_px,
+                        max_chars: max_label_chars,
+                    },
+                },
+            )?;
+            render(
+                fmt,
+                trace,
+                trace_span,
+                "viz.timeline",
+                data,
+                views::viz_timeline_view,
+            )?;
+        }
+
         Cmd::Slices {
             name,
             name_regex,
@@ -863,4 +908,18 @@ pub fn run(
     }
 
     Ok(0)
+}
+
+fn viz_time_window(from: Option<&str>, to: Option<&str>) -> NsysSourceResult<Option<TimeWindow>> {
+    match (from, to) {
+        (Some(from), Some(to)) => {
+            let start = TimePoint::parse(from)
+                .map_err(|source| NsysSourceError::invalid_from(from, source))?;
+            let end =
+                TimePoint::parse(to).map_err(|source| NsysSourceError::invalid_to(to, source))?;
+            Ok(Some(TimeWindow { start, end }))
+        }
+        (None, None) => Ok(None),
+        _ => Err(NsysSourceError::MissingTimeBound),
+    }
 }

@@ -3415,6 +3415,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "terminal_size",
  "thiserror",
  "toml",

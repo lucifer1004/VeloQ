@@ -1,0 +1,44 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-001"
+title = "Add visualization scene and SVG artifact foundation"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-09"
+refs = [
+    "ADR-0001",
+    "RFC-0005:C-ARTIFACT-ROOT",
+    "RFC-0005:C-LEAK-SAFETY",
+    "RFC-0009:C-SOURCE-ABSTRACTION",
+    "RFC-0009:C-ARTIFACTS",
+]
+
+[content]
+description = "Add the source-neutral visualization foundation needed by the `NSys` timeline figure command. This work defines the reusable scene/track/render-artifact boundary and the `SVG` artifact writer plumbing without importing `NSys` `SQL` semantics into the shared layer."
+
+[[content.acceptance_criteria]]
+text = "Define source-neutral visualization scene, track, interval, label, and render-policy types that can represent the `RFC-0009` `NSys` timeline contract"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Add `SVG` artifact writing plumbing that writes into the VeloQ artifact root and returns portable relative artifact metadata"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Keep `NSys` evidence extraction, `SQL`, table names, and track resolution out of the shared visualization foundation"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Add focused tests for scene-to-`SVG` artifact metadata and artifact-root behavior"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"
