@@ -8,7 +8,8 @@
 mod fixture;
 
 use anyhow::Result;
-use veloq_core::time::TimeWindow;
+use veloq_core::{SortSpec, time::TimeWindow};
+use veloq_nsys_query::EventKind;
 use veloq_nsys_query::gaps::{GapScope, GapsRequest, run};
 
 #[test]
@@ -276,6 +277,61 @@ fn warm_gpu_work_sidecar_preserves_windowed_gap_rows() -> Result<()> {
     assert_eq!(warm_gap.prev.name, cold_gap.prev.name);
     assert_eq!(warm_gap.next.row_id, cold_gap.next.row_id);
     assert_eq!(warm_gap.next.name, cold_gap.next.name);
+    Ok(())
+}
+
+#[test]
+fn graph_trace_rows_count_as_busy_in_cold_and_warm_gaps() -> Result<()> {
+    let trace = fixture::with_graph_trace()?;
+    let req = GapsRequest {
+        min_ns: 1,
+        device: Some(0),
+        time_window: Some(TimeWindow::parse("@90ms-@205ms")?),
+        sort: Some(SortSpec::parse("start")?),
+        limit: 100,
+        ..Default::default()
+    };
+
+    let cold = run(trace.path(), req.clone())?;
+    {
+        let handle = veloq_nsys_data::Trace::open(trace.path())?;
+        veloq_nsys_data::gpu_work_events::ensure_sidecar(&handle)?;
+    }
+    let warm = run(trace.path(), req)?;
+
+    assert_eq!(cold.total_matched, 3, "cold rows: {:?}", cold.rows);
+    assert_eq!(warm.total_matched, cold.total_matched);
+    assert_eq!(warm.rows.len(), cold.rows.len());
+
+    let starts: Vec<i64> = cold.rows.iter().map(|gap| gap.start_ns).collect();
+    let ends: Vec<i64> = cold.rows.iter().map(|gap| gap.end_ns).collect();
+    assert_eq!(starts, vec![110_000_000, 130_000_000, 150_000_000]);
+    assert_eq!(ends, vec![120_000_000, 140_000_000, 200_000_000]);
+
+    let kinds: Vec<(EventKind, EventKind)> = cold
+        .rows
+        .iter()
+        .map(|gap| (gap.prev.row_id.kind, gap.next.row_id.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (EventKind::Graph, EventKind::Graph),
+            (EventKind::Graph, EventKind::Graph),
+            (EventKind::Graph, EventKind::Kernel),
+        ]
+    );
+
+    for (cold_gap, warm_gap) in cold.rows.iter().zip(&warm.rows) {
+        assert_eq!(warm_gap.key, cold_gap.key);
+        assert_eq!(warm_gap.start_ns, cold_gap.start_ns);
+        assert_eq!(warm_gap.end_ns, cold_gap.end_ns);
+        assert_eq!(warm_gap.duration_ns, cold_gap.duration_ns);
+        assert_eq!(warm_gap.prev.row_id, cold_gap.prev.row_id);
+        assert_eq!(warm_gap.prev.name, cold_gap.prev.name);
+        assert_eq!(warm_gap.next.row_id, cold_gap.next.row_id);
+        assert_eq!(warm_gap.next.name, cold_gap.next.name);
+    }
     Ok(())
 }
 

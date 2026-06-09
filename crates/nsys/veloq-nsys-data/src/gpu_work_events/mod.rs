@@ -1,10 +1,11 @@
 //! Normalized GPU work event sidecar for gaps-style interval queries.
 //!
 //! `<trace>.veloq/gpu-work-events.parquet` contains the minimal
-//! kernel / memcpy / memset interval surface shared by gap planning:
-//! event kind, source row id, device, stream, start, and end. It does
-//! not store display names; query crates hydrate names from the source
-//! tables after applying LIMIT so name semantics stay centralized.
+//! kernel / memcpy / memset / graph-trace interval surface shared by
+//! gap planning: event kind, source row id, device, stream, start, and
+//! end. It does not store display names; query crates hydrate names
+//! from the source tables after applying LIMIT so name semantics stay
+//! centralized.
 //!
 //! Freshness and atomic publish follow [[RFC-0005]] via
 //! [`crate::sidecar`]. The sidecar is registered as
@@ -51,6 +52,10 @@ const GPU_WORK_KINDS: &[GpuWorkKind] = &[
     GpuWorkKind {
         label: "memset",
         table: "CUPTI_ACTIVITY_KIND_MEMSET",
+    },
+    GpuWorkKind {
+        label: "graph",
+        table: "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
     },
 ];
 
@@ -277,6 +282,17 @@ mod tests {
                        VALUES (90, 95, 1, 9)"#,
                 ],
             ),
+            (
+                "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
+                r#"CREATE TABLE CUPTI_ACTIVITY_KIND_GRAPH_TRACE (
+                    start BIGINT, "end" BIGINT, deviceId BIGINT, streamId BIGINT
+                )"#,
+                vec![
+                    r#"INSERT INTO CUPTI_ACTIVITY_KIND_GRAPH_TRACE
+                       (start, "end", deviceId, streamId)
+                       VALUES (140, 150, 0, 23)"#,
+                ],
+            ),
         ])
     }
 
@@ -296,12 +312,18 @@ mod tests {
 
         let records =
             load_if_present(&trace)?.ok_or_else(|| anyhow::anyhow!("fresh sidecar should load"))?;
-        assert_eq!(records.len(), 3, "records: {records:?}");
+        assert_eq!(records.len(), 4, "records: {records:?}");
         let memcpy = records
             .iter()
             .find(|r| r.kind == "memcpy")
             .ok_or_else(|| anyhow::anyhow!("missing memcpy record: {records:?}"))?;
         assert_eq!(memcpy.stream_id, 0);
+        let graph = records
+            .iter()
+            .find(|r| r.kind == "graph")
+            .ok_or_else(|| anyhow::anyhow!("missing graph record: {records:?}"))?;
+        assert_eq!(graph.device_id, 0);
+        assert_eq!(graph.stream_id, 23);
 
         let reopened = Trace::open(&pqtdir)?;
         assert!(view_available(&reopened));
@@ -310,7 +332,7 @@ mod tests {
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(count, 3);
+        assert_eq!(count, 4);
         Ok(())
     }
 

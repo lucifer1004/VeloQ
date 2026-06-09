@@ -334,10 +334,11 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
 
-    // Kernel / memcpy / memset are the GPU work that keeps the device
-    // busy. Runtime API calls (cudaLaunchKernel, cudaMemcpyAsync) are
-    // CPU-side and don't count; sync events are CPU blocking and
-    // intentionally excluded from the "device in flight" definition.
+    // Kernel / memcpy / memset / graph-trace rows are the GPU work
+    // that keeps the device busy. Runtime API calls (cudaLaunchKernel,
+    // cudaMemcpyAsync) are CPU-side and don't count; sync events are
+    // CPU blocking and intentionally excluded from the "device in
+    // flight" definition.
     let Some(event_source) = gpu_event_source(&trace, abs_window)? else {
         return Ok(GapsResponse {
             min_ns: req.min_ns,
@@ -750,7 +751,12 @@ fn sidecar_gpu_event_source() -> GpuEventSource {
 
 fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource>> {
     let mut subqueries: Vec<String> = Vec::new();
-    for kind in [EventKind::Kernel, EventKind::Memcpy, EventKind::Memset] {
+    for kind in [
+        EventKind::Kernel,
+        EventKind::Memcpy,
+        EventKind::Memset,
+        EventKind::Graph,
+    ] {
         if trace.table_exists(kind.table()) {
             subqueries.push(per_kind_select(kind)?);
         }
