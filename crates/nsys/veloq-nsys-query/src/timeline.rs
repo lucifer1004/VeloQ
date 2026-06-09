@@ -311,7 +311,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
 
     // Bind order:
     //   1. attribution CTE param (the pattern glob), if --nvtx
-    //   2. per-kind windowed params (carried by per_kind_select)
+    //   2. per-kind params (clipped bounds, filters) from per_kind_select
     //   3. LIMIT
     let mut params: Vec<Value> = Vec::new();
     if let Some(att) = &attribution {
@@ -382,9 +382,9 @@ fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Err
 }
 
 /// Per-kind event SELECT contributing `(kind, start_ns, end_ns)` to the
-/// `events` CTE. Mirrors stats's `per_kind_subquery` shape (the same
-/// windowed-clip pattern); time-window + device + stream WHERE
-/// clauses bind their respective params in order.
+/// `events` CTE. When a time window is present, the projected bounds
+/// are clipped before bucket generation, so buckets and `total_ns`
+/// reflect in-window work only.
 fn per_kind_select(
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
@@ -401,6 +401,15 @@ fn per_kind_select(
     }
     let sem = EventSemantics::new(kind);
 
+    let (start_expr, end_expr, mut params) = match abs_window {
+        Some((s, e)) => (
+            "GREATEST(t.start, ?)".to_string(),
+            r#"LEAST(t."end", ?)"#.to_string(),
+            vec![Value::BigInt(s), Value::BigInt(e)],
+        ),
+        None => ("t.start".to_string(), r#"t."end""#.to_string(), Vec::new()),
+    };
+
     let filter = event_scan_filter(
         sem,
         EventScanFilterOptions {
@@ -416,10 +425,10 @@ fn per_kind_select(
         &[],
     )?;
     let where_clause = filter.where_clause();
-    let params = filter.into_params();
+    params.extend(filter.into_params());
 
     let sql = format!(
-        "SELECT '{label}' AS kind, t.start AS start_ns, t.\"end\" AS end_ns \
+        "SELECT '{label}' AS kind, {start_expr} AS start_ns, {end_expr} AS end_ns \
          FROM nsight.{table} t {where_clause}",
         label = sem.label(),
         table = sem.table(),

@@ -6,6 +6,7 @@
 mod fixture;
 
 use anyhow::Result;
+use veloq_core::time::TimeWindow;
 use veloq_nsys_query::timeline::TimelineRequest;
 
 #[test]
@@ -59,6 +60,31 @@ fn bucket_clipping_preserves_total_duration() -> Result<()> {
     for b in &r.rows {
         assert!(b.total_ns > 0, "empty buckets must be omitted");
     }
+    Ok(())
+}
+
+#[test]
+fn time_window_clips_events_before_bucket_bounds() -> Result<()> {
+    let trace = fixture::minimal_gpu()?;
+    // The 110..120ms slow kernel overlaps this window by only 2ms.
+    // Timeline buckets must be generated from the clipped in-window
+    // interval, not from the raw event start/end.
+    let req = TimelineRequest {
+        interval_ns: 8_000_000,
+        time_window: Some(TimeWindow::parse("@118ms-@123ms")?),
+        ..Default::default()
+    };
+    let r = veloq_nsys_query::timeline::run(trace.path(), req)?;
+    assert_eq!(r.time_window_ns, Some((118_000_000, 123_000_000)));
+    assert_eq!(r.count, 1, "rows: {:?}", r.rows);
+    let b = r
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected one clipped bucket"))?;
+    assert_eq!(b.start_ns, 118_000_000);
+    assert_eq!(b.end_ns, 126_000_000);
+    assert_eq!(b.kernel_ns, 2_000_000);
+    assert_eq!(b.total_ns, 2_000_000);
     Ok(())
 }
 

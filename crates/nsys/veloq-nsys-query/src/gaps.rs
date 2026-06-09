@@ -98,7 +98,8 @@ pub struct GapsRequest {
     /// per-stream output to filter on. Use the row's `prev` / `next`
     /// neighbors and their `stream_id` to drill down post-hoc.
     pub stream: Option<i64>,
-    /// Optional window — restricts to gaps whose start lies inside it.
+    /// Optional window — keeps gaps whose full `[start, end)` interval
+    /// overlaps it. Rows still report the full gap bounds for context.
     pub time_window: Option<TimeWindow>,
     /// Sort spec. `None` falls back to `duration` descending (biggest
     /// bubbles first — the default before sort was customisable).

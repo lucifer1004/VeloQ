@@ -177,6 +177,7 @@ fn union_only(intervals: &mut [(i64, i64)]) -> i64 {
 fn fetch_sql(
     trace: &Trace,
     abs_window: Option<(i64, i64)>,
+    device: Option<i32>,
 ) -> NsysQueryResult<(String, Vec<Value>)> {
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
@@ -199,26 +200,39 @@ fn fetch_sql(
     }
     let union = subqueries.join(" UNION ALL ");
 
-    let (start_expr, end_expr, where_clause, params): (String, String, String, Vec<Value>) =
-        match abs_window {
-            Some((s, e)) => (
-                "GREATEST(start_ns, ?)".to_string(),
-                "LEAST(end_ns, ?)".to_string(),
-                "WHERE start_ns < ? AND end_ns > ?".to_string(),
-                vec![
-                    Value::BigInt(s),
-                    Value::BigInt(e),
-                    Value::BigInt(e),
-                    Value::BigInt(s),
-                ],
-            ),
-            None => (
-                "start_ns".to_string(),
-                "end_ns".to_string(),
-                String::new(),
-                Vec::new(),
-            ),
-        };
+    let (start_expr, end_expr, mut where_parts, mut params): (
+        String,
+        String,
+        Vec<String>,
+        Vec<Value>,
+    ) = match abs_window {
+        Some((s, e)) => (
+            "GREATEST(start_ns, ?)".to_string(),
+            "LEAST(end_ns, ?)".to_string(),
+            vec!["start_ns < ? AND end_ns > ?".to_string()],
+            vec![
+                Value::BigInt(s),
+                Value::BigInt(e),
+                Value::BigInt(e),
+                Value::BigInt(s),
+            ],
+        ),
+        None => (
+            "start_ns".to_string(),
+            "end_ns".to_string(),
+            Vec::new(),
+            Vec::new(),
+        ),
+    };
+    if let Some(device) = device {
+        where_parts.push("device_id = ?".to_string());
+        params.push(Value::Int(device));
+    }
+    let where_clause = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
 
     let sql = format!(
         "WITH events AS ({union}) \
@@ -242,7 +256,6 @@ fn hydrate_concurrency_intervals(
     conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-    device: Option<i32>,
 ) -> NsysQueryResult<BTreeMap<i32, DeviceAccum>> {
     let mut by_device: BTreeMap<i32, DeviceAccum> = BTreeMap::new();
     let rows = crate::query_sql::exec::query_rows(
@@ -256,9 +269,6 @@ fn hydrate_concurrency_intervals(
         // A clipped interval can be empty (touches the window edge);
         // drop those so they don't add zero-width noise.
         if row.end_ns <= row.start_ns {
-            continue;
-        }
-        if device.is_some_and(|dev| row.device_id != dev) {
             continue;
         }
         let acc = by_device.entry(row.device_id).or_default();
@@ -307,7 +317,7 @@ pub fn run<P: AsRef<Path>>(
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
 
-    let (sql, params) = fetch_sql(&trace, abs_window)?;
+    let (sql, params) = fetch_sql(&trace, abs_window, req.device)?;
     if sql.is_empty() {
         return Ok(ConcurrencyResponse {
             count: 0,
@@ -317,7 +327,7 @@ pub fn run<P: AsRef<Path>>(
         });
     }
 
-    let by_device = hydrate_concurrency_intervals(trace.conn(), &sql, &params, req.device)?;
+    let by_device = hydrate_concurrency_intervals(trace.conn(), &sql, &params)?;
 
     let total_matched = by_device.len() as i64;
 
@@ -414,7 +424,7 @@ mod tests {
     fn hydrate_concurrency_intervals_prepare_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
 
-        let err = match hydrate_concurrency_intervals(&conn, "SELECT * FROM", &[], None) {
+        let err = match hydrate_concurrency_intervals(&conn, "SELECT * FROM", &[]) {
             Ok(rows) => anyhow::bail!(
                 "malformed concurrency SQL should not hydrate successfully: {} devices",
                 rows.len()
@@ -443,7 +453,7 @@ mod tests {
                    0::BIGINT AS s_ns, \
                    10::BIGINT AS e_ns";
 
-        let err = match hydrate_concurrency_intervals(&conn, sql, &[], None) {
+        let err = match hydrate_concurrency_intervals(&conn, sql, &[]) {
             Ok(rows) => anyhow::bail!(
                 "unbound concurrency SQL parameter should not hydrate successfully: {} devices",
                 rows.len()
@@ -472,7 +482,7 @@ mod tests {
                    0::BIGINT AS s_ns, \
                    10::BIGINT AS e_ns";
 
-        let err = match hydrate_concurrency_intervals(&conn, sql, &[], None) {
+        let err = match hydrate_concurrency_intervals(&conn, sql, &[]) {
             Ok(rows) => anyhow::bail!(
                 "malformed concurrency row should not hydrate successfully: {} devices",
                 rows.len()
