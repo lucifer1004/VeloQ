@@ -12,6 +12,9 @@
 //!   NVTX range R on tid T, [s, e]
 //!     → runtime API rows in [s, e] with globalTid=T  (correlationId, native_pid)
 //!     → kernel / memcpy / memset rows with matching (device, context, correlationId)
+//! Graph-trace rows are intentionally absent: this is an NVTX
+//! attribution surface, not the generic GPU-busy interval set, and
+//! v1 attribution only has runtime→kernel/memcpy/memset row paths.
 //!
 //! The (device, context, correlationId) triple is what disambiguates
 //! raw `correlationId` across processes — see

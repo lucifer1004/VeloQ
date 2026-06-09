@@ -273,16 +273,15 @@ fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
     }
 
     // Fallback to DISTINCT scans over location-bearing activity
-    // tables. Kernel is the most common table, but graph-trace-only
-    // captures can legitimately have no kernel rows while still
-    // spanning multiple devices.
-    for table in [
-        "CUPTI_ACTIVITY_KIND_KERNEL",
-        "CUPTI_ACTIVITY_KIND_MEMCPY",
-        "CUPTI_ACTIVITY_KIND_MEMSET",
-        "CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",
-        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
-    ] {
+    // tables. This is broader than GPU-busy interval semantics: sync
+    // rows can reveal device scope even though they are host waits, not
+    // busy work. Graph-trace-only captures can legitimately have no
+    // kernel rows while still spanning multiple devices.
+    for table in crate::GPU_WORK_INTERVAL_KINDS
+        .iter()
+        .map(|kind| kind.table)
+        .chain(std::iter::once("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION"))
+    {
         if !trace.has_table(table) {
             continue;
         }

@@ -65,9 +65,12 @@ pub fn sidecar_expanded_cte(alias: &str, sidecar_quoted: &str) -> String {
 /// Returns the CTE body without a leading `WITH`/comma so the caller
 /// can splice it into a comma-separated list.
 ///
-/// Identical join shape across kernel / memcpy / memset; callers
-/// pass the alias (e.g. `"gpu_kernels"`), the wire-level kind label
-/// (`"kernel"`), and the backing CUPTI table name.
+/// Identical join shape across kernel / memcpy / memset; callers pass
+/// the alias (e.g. `"gpu_kernels"`), the wire-level kind label
+/// (`"kernel"`), and the backing CUPTI table name. This is the
+/// runtime-attribution set, not the generic GPU-busy set: graph_trace
+/// rows intentionally stay out because v1 attribution has no graph row
+/// path.
 pub fn gpu_kind_cte(alias: &str, label: &str, table: &str) -> String {
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;

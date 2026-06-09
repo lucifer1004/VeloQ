@@ -229,6 +229,10 @@ pub fn run<P: AsRef<Path>>(
             summary.correlation_id as u64,
         )
         .to_string();
+        // Graph replay busy is replay-scoped, not the generic
+        // GPU-busy interval set. `graph_trace` captures expose only
+        // replay wall rows, while node-mode captures can union the
+        // replay's node events.
         let (busy_ns, top_nodes, decomposition_available) = match mode {
             CaptureMode::GraphTrace => (summary.end_ns - summary.start_ns, Vec::new(), false),
             CaptureMode::GraphNodes => {
