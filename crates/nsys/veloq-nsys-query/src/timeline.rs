@@ -19,7 +19,7 @@
 use crate::query_sql::{
     event_scan::{EventScanFilterOptions, NvtxFilterPolicy, event_scan_filter},
     event_semantics::EventSemantics,
-    exec,
+    exec, gpu_work,
 };
 use crate::{EventKind, KindFilter, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
@@ -29,20 +29,6 @@ use veloq_core::{time::TimeWindow, timeline_bucket_key};
 use veloq_nsys_data::Trace;
 use veloq_query::duckdb::list as duckdb_list;
 use veloq_query::sql::{SqlFragment, total_matched_bigint_expr, window};
-
-/// Kinds `timeline` is willing to bucket. GPU-busy-time kinds only:
-/// `Sync` is intentionally excluded because synchronisation events are
-/// CPU-side waits, not GPU activity. `Graph` is included because, in
-/// `--cuda-graph-trace=graph` captures, graph_trace rows are the only
-/// per-execution record of work that ran on the GPU during a graph
-/// launch.
-pub const ALLOWED_KINDS: [EventKind; 4] = [
-    EventKind::Kernel,
-    EventKind::Memcpy,
-    EventKind::Memset,
-    EventKind::Graph,
-];
-const NVTX_ATTRIBUTABLE_KINDS: &[EventKind] = &ALLOWED_KINDS;
 
 #[derive(Debug, Clone)]
 pub struct TimelineRequest {
@@ -87,6 +73,45 @@ impl TimelineRequest {
             return Err(NsysQueryError::TimelineIntervalTooSmall { interval_ns: ns });
         }
         Ok(ns)
+    }
+}
+
+pub struct TimelineKindPolicy {
+    allowed: Vec<EventKind>,
+}
+
+impl TimelineKindPolicy {
+    pub fn from_gpu_work_definition() -> NsysQueryResult<Self> {
+        Ok(Self {
+            allowed: gpu_work::GpuWorkSet::from_data_definition()?
+                .kinds()
+                .to_vec(),
+        })
+    }
+
+    pub fn allowed(&self) -> &[EventKind] {
+        &self.allowed
+    }
+
+    fn validate_explicit(&self, kinds: &KindFilter) -> NsysQueryResult<()> {
+        if let KindFilter::Only(v) = kinds {
+            for k in v {
+                if !self.allowed.contains(k) {
+                    return Err(NsysQueryError::TimelineKindNotAllowed { kind: k.as_str() });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve(
+        &self,
+        kinds: &KindFilter,
+        nvtx: Option<&str>,
+        trace: &Trace,
+    ) -> NsysQueryResult<Vec<EventKind>> {
+        self.validate_explicit(kinds)?;
+        crate::kind_policy::resolve_nvtx_kinds(kinds, nvtx, self.allowed(), trace, "timeline")
     }
 }
 
@@ -147,26 +172,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
 
-    // Filter requested kinds against timeline's allow-list (GPU
-    // only). The shared `--type` + `--nvtx` resolver in
+    // Filter requested kinds against timeline's allow-list (GPU-busy
+    // interval kinds only). The shared `--type` + `--nvtx` resolver in
     // `kind_policy` does the rest: explicit non-attributable kinds
     // bail when `--nvtx` is set, `KindFilter::All` narrows
     // implicitly to the attributable set, and missing tables drop
     // out silently.
-    if let KindFilter::Only(v) = &req.kinds {
-        for k in v {
-            if !ALLOWED_KINDS.contains(k) {
-                return Err(NsysQueryError::TimelineKindNotAllowed { kind: k.as_str() });
-            }
-        }
-    }
-    let kinds = crate::kind_policy::resolve_nvtx_kinds(
-        &req.kinds,
-        req.nvtx.as_deref(),
-        &ALLOWED_KINDS,
-        &trace,
-        "timeline",
-    )?;
+    let kind_policy = TimelineKindPolicy::from_gpu_work_definition()?;
+    let kinds = kind_policy.resolve(&req.kinds, req.nvtx.as_deref(), &trace)?;
     if kinds.is_empty() {
         return Ok(TimelineResponse {
             interval_ns: req.interval_ns,
@@ -207,7 +220,14 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
-        let fragment = per_kind_select(*kind, abs_window, nvtx_scope, req.device, req.stream)?;
+        let fragment = per_kind_select(
+            *kind,
+            abs_window,
+            nvtx_scope,
+            req.device,
+            req.stream,
+            kind_policy.allowed(),
+        )?;
         subqueries.push(fragment.sql);
         per_kind_params.extend(fragment.params);
     }
@@ -291,7 +311,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
 
     // Bind order:
     //   1. attribution CTE param (the pattern glob), if --nvtx
-    //   2. per-kind windowed params (carried by per_kind_select)
+    //   2. per-kind params (clipped bounds, filters) from per_kind_select
     //   3. LIMIT
     let mut params: Vec<Value> = Vec::new();
     if let Some(att) = &attribution {
@@ -362,15 +382,16 @@ fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Err
 }
 
 /// Per-kind event SELECT contributing `(kind, start_ns, end_ns)` to the
-/// `events` CTE. Mirrors stats's `per_kind_subquery` shape (the same
-/// windowed-clip pattern); time-window + device + stream WHERE
-/// clauses bind their respective params in order.
+/// `events` CTE. When a time window is present, the projected bounds
+/// are clipped before bucket generation, so buckets and `total_ns`
+/// reflect in-window work only.
 fn per_kind_select(
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
     device: Option<i32>,
     stream: Option<i64>,
+    allowed_kinds: &[EventKind],
 ) -> NsysQueryResult<SqlFragment> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
         return Err(NsysQueryError::internal_unsupported_kind(
@@ -379,6 +400,15 @@ fn per_kind_select(
         ));
     }
     let sem = EventSemantics::new(kind);
+
+    let (start_expr, end_expr, mut params) = match abs_window {
+        Some((s, e)) => (
+            "GREATEST(t.start, ?)".to_string(),
+            r#"LEAST(t."end", ?)"#.to_string(),
+            vec![Value::BigInt(s), Value::BigInt(e)],
+        ),
+        None => ("t.start".to_string(), r#"t."end""#.to_string(), Vec::new()),
+    };
 
     let filter = event_scan_filter(
         sem,
@@ -389,16 +419,16 @@ fn per_kind_select(
             nvtx_scope,
             nvtx_policy: NvtxFilterPolicy::ErrorUnlessKindIn {
                 verb: "timeline",
-                allowed: NVTX_ATTRIBUTABLE_KINDS,
+                allowed: allowed_kinds,
             },
         },
         &[],
     )?;
     let where_clause = filter.where_clause();
-    let params = filter.into_params();
+    params.extend(filter.into_params());
 
     let sql = format!(
-        "SELECT '{label}' AS kind, t.start AS start_ns, t.\"end\" AS end_ns \
+        "SELECT '{label}' AS kind, {start_expr} AS start_ns, {end_expr} AS end_ns \
          FROM nsight.{table} t {where_clause}",
         label = sem.label(),
         table = sem.table(),
@@ -464,6 +494,52 @@ mod tests {
              0::BIGINT AS graph_count, \
              1::BIGINT AS total_matched"
         )
+    }
+
+    #[test]
+    fn windowed_per_kind_select_binds_clip_params_before_overlap_params() -> Result<()> {
+        // The windowed projection clips bounds with GREATEST/LEAST in
+        // the SELECT (binding window start,end) ahead of the overlap
+        // WHERE clause (which binds end,start). Lock the exact bind
+        // vector + ordering so a future refactor can't silently desync
+        // the placeholders against their SQL positions.
+        let allowed = [
+            EventKind::Kernel,
+            EventKind::Memcpy,
+            EventKind::Memset,
+            EventKind::Graph,
+        ];
+        let fragment = per_kind_select(
+            EventKind::Kernel,
+            Some((10, 20)),
+            crate::nvtx_attribution::NvtxScope::None,
+            None,
+            None,
+            &allowed,
+        )?;
+        assert_eq!(
+            fragment.params,
+            vec![
+                Value::BigInt(10), // GREATEST(t.start, ?) — clip start
+                Value::BigInt(20), // LEAST(t."end", ?)    — clip end
+                Value::BigInt(20), // WHERE t.start < ?     — overlap end
+                Value::BigInt(10), // WHERE t."end" > ?     — overlap start
+            ]
+        );
+        let clip_pos = fragment
+            .sql
+            .find("GREATEST(t.start, ?)")
+            .ok_or_else(|| anyhow::anyhow!("clip expr missing from SQL: {}", fragment.sql))?;
+        let where_pos = fragment
+            .sql
+            .find("WHERE")
+            .ok_or_else(|| anyhow::anyhow!("WHERE missing from SQL: {}", fragment.sql))?;
+        assert!(
+            clip_pos < where_pos,
+            "clip placeholders must precede WHERE placeholders: {}",
+            fragment.sql
+        );
+        Ok(())
     }
 
     #[test]

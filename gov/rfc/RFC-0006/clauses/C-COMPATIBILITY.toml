@@ -1,0 +1,46 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMPATIBILITY"
+title = "Compatibility"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Adding optional fields to an NSys response MAY keep source version `v2` when existing documented fields, row keys, command IDs, and output-mode semantics remain compatible.
+
+Removing an NSys response field documented by this RFC MUST change the NSys source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing the type or meaning of an NSys response field documented by this RFC MUST change the NSys source version.
+
+Changing an NSys row key format defined by [[RFC-0006:C-ROW-KEYS]] MUST change the NSys source version.
+
+Changing an NSys auxiliary bucket row key format defined by [[RFC-0006:C-ROW-KEYS]] MUST change the NSys source version.
+
+Changing the `row_id` format defined by [[RFC-0006:C-ROW-ID]] MUST change the NSys source version.
+
+Changing the EventRef `type` discriminator contract defined by [[RFC-0006:C-EVENT-REF]] MUST change the NSys source version.
+
+Changing the `source.kind` value from `nsys` MUST be treated as a breaking source identity change under [[RFC-0004:C-SOURCE-IDENTITY]].
+
+Changing a stable NSys command ID MUST be treated as a breaking command-surface change under [[RFC-0004:C-COMMAND-SURFACE]].
+
+Removing support for a supported NSys input form defined by [[RFC-0006:C-SUPPORTED-INPUTS]] MUST be treated as a breaking trace-detection change under [[RFC-0004:C-TRACE-DETECTION]].
+
+Changing the `ncu-command --print` raw-output exception defined by [[RFC-0006:C-SOURCE-EXCEPTIONS]] MUST be treated as a breaking output exception change unless the change is strictly additive for raw-output consumers.
+
+Changing the `metrics --bucket` list-shape exception defined by [[RFC-0006:C-SOURCE-EXCEPTIONS]] MUST be treated as a breaking output exception change unless the change is strictly additive for bucket-mode consumers.
+
+Changing the NSys `prep` canonical list shape defined by [[RFC-0006:C-ARTIFACTS]] MUST change the NSys source version.
+
+The NSys source version `v2` envelope shape MUST remain compatible with [[RFC-0002:C-SUCCESS-RESPONSE]] and [[RFC-0002:C-ERROR-RESPONSE]].
+
+The NSys source version `v2` list rows MUST remain compatible with [[RFC-0003:C-ROW-KEY]].
+
+The NSys source version `v2` artifact ownership semantics MUST remain compatible with [[RFC-0005:C-ARTIFACT-ROOT]] and [[RFC-0005:C-FRESHNESS]].
+
+The NSys source version `v2` supersedes source version `v1` by changing `prep` and `prep --status` from singleton cache summaries to the canonical sidecar-readiness list defined by [[RFC-0006:C-ARTIFACTS]].
+
+**Rationale:** Source-specific compatibility rules make it clear which NSys changes are additive and which changes require a source-version bump so agents can trust stored parsing logic. The `v2` bump keeps the cache-readiness cleanup explicit instead of preserving older singleton `prep` fields through compatibility wrappers."""

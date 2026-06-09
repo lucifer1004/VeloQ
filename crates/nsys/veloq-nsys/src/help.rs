@@ -363,11 +363,12 @@ fn long_about_correlation_stats() -> String {
 
 const PREP_BLURB: &str = "Prepare a trace for fast queries: export every nsys table to a parquetdir at \
      `<trace>.veloq/parquetdir/` (if not already present and fresh) and warm the metadata \
-     cache. Other commands auto-prep on first heavy use; agents that know they'll query the \
-     same trace many times benefit from running this first explicitly. `--status` is the \
-     read-only form: it reports parquetdir presence / table names and meta-cache fingerprint \
-     state without building anything — a cheap pre-flight check before scripting a batch of \
-     heavy verbs.";
+     cache plus the GPU-work sidecar used by repeated gaps queries. Other commands auto-prep \
+     on first heavy use; agents that know they'll query the same trace many times benefit \
+     from running this first explicitly. `--status` is the \
+     read-only form: it reports parquetdir presence under `data.auxiliary.parquet_cache` \
+     and registered sidecar readiness under `data.rows[]` without building anything — a \
+     cheap pre-flight check before scripting a batch of heavy verbs.";
 const PREP_EXAMPLES: &[&str] = &["veloq prep T"];
 
 fn long_about_prep() -> String {
@@ -417,6 +418,11 @@ const GAPS_BLURB: &str = "Find GPU idle bubbles. Three scopes via `--scope`:\n\
                          events on that stream. Use for per-stream starvation diagnostics.\n\
                          - `trace`: across all devices, gap = window where no device ran GPU \
                          work. Multi-GPU rig idle analysis.\n\
+                         \n\
+                         GPU work counts kernel + memcpy + memset + graph-trace, so \
+                         `--cuda-graph-trace=graph` counts graph-trace intervals as \
+                         busy (graph-only workloads no longer report phantom idle) and a \
+                         gap's `prev`/`next` may be `kind: graph`.\n\
                          \n\
                          Each gap reports duration + `prev`/`next` events (with stream context). \
                          Under unified scopes the bracketing events may live on different \
@@ -593,7 +599,7 @@ pub fn long_about_schema() -> String {
     out.push('.');
     out.push_str("\n\nResponse envelope:\n  ");
     out.push_str(
-        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v1\" }, \
+        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v2\" }, \
          command: \"nsys.schema\", data: { target: <string>, schema: <JSON Schema document> } }",
     );
     out.push_str("\n\nExamples:\n");

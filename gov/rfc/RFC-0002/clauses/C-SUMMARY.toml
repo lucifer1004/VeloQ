@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies VeloQ's source-neutral CLI input/output contract. It refines the agent-facing obligations in [[RFC-0001:C-AGENT-CONTRACT]] and the one-shot execution model in [[RFC-0001:C-QUERY-EXECUTION]].
+
+**Scope:** This RFC covers default output, success and error response shape, stdout/stderr separation, output-format projection, pre-dispatch behavior, and explicit raw-output exceptions. It does not specify the full row identity model; see [[RFC-0003]]. It does not specify source registration; see [[RFC-0004]].
+
+**Rationale:** Agents need one reliable way to invoke VeloQ and parse the result. Human output and progress logging must not make the default machine-readable contract ambiguous."""

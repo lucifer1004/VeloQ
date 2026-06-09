@@ -181,7 +181,9 @@ impl CapabilityFlags {
         }
     }
 
-    /// Quick "any GPU event table exists" predicate. Used by
+    /// Quick "any GPU event table exists" predicate. This is broader
+    /// than GPU-busy interval semantics because sync rows are
+    /// GPU-adjacent host waits, not device-busy work. Used by
     /// downstream callers (and by future capability-gated docs) to
     /// short-circuit before issuing a multi-table query.
     pub fn any_gpu_events(&self) -> bool {

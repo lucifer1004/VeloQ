@@ -1,0 +1,26 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-002"
+title = "Fix NSys gaps window pushdown"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0006",
+]
+
+[content]
+description = "Fix the NSys gaps query planner so time-windowed device and trace scope queries avoid sweeping the full unified event stream before applying --from/--to. The change preserves the existing wire shape while making small-window gaps usable on large traces."
+
+[[content.acceptance_criteria]]
+text = "NSys gaps applies explicit time windows before sweep-line window functions while preserving local gap correctness"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "govctl check and targeted gaps tests pass"
+status = "done"
+category = "chore"

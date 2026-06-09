@@ -362,8 +362,21 @@ fn bucket_mode_emits_long_form_rows() -> Result<()> {
     assert_eq!(r.auxiliary.common.bucket_ns, Some(20_000_000));
     assert!(r.rows.is_empty(), "bucket mode skips hotspot");
     assert!(!r.auxiliary.cpu_buckets.is_empty());
+    assert_eq!(r.count, r.auxiliary.cpu_buckets.len());
+    assert_eq!(r.total_matched, r.auxiliary.cpu_buckets.len() as i64);
     // Every cpu bucket row carries agg="sum" and value == samples.
     for b in &r.auxiliary.cpu_buckets {
+        assert!(
+            [
+                "func_a",
+                "func_b",
+                "<unresolved>@[kernel.kallsyms]",
+                "<unresolved_addr_string>",
+            ]
+            .contains(&b.key.as_str()),
+            "unexpected cpu-sampling bucket key `{}`",
+            b.key
+        );
         assert_eq!(b.agg, "sum");
         assert!((b.value - b.samples as f64).abs() < 1e-9);
     }

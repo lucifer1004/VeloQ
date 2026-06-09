@@ -1,0 +1,10 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-ROW-WIRE-CONTRACT"
+title = "contract: row wire"
+refs = ["RFC-0003"]
+
+[check]
+command = "cargo test --profile ci -p veloq-nsys-query -p veloq-nsys -p veloq-ncu -p veloq-pytorch --test wire_format_smoke"
+timeout_secs = 900

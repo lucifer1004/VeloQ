@@ -6,11 +6,13 @@
 //! NSys/PyTorch event schemas. Source crates adapt these semantics to
 //! their own storage backend.
 
+mod axis;
 mod limit;
 mod name_match;
 mod time_window;
 mod timeline_bucket;
 
+pub use axis::{AxisParentError, AxisUsage};
 pub use limit::{LimitError, LimitRef, LimitedRows};
 pub use name_match::{
     NameFilterRef, NameMatchError, NameMatcher, glob_regex, glob_sql_like, sql_like_matches,

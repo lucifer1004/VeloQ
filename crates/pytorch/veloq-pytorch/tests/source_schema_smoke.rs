@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::FromArgMatches;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 use veloq_core::ProfileSource;
@@ -13,6 +14,8 @@ fn source_detects_pytorch_inputs() -> Result<()> {
     let trace_path = dir.path().join("worker0.pt.trace.json");
     fs::write(&trace_path, r#"{"traceEvents":[]}"#)?;
     let source = PytorchSource;
+    assert_eq!(source.kind(), "pytorch");
+    assert_eq!(source.version(), "v0");
     assert!(source.detect(&trace_path));
     assert!(!source.detect(dir.path()));
     assert!(!source.detect(&dir.path().join("report.ncu-rep")));
@@ -20,20 +23,73 @@ fn source_detects_pytorch_inputs() -> Result<()> {
 }
 
 #[test]
-fn schema_targets_are_registered() -> Result<()> {
-    for target in [
-        "summary",
-        "search",
-        "inspect",
-        "stats",
-        "correlate",
-        "timeline",
-        "slices",
+fn stable_command_surface_matches_rfc_0007() {
+    let actual: BTreeSet<String> = PytorchSource
+        .cli()
+        .get_subcommands()
+        .map(|cmd| cmd.get_name().to_string())
+        .collect();
+    let expected: BTreeSet<String> = [
         "collectives",
+        "correlate",
+        "inspect",
         "prep",
-    ] {
-        let schema = veloq_pytorch::schema::schema_value_for(target)?;
-        assert!(schema.is_object(), "{target} schema should be an object");
+        "schema",
+        "search",
+        "slices",
+        "stats",
+        "summary",
+        "timeline",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn schema_targets_are_registered() -> Result<()> {
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        let schema = veloq_pytorch::schema::schema_value_for(target.name)?;
+        assert!(
+            schema.is_object(),
+            "{} schema should be an object",
+            target.name
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn schema_target_arg_help_lists_every_registry_target() -> Result<()> {
+    let source = PytorchSource;
+    let schema = source
+        .cli()
+        .find_subcommand("schema")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("schema subcommand not found"))?;
+    let long_about = schema
+        .get_long_about()
+        .map(|about| about.to_string())
+        .unwrap_or_default();
+    let help = schema
+        .get_arguments()
+        .find(|arg| arg.get_id() == "target")
+        .and_then(clap::Arg::get_help)
+        .map(|help| help.to_string())
+        .unwrap_or_default();
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        assert!(
+            help.contains(target.name),
+            "schema target arg help missing `{}`",
+            target.name
+        );
+        assert!(
+            long_about.contains(target.name),
+            "schema long_about missing `{}`",
+            target.name
+        );
     }
     Ok(())
 }
@@ -44,6 +100,14 @@ fn unknown_schema_target_has_command_error_code() -> Result<()> {
         .err()
         .ok_or_else(|| anyhow::anyhow!("expected schema target error"))?;
     assert_eq!(err.code().as_str(), "pytorch.command.unknown-schema-target");
+    let msg = err.to_string();
+    for target in veloq_pytorch::schema_targets::TARGETS {
+        assert!(
+            msg.contains(target.name),
+            "unknown target error should list `{}`",
+            target.name
+        );
+    }
     Ok(())
 }
 
@@ -162,6 +226,14 @@ fn query_errors_survive_anyhow_context_for_diagnostic_projection() -> Result<()>
     assert_eq!(
         query_err.code().as_str(),
         "pytorch.query.rank-scope-required"
+    );
+    let hint = json
+        .pointer("/error/hint")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("expected pytorch query hint"))?;
+    assert!(
+        hint.contains("--all-ranks") && hint.contains("--rank 0"),
+        "hint should name both rank-scope recovery flags: {hint}",
     );
     Ok(())
 }

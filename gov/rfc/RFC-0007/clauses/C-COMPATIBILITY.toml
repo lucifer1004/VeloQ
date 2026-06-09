@@ -1,0 +1,48 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMPATIBILITY"
+title = "Compatibility"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Adding optional fields to a PyTorch response MAY keep source version `v0` while documented fields, schema-target field inventories, row keys, command IDs, and output-mode semantics remain compatible.
+
+Changing the `source.kind` value from `pytorch` MUST be treated as a breaking source identity change under [[RFC-0004:C-SOURCE-IDENTITY]].
+
+Changing a PyTorch source-owned command ID MUST be treated as a breaking command-surface change under [[RFC-0004:C-COMMAND-SURFACE]].
+
+Changing the supported input suffixes defined by [[RFC-0007:C-SUPPORTED-INPUTS]] SHOULD be reflected in this RFC before the change is released.
+
+Changing the supported input suffixes in a way that removes a documented accepted suffix MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing the `row_id` format defined by [[RFC-0007:C-ROW-ID]] SHOULD be reflected in this RFC before the change is released.
+
+Changing the `row_id` format defined by [[RFC-0007:C-ROW-ID]] MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing the EventRef `type` discriminator values defined by [[RFC-0007:C-EVENT-REF]] SHOULD be reflected in this RFC before the change is released.
+
+Changing the EventRef `type` discriminator values defined by [[RFC-0007:C-EVENT-REF]] MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing a PyTorch row key format defined by [[RFC-0007:C-ROW-KEYS]] SHOULD be reflected in this RFC before the change is released.
+
+Changing a PyTorch row key format defined by [[RFC-0007:C-ROW-KEYS]] MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Removing a response field documented by this RFC or by a PyTorch `schema` target MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing the type or meaning of a response field documented by this RFC or by a PyTorch `schema` target MUST change the PyTorch source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+Changing PyTorch rank/local-axis validation semantics defined by [[RFC-0007:C-RANK-SCOPE]] SHOULD be reflected in this RFC before the change is released.
+
+Changing PyTorch artifact ownership semantics defined by [[RFC-0007:C-ARTIFACTS]] SHOULD be reflected in this RFC before the change is released.
+
+The PyTorch source version `v0` envelope shape MUST remain compatible with [[RFC-0002:C-SUCCESS-RESPONSE]] and [[RFC-0002:C-ERROR-RESPONSE]].
+
+The PyTorch source version `v0` list rows MUST remain compatible with [[RFC-0003:C-ROW-KEY]].
+
+The PyTorch source version `v0` artifact ownership semantics MUST remain compatible with [[RFC-0005:C-ARTIFACT-ROOT]] and [[RFC-0005:C-FRESHNESS]].
+
+**Rationale:** PyTorch remains experimental, so additive parser and schema growth can remain compatible while the source stays at `v0`. Breaking changes to documented fields, schema-target inventories, row identifiers, row keys, or command identity still follow the source-version compatibility boundary in [[RFC-0004:C-SOURCE-VERSION]]."""

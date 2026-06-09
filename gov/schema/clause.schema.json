@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Clause Specification",
+  "description": "JSON Schema for clause TOML artifacts with [govctl] metadata + [content] sections",
+  "type": "object",
+  "required": ["govctl", "content"],
+  "properties": {
+    "govctl": {
+      "type": "object",
+      "required": ["id", "title", "kind"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^C-[A-Z0-9-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["normative", "informative"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "superseded", "deprecated"],
+          "default": "active"
+        },
+        "since": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "superseded_by": {
+          "type": "string",
+          "pattern": "^(RFC-\\d{4}:)?C-[A-Z0-9-]+$"
+        },
+        "anchors": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+        },
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "content": {
+      "type": "object",
+      "required": ["text"],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -13,6 +13,7 @@ pub mod guards;
 pub mod meta;
 pub mod query;
 pub mod recipes;
+pub mod shell;
 pub mod sidecar;
 pub mod sort;
 pub mod source;
@@ -28,9 +29,10 @@ pub use envelope::{
 };
 pub use meta::{AppliedScope, NextStep, ResponseMeta, Warning, WarningCode, WarningSeverity};
 pub use query::{
-    LimitError, LimitRef, LimitedRows, NameFilterRef, NameMatchError, NameMatcher, TimelineBucket,
-    WindowRef, timeline_bucket_key,
+    AxisParentError, AxisUsage, LimitError, LimitRef, LimitedRows, NameFilterRef, NameMatchError,
+    NameMatcher, TimelineBucket, WindowRef, timeline_bucket_key,
 };
+pub use shell::shell_quote;
 pub use sidecar::{SidecarCache, SidecarError, SidecarHeader, SidecarResult, SourceFingerprint};
 pub use sort::{Direction, SortField, SortKeyDef, SortKeySpec, SortSpec, sort_in_memory};
 pub use source::{OutputFormat, OutputFormatError, ProfileSource, SourceRunError, SourceRunResult};

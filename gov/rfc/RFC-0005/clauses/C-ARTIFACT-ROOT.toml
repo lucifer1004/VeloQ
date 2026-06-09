@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ARTIFACT-ROOT"
+title = "Generated artifact root"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Generated artifacts for a profile SHOULD be grouped under a deterministic artifact root associated with that profile.
+
+A generated artifact root SHOULD be distinguishable from the input profile.
+
+A generated artifact root MUST NOT require callers to modify the input profile.
+
+A source MAY define source-specific children under the generated artifact root.
+
+A source-specific RFC SHOULD define source-specific generated artifact locations when those locations are user-visible.
+
+**Rationale:** One artifact root keeps generated files discoverable and cleanable. Separating generated files from inputs prevents cache operations from damaging source profiles."""

@@ -1,0 +1,20 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-FORMAT-PROJECTIONS"
+title = "Output format projections"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A non-default output format SHOULD be a projection of the same evidence used by the default JSON response.
+
+A non-default output format MUST NOT introduce a conflicting interpretation of the same evidence.
+
+A row-oriented non-default output format SHOULD project canonical rows when the response has canonical rows.
+
+On command failure, a command MAY emit the JSON error response even when a non-default output format was requested.
+
+**Rationale:** CSV and table output are useful for humans, but they should not become parallel contracts. Projection keeps human and agent outputs aligned."""

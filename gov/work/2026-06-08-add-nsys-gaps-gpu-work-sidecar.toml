@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-004"
+title = "Add NSys gaps GPU work sidecar"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0005",
+    "RFC-0006",
+]
+
+[content]
+description = "Add an NSys `gpu-work-events` Parquet sidecar through a small sidecar lifecycle registry. The sidecar normalizes `kernel`, `memcpy`, and `memset` intervals for `gaps`, keeps the existing `gaps` CLI and JSON wire shape, reports sidecar readiness through `prep`/`prep --status`, and treats optional acceleration artifacts as non-fatal when a cold query fallback can preserve semantics."
+
+[[content.acceptance_criteria]]
+text = "NSys data exposes a registry entry for the `gpu-work-events` sidecar with documented path, version, freshness, status, ensure, and optional view attachment semantics"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "NSys `Trace::open` treats optional `gpu-work-events` view attachment failures as non-fatal so unrelated commands keep working"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "NSys `gaps` reuses a fresh `gpu-work-events` sidecar when available while preserving cold-query fallback semantics and response shape"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "NSys `prep` and `prep --status` surface `gpu-work-events` sidecar readiness without requiring callers to know private cache paths"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "targeted NSys data/query/source tests and `govctl check` pass"
+status = "done"
+category = "chore"

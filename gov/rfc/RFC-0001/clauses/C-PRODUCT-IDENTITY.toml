@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-PRODUCT-IDENTITY"
+title = "Product identity"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST be a profile-query CLI family for extracting structured performance evidence from profiler artifacts.
+
+VeloQ MUST treat agents and scripts as the primary consumers of its default output.
+
+VeloQ SHOULD keep human-readable output as a projection or secondary presentation of the same underlying evidence.
+
+VeloQ MUST NOT require a GUI, interactive timeline viewer, notebook, daemon, or conversational server for the primary query workflow.
+
+VeloQ MAY provide installation, update, recipe, and Agent Skill surfaces when they make the CLI easier for agents and humans to use.
+
+**Rationale:** VeloQ exists because agents need precise, repeatable profile evidence without opening a profiler GUI or pasting huge profiler dumps into context. Human-facing affordances are useful, but they should not force the machine-facing contract to become ambiguous or ad hoc."""

@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-06-09
+
+### Added
+
+- **Governance artifacts** — RFCs now document VeloQ's agent-friendly,
+  high-performance design center plus stable CLI I/O, row identity,
+  source-registration, artifact-lifecycle, and per-source wire contracts.
+- **NSys gaps sidecar** — repeated full-trace gaps queries can reuse a
+  normalized GPU work sidecar, including graph-trace intervals.
+
+### Changed
+
+- **NSys gaps planning** — time-windowed gaps queries push scoped local
+  windows into the sweep input and keep exact `total_matched` under
+  row limits.
+- **NSys GPU busy semantics** — gaps now count CUDA graph-trace intervals
+  as GPU work, avoiding phantom idle on graph-only workloads.
+- **Schema and wire guards** — PyTorch, NCU, and NSys schema targets now
+  use source-of-truth registries with focused smoke coverage for canonical
+  list shapes and keyed rows.
+
+### Fixed
+
+- **Timeline windows** — NSys timeline buckets clip events before bucket
+  bounds are computed, so empty in-window work returns an empty result
+  rather than an error.
+- **CI governance install** — the CI workflow installs govctl from the
+  release asset with the correct executable filter and a glibc-compatible
+  runner image.
+
 ## [0.2.1] - 2026-06-07
 
 ### Added
@@ -76,6 +106,7 @@ Initial public release.
   `nsys-profile-analysis` and `ncu-profile-analysis` Agent Skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
+[0.2.2]: https://github.com/lucifer1004/veloq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lucifer1004/veloq/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lucifer1004/veloq/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucifer1004/veloq/releases/tag/v0.1.0

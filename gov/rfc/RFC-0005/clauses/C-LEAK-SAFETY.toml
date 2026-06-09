@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-LEAK-SAFETY"
+title = "Local-information safety"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This clause governs generated artifacts at the publication boundary.
+
+Committed generated artifacts MUST NOT contain private local machine details.
+
+Committed generated artifacts MUST NOT contain private trace identifiers.
+
+Committed generated artifacts MUST NOT contain absolute home paths.
+
+Committed generated artifacts MUST NOT contain hostnames or network addresses that identify a private machine.
+
+Tests, examples, recipes, docs, and governance artifacts MUST NOT depend on private generated artifacts.
+
+A source SHOULD prefer leak-free derived fixtures over raw profiler artifacts when raw profiler artifacts are likely to embed private environment details.
+
+**Rationale:** Profiler artifacts often capture host, path, command-line, or network metadata. VeloQ's public repository and governance artifacts must remain safe to publish."""

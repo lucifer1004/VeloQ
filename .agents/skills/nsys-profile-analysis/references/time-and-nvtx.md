@@ -121,9 +121,11 @@ Each slice's `attributed_kernel_ns` is the agent-actionable
 regression-hunt signal. Compare two iterations' values to find
 which one slowed down.
 
-`slices` doesn't take `--device` / `--stream` filters — its primary
-axis is NVTX-range, and the response already splits `gpu_attributed`
-per (device, stream).
+`slices` can be scoped with `--device` / `--stream` when the question
+is about one GPU lane. `--stream` still requires a single device
+because stream ids are device-local. For cross-device comparison,
+keep all devices and use the per-(device, stream) `gpu_attributed`
+breakdown instead of filtering away peer devices.
 
 `slices --aggregate` is the SQL-side aggregate view for "which NVTX
 scopes own GPU work." It defaults to leaf-name grouping, and path

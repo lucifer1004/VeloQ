@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-DEFAULT-MACHINE-OUTPUT"
+title = "Default machine-readable output"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The default output format for query commands MUST be JSON.
+
+The default JSON output MUST be documented as the primary agent-facing contract.
+
+A JSON-mode command MUST write exactly one primary JSON payload to stdout on success.
+
+A JSON-mode command MUST write exactly one primary JSON payload to stdout on handled error.
+
+Human-readable output formats MAY be provided as explicit projections.
+
+A command MUST NOT require a human-readable format to access evidence that is present in the default JSON output.
+
+**Rationale:** VeloQ's primary caller is an agent or script. JSON is the default so callers do not have to remember an opt-in flag before using jq-style tooling."""

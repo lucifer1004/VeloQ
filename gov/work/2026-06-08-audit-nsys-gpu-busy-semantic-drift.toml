@@ -1,0 +1,28 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-011"
+title = "Audit NSys GPU busy semantic drift"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Audit NSys query/data code after GPU busy SSOT consolidation to find remaining hard-coded GPU busy interval semantics. Route true duplicates through the shared definition or leave explicit local comments when a similar-looking list has different semantics, without changing JSON shape or sidecar/source versions."
+
+[[content.acceptance_criteria]]
+text = "remaining true GPU busy interval duplicates use the shared definition or adapter"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "intentionally separate graph replay, NVTX attribution, and discovery semantics are explicit"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "targeted NSys checks and govctl check pass"
+status = "done"
+category = "chore"

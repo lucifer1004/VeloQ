@@ -46,10 +46,8 @@ impl VeloqDiagnostic for PytorchSourceError {
 pub enum PytorchCommandError {
     #[error("veloq-pytorch schema currently supports only --format json (got `{fmt}`)")]
     UnsupportedSchemaFormat { fmt: OutputFormat },
-    #[error(
-        "unknown pytorch schema target `{target}`; expected one of: summary, search, inspect, stats, correlate, timeline, slices, collectives, prep"
-    )]
-    UnknownSchemaTarget { target: String },
+    #[error("unknown pytorch schema target `{target}`; expected one of: {expected}")]
+    UnknownSchemaTarget { target: String, expected: String },
     #[error("serializing pytorch schema target `{target}`")]
     SerializeSchema {
         target: String,
@@ -83,9 +81,10 @@ impl PytorchCommandError {
         Self::UnsupportedSchemaFormat { fmt }
     }
 
-    pub fn unknown_schema_target(target: &str) -> Self {
+    pub fn unknown_schema_target(target: &str, expected: String) -> Self {
         Self::UnknownSchemaTarget {
             target: target.to_string(),
+            expected,
         }
     }
 

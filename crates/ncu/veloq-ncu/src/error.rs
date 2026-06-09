@@ -80,10 +80,8 @@ pub enum NcuSourceError {
     #[error("ncu report `{trace}` not found")]
     TraceNotFound { trace: String },
 
-    #[error(
-        "unknown ncu schema target `{target}`; expected one of: summary, launches, inspect, metrics, disasm, ranges, graphs, sources, source-metrics, warp-stalls"
-    )]
-    UnknownSchemaTarget { target: String },
+    #[error("unknown ncu schema target `{target}`; expected one of: {expected}")]
+    UnknownSchemaTarget { target: String, expected: String },
 
     #[error("serializing ncu schema target `{target}`")]
     SerializeSchema {
@@ -300,9 +298,10 @@ pub enum NcuSourceError {
 }
 
 impl NcuSourceError {
-    pub fn unknown_schema_target(target: &str) -> Self {
+    pub fn unknown_schema_target(target: &str, expected: String) -> Self {
         Self::UnknownSchemaTarget {
             target: target.to_string(),
+            expected,
         }
     }
 

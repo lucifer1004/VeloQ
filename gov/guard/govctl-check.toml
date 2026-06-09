@@ -1,0 +1,9 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-GOVCTL-CHECK"
+title = "default: govctl check"
+
+[check]
+command = "govctl check"
+timeout_secs = 120

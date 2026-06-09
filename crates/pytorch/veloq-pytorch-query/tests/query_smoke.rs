@@ -834,6 +834,218 @@ fn stats_empty_group_by_has_no_row_when_filter_matches_nothing() -> Result<()> {
 }
 
 #[test]
+fn search_stream_filter_requires_device_scope() -> Result<()> {
+    let (_dir, trace) = single_trace()?;
+    let err = search(
+        &trace.query_trace(),
+        EventFilterRequest {
+            stream: Some(7),
+            ..EventFilterRequest::default()
+        },
+    )
+    .err()
+    .ok_or_else(|| test_error("expected stream parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.local-filter-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--stream 7") && message.contains("--device"),
+        "message should explain the missing device parent: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_device_filter_requires_rank_scope() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = search(
+        &trace.query_trace(),
+        EventFilterRequest {
+            rank_scope: RankScope {
+                rank: None,
+                all_ranks: true,
+            },
+            device: Some(0),
+            ..EventFilterRequest::default()
+        },
+    )
+    .err()
+    .ok_or_else(|| test_error("expected device parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.local-filter-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--device 0") && message.contains("--rank"),
+        "message should explain the missing rank parent: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_device_filter_error_precedes_generic_rank_scope_error() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = search(
+        &trace.query_trace(),
+        EventFilterRequest {
+            device: Some(0),
+            ..EventFilterRequest::default()
+        },
+    )
+    .err()
+    .ok_or_else(|| test_error("expected device parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.local-filter-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--device 0") && message.contains("--rank"),
+        "message should explain the missing rank parent: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_stream_filter_error_precedes_generic_rank_scope_error() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = search(
+        &trace.query_trace(),
+        EventFilterRequest {
+            stream: Some(7),
+            ..EventFilterRequest::default()
+        },
+    )
+    .err()
+    .ok_or_else(|| test_error("expected stream parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.local-filter-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--stream 7")
+            && message.contains("--rank")
+            && message.contains("--device"),
+        "message should explain the missing rank/device parents: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_stats_group_by_device_requires_rank_axis() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = stats(
+        &trace.query_trace(),
+        EventFilterRequest {
+            rank_scope: RankScope {
+                rank: None,
+                all_ranks: true,
+            },
+            ..EventFilterRequest::default()
+        },
+        &["device".to_string()],
+    )
+    .err()
+    .ok_or_else(|| test_error("expected stats group-by parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.stats-group-by-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--group-by device") && message.contains("rank,device"),
+        "message should point at safe comparison grouping: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_stats_group_by_device_error_precedes_generic_rank_scope_error() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = stats(
+        &trace.query_trace(),
+        EventFilterRequest::default(),
+        &["device".to_string()],
+    )
+    .err()
+    .ok_or_else(|| test_error("expected stats group-by parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.stats-group-by-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--group-by device") && message.contains("rank,device"),
+        "message should point at safe comparison grouping: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stats_group_by_stream_requires_device_axis() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let err = stats(
+        &trace.query_trace(),
+        EventFilterRequest {
+            rank_scope: RankScope {
+                rank: Some(0),
+                all_ranks: false,
+            },
+            ..EventFilterRequest::default()
+        },
+        &["stream".to_string()],
+    )
+    .err()
+    .ok_or_else(|| test_error("expected stats stream parent-axis error"))?;
+    assert_eq!(
+        err.code().as_str(),
+        "pytorch.query.stats-group-by-parent-required"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("--group-by stream") && message.contains("device,stream"),
+        "message should point at safe stream grouping: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn multi_rank_stats_allows_parent_axes_for_device_and_stream_comparison() -> Result<()> {
+    let (_dir, trace) = rank_collision_trace()?;
+    let response = stats(
+        &trace.query_trace(),
+        EventFilterRequest {
+            rank_scope: RankScope {
+                rank: None,
+                all_ranks: true,
+            },
+            ..EventFilterRequest::default()
+        },
+        &[
+            "rank".to_string(),
+            "device".to_string(),
+            "stream".to_string(),
+        ],
+    )?;
+    assert!(response.count >= 2);
+    assert!(response.rows.iter().any(|row| {
+        row.axes.get("rank").is_some_and(|rank| rank == "0")
+            && row.axes.get("device").is_some_and(|device| device == "0")
+            && row.axes.get("stream").is_some_and(|stream| stream == "7")
+    }));
+    assert!(response.rows.iter().any(|row| {
+        row.axes.get("rank").is_some_and(|rank| rank == "1")
+            && row.axes.get("device").is_some_and(|device| device == "0")
+            && row.axes.get("stream").is_some_and(|stream| stream == "8")
+    }));
+    Ok(())
+}
+
+#[test]
 fn timeline_buckets_from_sidecar_preserve_overlap_totals() -> Result<()> {
     let (_dir, trace) = timeline_bucket_trace()?;
     let response = timeline(&trace.query_trace(), EventFilterRequest::default(), 100_000)?;

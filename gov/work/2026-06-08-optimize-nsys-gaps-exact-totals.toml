@@ -1,0 +1,33 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-006"
+title = "Optimize NSys gaps exact totals"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Refine NSys gaps total_matched computation to use exact limit-saturation counting instead of window-size heuristics. Row queries fetch one extra row and only run the minimal total query when LIMIT truncates results; preserve CLI, JSON shape, row keys, scope semantics, and sidecar behavior."
+
+[[content.acceptance_criteria]]
+text = "NSys gaps row queries fetch limit plus one rows without inline COUNT(*) OVER()"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "NSys gaps computes total_matched from returned rows when LIMIT does not truncate"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "NSys gaps runs a separate minimal total query only when LIMIT truncates rows"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "targeted gaps tests, release perf spot check, and govctl check pass"
+status = "done"
+category = "chore"

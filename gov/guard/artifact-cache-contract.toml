@@ -1,0 +1,10 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-ARTIFACT-CACHE-CONTRACT"
+title = "contract: artifact cache"
+refs = ["RFC-0005"]
+
+[check]
+command = "bash -c 'cargo test --profile ci -p veloq-core --lib sidecar && cargo test --profile ci -p veloq-data --lib parquet && cargo test --profile ci -p veloq --test cli_smoke nsys_artifact_'"
+timeout_secs = 900

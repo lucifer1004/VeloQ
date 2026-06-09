@@ -1,0 +1,34 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-QUERY-EXECUTION"
+title = "Query execution model"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The primary single-profile VeloQ workflow MUST be one command invocation.
+
+In the primary single-profile workflow, the command MUST read the requested profile context.
+
+In the primary single-profile workflow, the command MUST emit one primary response.
+
+In the primary single-profile workflow, the command MUST exit after completing the response.
+
+A VeloQ command MUST NOT require process-local state from a prior invocation to interpret its response.
+
+Caches and generated artifacts MAY persist across invocations when their freshness semantics are explicit.
+
+Multi-profile commands MAY read more than one requested profile context when their command contract explicitly describes that shape.
+
+A future daemon, REPL, plugin, or service layer MAY wrap the one-shot commands.
+
+A future daemon, REPL, plugin, or service layer MUST NOT be required for the CLI contract to work.
+
+A command SHOULD keep stdout reserved for the primary response format.
+
+A command SHOULD use stderr for progress or human-facing diagnostics.
+
+**Rationale:** Stateless one-shot execution makes VeloQ easy for agents, shell scripts, CI jobs, and humans to compose. Persistent performance state belongs on disk through explicit generated artifacts rather than in an implicit process session."""

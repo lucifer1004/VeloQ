@@ -7,27 +7,16 @@
 //! `veloq-nsys-query`, and `veloq schema <target>` can emit their shapes
 //! when those commands are looked up by name.
 
-/// `veloq prep` response payload. Mirrors the JSON we emit;
-/// `meta_cache_path` lets scripts confirm the sidecar exists after
-/// prep without recomputing the path themselves.
+/// `veloq prep` / `veloq prep --status` response payload.
+///
+/// This is a canonical list response: each row is one registered NSys
+/// sidecar and `auxiliary` carries command-level cache context.
 #[derive(serde::Serialize, schemars::JsonSchema)]
 pub struct PrepPayload {
-    pub elapsed_ms: u64,
-    /// Per-report artifact root that owns all veloq-generated files.
-    pub cache_root: String,
-    pub parquet_tables: Vec<String>,
-    pub meta_cache_path: String,
-}
-
-/// `veloq prep --status` response — read-only inspection of the
-/// on-disk caches. Agents can call this before deciding whether
-/// to run a heavy verb cold or pay the prep cost up front.
-#[derive(serde::Serialize, schemars::JsonSchema)]
-pub struct PrepStatusPayload {
-    /// Per-report artifact root that owns all veloq-generated files.
-    pub cache_root: String,
-    pub parquet_cache: ParquetCacheStatus,
-    pub meta_cache: SidecarStatus,
+    pub count: usize,
+    pub total_matched: usize,
+    pub rows: Vec<PrepRow>,
+    pub auxiliary: PrepAuxiliary,
 }
 
 /// Parquet-cache directory state — describes the
@@ -45,12 +34,11 @@ pub struct ParquetCacheStatus {
     pub tables: Vec<String>,
 }
 
-/// Generic sidecar (meta or correlation) state. Path is always
-/// computed; size/mtime are populated only when the file is on
-/// disk; `fingerprint_match` is `true` only when the cache itself
-/// loaded cleanly under the trace's current fingerprint.
+/// One registered NSys sidecar readiness row.
 #[derive(serde::Serialize, schemars::JsonSchema)]
-pub struct SidecarStatus {
+pub struct PrepRow {
+    pub key: String,
+    pub name: String,
     pub path: String,
     pub present: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +56,32 @@ pub struct SidecarStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format_version_on_disk: Option<u32>,
     pub fingerprint_match: bool,
+}
+
+impl From<veloq_nsys_data::NsysSidecarStatus> for PrepRow {
+    fn from(status: veloq_nsys_data::NsysSidecarStatus) -> Self {
+        Self {
+            key: status.key,
+            name: status.name,
+            path: status.path,
+            present: status.present,
+            size_bytes: status.size_bytes,
+            mtime_secs: status.mtime_secs,
+            format_version_expected: status.format_version_expected,
+            format_version_on_disk: status.format_version_on_disk,
+            fingerprint_match: status.fingerprint_match,
+        }
+    }
+}
+
+#[derive(serde::Serialize, schemars::JsonSchema)]
+pub struct PrepAuxiliary {
+    /// Per-report artifact root that owns all veloq-generated files.
+    pub cache_root: String,
+    pub parquet_cache: ParquetCacheStatus,
+    /// `true` for `prep`, `false` for `prep --status`.
+    pub prepared: bool,
+    pub elapsed_ms: u64,
 }
 
 /// `veloq correlation-stats` response payload. Row counts come back

@@ -38,7 +38,7 @@ in [`../SKILL.md`](../SKILL.md).
 
 ```bash
 veloq stats T --type kernel --group-by demangled --sort total:desc --limit 20
-veloq stats T --type kernel --group-by short,device --sort total:desc --limit 20
+veloq stats T --type kernel --all-devices --group-by short,device --sort total:desc --limit 20
 veloq stats T --type kernel --group-by mangled --sort total:desc --limit 20
 veloq stats T --type kernel --group-by demangled,grid_block --sort total:desc --limit 20
 veloq search T --type kernel --name '*target*' --sort duration:desc --limit 10
@@ -156,8 +156,8 @@ veloq search T --type nvtx --name '*step*' --limit 200000 \
 # no rows were dropped by the implicit cap.
 
 # Diff two traces by NVTX range key:
-veloq stats T1 --group-by demangled,device,stream > a.json
-veloq stats T2 --group-by demangled,device,stream > b.json
+veloq stats T1 --all-devices --group-by demangled,device,stream > a.json
+veloq stats T2 --all-devices --group-by demangled,device,stream > b.json
 jq -n --slurpfile a a.json --slurpfile b b.json '
   ($a[0].data.rows | INDEX(.key)) as $A |
   ($b[0].data.rows | INDEX(.key)) as $B |
@@ -284,7 +284,7 @@ resolved user symbols points to a real host bottleneck.
 ## Bandwidth
 
 ```bash
-veloq stats T --type memcpy --group-by short,device --sort gbps:desc --limit 20
+veloq stats T --type memcpy --all-devices --group-by short,device --sort gbps:desc --limit 20
 veloq timeline T --interval 100ms --type memcpy --limit 200
 
 # Byte-axis aggregation (hidden — requires VELOQ_UNSTABLE=1).

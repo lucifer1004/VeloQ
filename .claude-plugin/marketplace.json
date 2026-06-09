@@ -8,7 +8,7 @@
     {
       "name": "veloq",
       "description": "Agent Skills for profile analysis (nsys + ncu + pytorch) that require the VeloQ CLI for evidence extraction. Install the binary separately via scripts/install.sh or cargo binstall.",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "source": "./"
     }
   ]

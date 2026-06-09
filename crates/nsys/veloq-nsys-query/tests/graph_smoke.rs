@@ -174,7 +174,7 @@ fn timeline_graph_ns_separated_from_kernel_ns() -> Result<()> {
 }
 
 /// Regression: `veloq timeline --type all --nvtx <pattern>` previously
-/// crashed on traces that contained graph_trace rows. `ALLOWED_KINDS`
+/// crashed on traces that contained graph_trace rows. The GPU-busy set
 /// includes `Graph`, NVTX attribution skips it, but `per_kind_select`
 /// errored under `nvtx_scope.is_attributed()` for the `Graph` arm.
 /// Now it emits `WHERE FALSE` so the subquery contributes zero rows.

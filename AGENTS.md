@@ -3,10 +3,11 @@
 This file is for agents/contributors **developing VeloQ itself**
 (adding verbs, profile sources, fixes, refactors). User-facing
 agents that use `veloq` as a black-box CLI to analyze profiles
-should read the skills under `.claude/skills/`:
+should read the skills under `.agents/skills/`:
 
-- `.claude/skills/nsys-profile-analysis/` — Nsight Systems timelines
-- `.claude/skills/ncu-profile-analysis/` — Nsight Compute kernel reports
+- `.agents/skills/nsys-profile-analysis/` — Nsight Systems timelines
+- `.agents/skills/ncu-profile-analysis/` — Nsight Compute kernel reports
+- `.agents/skills/pytorch-profile-analysis/` — PyTorch/Kineto traces
 
 VeloQ (velo-query) is a profile-query CLI family. Pure CLI in /
 JSON contract out by default, CSV/table projections for row-shaped
@@ -70,6 +71,7 @@ version).
    | `metrics` nic               | `nic_counter\|nic:<id>\|port:<id>\|metric:<idx>`                                                                                                                                                              |
    | `metrics` cpu-sampling      | bare `<symbol>` / `<module-basename>` / `<tid>` / `<cpu>` per `--group-by`                                                                                                                                    |
    | `metrics` cpu-sched         | `tid:<id>` / `cpu:<id>` / `state:<name>` per `--group-by`                                                                                                                                                     |
+   | `prep`                      | `sidecar\|<sidecar-id>`                                                                                                                                                                                       |
    | `ncu summary`               | `totals` (single-row summary)                                                                                                                                                                                 |
    | `ncu launches`              | `launch:<idx>`                                                                                                                                                                                                |
    | `ncu inspect`               | `launch:<idx>`                                                                                                                                                                                                |
@@ -79,6 +81,9 @@ version).
    | `ncu source-metrics` line   | `launch:<idx>\|line:<file>:<line>`                                                                                                                                                                            |
    | `ncu source-metrics` sass   | `launch:<idx>\|sass:0x<addr>`                                                                                                                                                                                 |
    | `ncu source-metrics` file   | `launch:<idx>\|file:<file>`                                                                                                                                                                                   |
+   | `ncu warp-stalls` line      | `launch:<idx>\|line:<file>:<line>`                                                                                                                                                                            |
+   | `ncu warp-stalls` sass      | `launch:<idx>\|sass:0x<addr>`                                                                                                                                                                                 |
+   | `ncu warp-stalls` reason    | `launch:<idx>\|reason:<reason>`                                                                                                                                                                               |
    | `ncu ranges/graphs/sources` | `<entity>:<idx>` (e.g. `range:0`)                                                                                                                                                                             |
    | `pytorch summary`           | `trace\|<trace_file_path>`                                                                                                                                                                                    |
    | `pytorch search`            | `<row_id>` (e.g. `kernel:91`, `cpu_op:42`)                                                                                                                                                                    |
@@ -95,17 +100,35 @@ version).
    matching axes — modulo `trace_span.origin_ns` if the recipe
    needs wall-clock normalization first.
 
+   NCU launch row ids are `launch:<idx>`. `ncu inspect` is
+   partial-batch friendly: out-of-range, malformed, and unsupported-kind
+   row ids return success rows tagged `type: "not_found"` with `key` and
+   `row_id` equal to the requested id. Other NCU drill verbs may reject
+   invalid launch row ids with handled diagnostic errors.
+
+   PyTorch rank-scoped commands are `search`, `stats`, `timeline`,
+   `slices`, and `collectives`. On multi-rank traces they must require
+   either `--rank <n>` or `--all-ranks`; `inspect` and `correlate` operate
+   on explicit row ids and are not rank-scope gated.
+
 3. **Per-source version (`SourceRef.version`)**: bumps independently
    from `ENVELOPE_VERSION` on any breaking shape change to that
-   source's payloads. Today NSys is `v1` (`stats --group-by nvtx-path`
-   rows carry the NVTX domain dimension — domain-qualified key plus
-   resolved `domain_id`/`domain_pid`/`domain_name`); NCU is `v1` — the
+   source's payloads. Today NSys is `v2`: `v1` introduced the NVTX
+   domain dimension on `stats --group-by nvtx-path` rows
+   (domain-qualified key plus resolved
+   `domain_id`/`domain_pid`/`domain_name`), and `v2` changes
+   `prep` / `prep --status` to the canonical sidecar-readiness list
+   response (`data.rows[]` with `sidecar|<sidecar-id>` keys,
+   plus command-level context under `data.auxiliary`). NCU is `v1` — the
    `ncu_report`-native wire (`inspect` drops the
    section catalog and cpu/python stacks, `summary.auxiliary.session`
    keeps only the NCU version), with the wire reporting each `ncu inspect` metric's `metric_type` /
    `metric_subtype` / `rollup` as the `ncu_report` enum _name_
    (`"counter"` rather than `1`), the raw integer kept alongside as
-   `*_code`.
+   `*_code`; PyTorch is `v0` — experimental, but documented fields,
+   schema-target inventories, row ids/keys, command ids, and output-mode
+   semantics are still covered by the source-version compatibility
+   boundary.
 4. **`RowId` is round-trippable**:
    `<kind>:<sqlite-compatible-rowid>` on the wire
    (`veloq_nsys_query::RowId`). Bit-packing stays inside the
@@ -268,6 +291,11 @@ Not shipped yet:
       capabilities, hardware, per-table counts, NVTX nesting
       (`HashMap<i64, NvtxEntry { depth, iter_index }>`). Built
       by `summary` / `prep`.
+    - `<trace>.veloq/gpu-work-events.parquet` — normalized
+      kernel/memcpy/memset/graph-trace intervals for repeated `gaps`
+      queries.
+      Built by `prep` or lazily by full-trace `gaps`; small-window
+      cold `gaps` queries use the direct local-window SQL path.
     - `<trace>.veloq/nvtx-parent.parquet` — `RuntimeNvtxParent`;
       runtime-row → enclosing NVTX chains for grouped stats paths.
     - `<trace>.veloq/nvtx-tree.parquet` — `NvtxTree`; flattened
@@ -395,16 +423,30 @@ one line plus the source crate.
 
 ## Pre-commit checklist
 
-- [ ] `cargo check --profile ci --workspace --all-targets`
-- [ ] `cargo clippy --profile ci --workspace --all-targets -- -D warnings`
-- [ ] `cargo test --profile ci --workspace`
-- [ ] `cargo fmt --all -- --check`
+- [ ] Routine/default validation:
+      `govctl verify GUARD-GOVCTL-CHECK`,
+      `govctl verify GUARD-FMT`,
+      `govctl verify GUARD-WORKSPACE-CHECK`, and
+      `govctl verify GUARD-SOURCE-REGISTRY-CONTRACT`.
+- [ ] Source or wire-contract changes → run the matching contract
+      guard(s): `GUARD-NSYS-WIRE-CONTRACT`,
+      `GUARD-NCU-WIRE-CONTRACT`,
+      `GUARD-PYTORCH-WIRE-CONTRACT`,
+      `GUARD-ROW-WIRE-CONTRACT`,
+      `GUARD-CLI-IO-CONTRACT`, or
+      `GUARD-ARTIFACT-CACHE-CONTRACT`.
+- [ ] Release/full-CI validation:
+      `govctl verify GUARD-WORKSPACE-CHECK`,
+      `govctl verify GUARD-FULL-CI-CLIPPY`, and
+      `govctl verify GUARD-FULL-CI-TEST`.
+      The release commands are the full workspace check, full
+      all-targets clippy, and full workspace test suite.
 - [ ] No `unwrap()` / `expect()` / `[i]` indexing in lib **or**
       tests — the workspace's `clippy::unwrap_used` / `expect_used`
       / `indexing_slicing` denies apply to every target, and the
-      gate above runs `--all-targets` to actually enforce them on
-      integration tests too. Use `ok_or_else` + `?` instead.
+      release clippy guard runs `--all-targets` to actually enforce
+      them on integration tests too. Use `ok_or_else` + `?` instead.
 - [ ] New subcommand → updated this file's roadmap + README
-      example + matching `.claude/skills/*` profile-analysis skill
+      example + matching `.agents/skills/*` profile-analysis skill
       (the skill is the user-facing contract description; this
       file is the maintainer-side invariant).

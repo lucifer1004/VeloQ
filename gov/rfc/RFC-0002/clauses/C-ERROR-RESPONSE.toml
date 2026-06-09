@@ -1,0 +1,38 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ERROR-RESPONSE"
+title = "Error response"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+An error JSON response MUST be an object.
+
+An error JSON response MUST contain a top-level `schema` field.
+
+An error JSON response MUST contain a top-level `error` field.
+
+An error JSON response MUST NOT contain a top-level `data` field.
+
+The `error` field MUST include a human-readable message.
+
+The `error` field SHOULD include a diagnostic chain when context is available.
+
+The `error` field SHOULD include structured diagnostic details when the failing layer can provide them.
+
+An error response MUST be distinguishable from a successful response by process exit status.
+
+A handled source-level failure MUST preserve source context when source context is known.
+
+A handled source-level failure MUST preserve command context when command context is known.
+
+A handled source-level failure MUST preserve trace context when trace context is known.
+
+A pre-dispatch failure MAY omit source, command, or trace context when no source or command has been selected.
+
+A successful empty result MUST NOT be encoded as an error response.
+
+**Rationale:** Agents need to separate invalid invocations, trace failures, and empty-but-valid answers. Preserving dispatch context on handled errors lets an agent recover without guessing which verb failed."""

@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-NON-GOALS"
+title = "Non-goals and boundaries"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST NOT be positioned as a replacement for profiler GUIs when the task is interactive visual exploration.
+
+VeloQ MUST NOT require users to adopt a specific agent runtime to use the CLI.
+
+VeloQ SHOULD NOT make performance verdicts that require workload-specific domain judgment when it can instead expose evidence for the caller to evaluate.
+
+VeloQ SHOULD NOT add source-specific one-off output shapes when the same evidence can fit the shared query contract.
+
+VeloQ MUST NOT commit local machine details, private trace identifiers, hostnames, absolute home paths, or raw private benchmark outputs as part of examples, tests, recipes, or governance artifacts.
+
+**Rationale:** Clear non-goals protect the design center. VeloQ should make profile evidence easier to query and reason about; it should not become an all-purpose GUI, a trace-hosting service, an agent lock-in mechanism, or a source of unreviewed local-information leakage."""

@@ -1,0 +1,33 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-009"
+title = "Align NSys timeline concurrency busy kinds"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Align timeline and concurrency with the shared NSys GPU work interval definition so all GPU-busy query paths derive their event kind set from one data-side source of truth. This is an internal refactor; it must preserve existing JSON shape and sidecar/source versions."
+
+[[content.acceptance_criteria]]
+text = "timeline allowed GPU-busy kinds derive from the shared NSys GPU work definition"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "concurrency interval fetch and compute/copy classification use the shared query adapter"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "shared adapter tests guard label/table drift and compute/copy classification"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "targeted timeline/concurrency checks and govctl check pass"
+status = "done"
+category = "chore"

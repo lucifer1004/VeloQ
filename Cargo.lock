@@ -3381,7 +3381,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "veloq"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3422,7 +3422,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-data"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arrow",
  "flate2",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-ncu"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3453,7 +3453,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3473,7 +3473,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys-data"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3493,7 +3493,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys-query"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "duckdb",
@@ -3510,7 +3510,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3526,7 +3526,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch-data"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arrow",
  "flate2",
@@ -3542,7 +3542,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch-query"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "duckdb",
  "regex",
@@ -3558,7 +3558,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-query"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "duckdb",

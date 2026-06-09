@@ -1,5 +1,5 @@
 use crate::dto::{SliceAggregateRow, SliceInstanceRow, SliceRow, SlicesAuxiliary, SlicesResponse};
-use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::filter::{EventFilterRequest, limit_ref, validate_event_scope};
 use crate::query_sql::{
     exec::{self, SqlLabel, SqlVerb},
     sidecar, slices as slices_sql,
@@ -14,7 +14,7 @@ pub fn slices(
     aggregate: bool,
     group_by: Option<String>,
 ) -> PytorchQueryResult<SlicesResponse> {
-    require_rank_scope(trace, request.rank_scope)?;
+    validate_event_scope(trace, &request)?;
     slices_sql(trace, request, aggregate, group_by)
 }
 

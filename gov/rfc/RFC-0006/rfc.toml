@@ -1,0 +1,72 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0006"
+title = "NSys source wire contract"
+version = "0.2.1"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+    "RFC-0004",
+    "RFC-0005",
+    "RFC-0002:C-DEFAULT-MACHINE-OUTPUT",
+    "RFC-0002:C-SUCCESS-RESPONSE",
+    "RFC-0002:C-ERROR-RESPONSE",
+    "RFC-0002:C-STDOUT-STDERR",
+    "RFC-0002:C-FORMAT-PROJECTIONS",
+    "RFC-0002:C-EXCEPTIONS",
+    "RFC-0003:C-ROW-KEY",
+    "RFC-0004:C-SOURCE-IDENTITY",
+    "RFC-0004:C-SOURCE-VERSION",
+    "RFC-0004:C-TRACE-DETECTION",
+    "RFC-0004:C-COMMAND-SURFACE",
+    "RFC-0004:C-SOURCE-EXCEPTIONS",
+    "RFC-0005:C-ARTIFACT-ROOT",
+    "RFC-0005:C-FRESHNESS",
+    "RFC-0003:C-LIST-SHAPE",
+    "RFC-0003:C-AUXILIARY-DATA",
+]
+signature = "cee16179e00fdbed653f1d88e7b875a75facfa253f431d831b57799eb105c9a0"
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-SOURCE-IDENTITY.toml",
+    "clauses/C-SUPPORTED-INPUTS.toml",
+    "clauses/C-COMMAND-SURFACE.toml",
+    "clauses/C-ROW-ID.toml",
+    "clauses/C-EVENT-REF.toml",
+    "clauses/C-ROW-KEYS.toml",
+    "clauses/C-NVTX-IDENTITY.toml",
+    "clauses/C-SOURCE-EXCEPTIONS.toml",
+    "clauses/C-COMPATIBILITY.toml",
+    "clauses/C-ARTIFACTS.toml",
+]
+
+[[changelog]]
+version = "0.2.1"
+date = "2026-06-08"
+notes = "Attach artifacts clause to the NSys v2 amendment"
+changed = ["Record since-version metadata for the new NSys artifacts clause"]
+
+[[changelog]]
+version = "0.2.0"
+date = "2026-06-08"
+notes = "Bump NSys wire to v2 for canonical prep sidecar readiness"
+added = ["NSys artifacts clause defines prep sidecar rows and readiness metadata"]
+changed = ["NSys source.version advances to v2 because prep/prep --status now use a canonical list response for sidecar readiness"]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

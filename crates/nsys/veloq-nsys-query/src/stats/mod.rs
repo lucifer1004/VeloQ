@@ -405,6 +405,8 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
             .join(", ");
         return Err(crate::NsysQueryError::stats_group_by_location_axis_conflict(csv));
     }
+    req.group_by
+        .validate_device_parent_axes("stats", req.device)?;
 
     // Policy: --group-by grid_block is kernel-only. The
     // CUPTI gridX/blockX columns live only on

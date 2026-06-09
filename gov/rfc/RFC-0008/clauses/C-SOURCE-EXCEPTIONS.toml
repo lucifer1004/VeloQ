@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-EXCEPTIONS"
+title = "Source-specific output exceptions"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU stable commands MUST NOT define a raw-stdout success exception.
+
+NCU JSON-mode successes MUST write exactly one VeloQ success envelope to stdout.
+
+NCU JSON-mode handled failures MUST write exactly one VeloQ error envelope to stdout.
+
+NCU CSV and table successes MUST replace the JSON envelope on stdout according to [[RFC-0002:C-FORMAT-PROJECTIONS]].
+
+NCU CSV and table handled failures MAY write a human-readable mirror to stderr according to [[RFC-0002:C-STDOUT-STDERR]].
+
+NCU progress output MUST NOT be written to stdout in JSON mode.
+
+NCU `schema` successes MUST remain JSON-envelope responses and MUST NOT be treated as raw schema stdout.
+
+NCU's omission of `trace_span` MUST be treated as a source-specific trace model rule rather than as an output exception.
+
+**Rationale:** Agents can safely parse stdout when every JSON-mode NCU result is envelope-shaped. The only projection exception is the source-neutral CSV/table rule already defined by the CLI I/O contract."""

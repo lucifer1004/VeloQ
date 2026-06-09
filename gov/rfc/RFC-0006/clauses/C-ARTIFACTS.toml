@@ -1,0 +1,72 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ARTIFACTS"
+title = "Artifacts and prep readiness"
+kind = "normative"
+status = "active"
+since = "0.2.1"
+
+[content]
+text = """
+NSys generated artifacts MUST live under the VeloQ artifact root for the resolved NSys source path according to [[RFC-0005:C-ARTIFACT-ROOT]].
+
+An NSys command that accepts a generated `parquetdir/` alias MUST resolve generated artifacts under the owning `.nsys-rep` artifact root.
+
+The registered NSys sidecar inventory for source version `v2` MUST include `meta-cache` and `gpu-work-events`.
+
+A registered NSys sidecar id MUST be a stable lowercase ASCII identifier.
+
+The `meta-cache` sidecar id MUST refer to the VeloQ metadata cache file named `meta.bin`.
+
+The `gpu-work-events` sidecar id MUST refer to the normalized GPU work interval sidecar file named `gpu-work-events.parquet`.
+
+NSys `prep` without `--status` MUST prepare every registered NSys sidecar before emitting its response.
+
+NSys `prep --status` MUST report registered NSys sidecar state without creating, rewriting, or refreshing any registered sidecar file.
+
+NSys `prep` and `prep --status` MUST emit the same canonical list response shape defined by [[RFC-0003:C-LIST-SHAPE]].
+
+NSys `prep` response `data.rows[]` MUST report one row per registered NSys sidecar id in source version `v2`.
+
+Each NSys `prep` response `data.rows[]` row `key` MUST be a string using the `sidecar|<sidecar-id>` format defined by [[RFC-0006:C-ROW-KEYS]].
+
+Each NSys `prep` response `data.rows[]` row `name` MUST be the sidecar filename as a string.
+
+Each NSys `prep` response `data.rows[]` row `path` MUST be the filesystem path where that sidecar is expected under the owning artifact root.
+
+Each NSys `prep` response `data.rows[]` row `present` MUST be a boolean that is `true` when a filesystem entry exists at `path`.
+
+Each NSys `prep` response `data.rows[]` row `format_version_expected` MUST be an integer sidecar schema version expected by the current VeloQ binary.
+
+Each NSys `prep` response `data.rows[]` row `format_version_on_disk` MUST be an integer sidecar schema version when a readable sidecar version is present on disk.
+
+Each NSys `prep` response `data.rows[]` row MUST omit `format_version_on_disk` when the sidecar is absent, unreadable, or does not expose a readable sidecar version.
+
+Each NSys `prep` response `data.rows[]` row `fingerprint_match` MUST be a boolean that is `true` only when VeloQ can prove that the sidecar is fresh for the resolved source evidence and expected sidecar version.
+
+Each NSys `prep` response `data.rows[]` row `fingerprint_match` MUST be `false` for absent, stale, unreadable, wrong-version, or unversioned sidecars.
+
+NSys `prep` response `data.auxiliary.cache_root` MUST be the artifact root path string for the resolved source path.
+
+NSys `prep` response `data.auxiliary.parquet_cache` MUST describe the NSys parquet export used as the raw-table cache.
+
+NSys `prep` response `data.auxiliary.parquet_cache.dir` MUST be the parquetdir path string.
+
+NSys `prep` response `data.auxiliary.parquet_cache.present` MUST be a boolean that is `true` when the parquetdir exists.
+
+NSys `prep` response `data.auxiliary.parquet_cache.tables` MUST be a sorted string array of present parquet table stems.
+
+NSys `prep` response `data.auxiliary.prepared` MUST be a boolean that reports whether this command invocation performed preparation.
+
+NSys `prep` response `data.auxiliary.prepared` MUST be `true` for `prep` without `--status`.
+
+NSys `prep` response `data.auxiliary.prepared` MUST be `false` for `prep --status`.
+
+NSys `prep` response `data.auxiliary.elapsed_ms` MUST be an integer elapsed time in milliseconds for the `prep` or `prep --status` command invocation.
+
+NSys query commands MUST NOT require callers to know private sidecar file formats or private sidecar schemas.
+
+Optional NSys acceleration sidecars MUST NOT make unrelated commands fail when the command can preserve public evidence semantics without using that sidecar.
+
+**Rationale:** `prep` is how agents ask whether a trace is ready for repeated analysis. A canonical sidecar list makes readiness machine-joinable, avoids ad hoc singleton cache fields, and keeps optional acceleration artifacts from becoming hidden global dependencies. The sidecar inventory and field semantics are explicit so tests can verify row completeness, key stability, and missing/stale sidecar behavior without depending on private record schemas."""

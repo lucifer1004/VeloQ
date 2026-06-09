@@ -215,6 +215,18 @@ fn stats_refuses_multi_device_without_flag() -> Result<()> {
     );
     let v = parse_stdout(&out)?;
     assert_eq!(at(&v, "/schema")?.as_str(), Some("v1"));
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.query.multi-device-ambiguous"),
+        "got: {v}",
+    );
+    let hint = at(&v, "/error/hint")?
+        .as_str()
+        .context("error.hint must be a string")?;
+    assert!(
+        hint.contains("--all-devices") && hint.contains("--device 0"),
+        "hint must mention both recovery flags: {hint}",
+    );
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
@@ -229,6 +241,24 @@ fn stats_refuses_multi_device_without_flag() -> Result<()> {
         Some("multi-device-ambiguous"),
         "got: {v}",
     );
+    let aggregate_command = at(&v, "/meta/next_steps/0/command")?
+        .as_str()
+        .context("first next_steps command must be a string")?;
+    assert!(
+        aggregate_command.contains("veloq stats")
+            && aggregate_command.contains("--all-devices")
+            && aggregate_command.contains(pqtdir.to_string_lossy().as_ref()),
+        "aggregate next step should rerun this stats query: {aggregate_command}",
+    );
+    let device_command = at(&v, "/meta/next_steps/1/command")?
+        .as_str()
+        .context("second next_steps command must be a string")?;
+    assert!(
+        device_command.contains("veloq stats")
+            && device_command.contains("--device 0")
+            && device_command.contains(pqtdir.to_string_lossy().as_ref()),
+        "device next step should rerun this stats query: {device_command}",
+    );
     Ok(())
 }
 
@@ -242,6 +272,21 @@ fn graph_replays_refuses_multi_device_without_flag() -> Result<()> {
         at(&v, "/meta/warnings/0/code")?.as_str(),
         Some("multi-device-ambiguous"),
         "got: {v}",
+    );
+    let aggregate_command = at(&v, "/meta/next_steps/0/command")?
+        .as_str()
+        .context("first next_steps command must be a string")?;
+    assert!(
+        aggregate_command.contains("veloq graph-replays")
+            && aggregate_command.contains("--all-devices"),
+        "aggregate next step should preserve the graph-replays verb: {aggregate_command}",
+    );
+    let device_command = at(&v, "/meta/next_steps/1/command")?
+        .as_str()
+        .context("second next_steps command must be a string")?;
+    assert!(
+        device_command.contains("veloq graph-replays") && device_command.contains("--device 0"),
+        "device next step should preserve the graph-replays verb: {device_command}",
     );
     Ok(())
 }
@@ -306,6 +351,276 @@ fn stats_with_all_devices_marks_aggregated_over_device() -> Result<()> {
         .first()
         .context("aggregated_over array unexpectedly empty after len-check")?;
     assert_eq!(first.as_str(), Some("device"));
+    Ok(())
+}
+
+#[test]
+fn concurrency_defaults_to_all_devices_on_multi_device_trace() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq(["concurrency", pqtdir.to_string_lossy().as_ref()])?;
+    assert!(
+        out.status.success(),
+        "expected concurrency to default to per-device rows on a multi-device trace; exit={:?}; stdout={}; stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(at(&v, "/data/count")?.as_u64(), Some(2));
+    assert!(
+        v.pointer("/meta/applied_scope/device").is_none(),
+        "implicit all-device concurrency should not lock a single device: {v}",
+    );
+    assert_eq!(
+        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
+        Some("device"),
+        "implicit all-device concurrency should mark the device axis: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn gaps_trace_scope_defaults_to_all_devices_on_multi_device_trace() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq([
+        "gaps",
+        pqtdir.to_string_lossy().as_ref(),
+        "--scope",
+        "trace",
+        "--min-duration",
+        "1ns",
+    ])?;
+    assert!(
+        out.status.success(),
+        "expected trace-scope gaps to default to all devices; exit={:?}; stdout={}; stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(at(&v, "/data/scope")?.as_str(), Some("trace"));
+    assert_eq!(
+        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
+        Some("device"),
+        "trace-scope gaps should mark the implicit all-device axis: {v}",
+    );
+    assert!(
+        v.pointer("/data/rows/0/device_id").is_none(),
+        "trace-scope gap rows should not carry a single device id: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn gaps_stream_scope_error_precedes_multi_device_ambiguity() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq(["gaps", pqtdir.to_string_lossy().as_ref(), "--stream", "7"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected stream-scope error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.query.gaps-stream-scope-required"),
+        "stream/scope validation should run before multi-device ambiguity: {v}",
+    );
+    assert!(
+        v.pointer("/meta/warnings/0/code").is_none(),
+        "parameter validation should not pretend to be an implicit all-device scope: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stats_stream_scope_error_precedes_multi_device_ambiguity() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq(["stats", pqtdir.to_string_lossy().as_ref(), "--stream", "7"])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected stream/device scope error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.data.scope-stream-requires-device"),
+        "--stream should not be masked by multi-device ambiguity: {v}",
+    );
+    assert!(
+        v.pointer("/meta/warnings/0/code").is_none(),
+        "stream parent-axis validation should not emit ambiguity warning: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn gaps_stream_scope_stream_filter_requires_device_before_ambiguity() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq([
+        "gaps",
+        pqtdir.to_string_lossy().as_ref(),
+        "--scope",
+        "stream",
+        "--stream",
+        "7",
+    ])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected stream/device scope error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.data.scope-stream-requires-device"),
+        "stream-scope gaps still require a device parent: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stream_filter_requires_single_device_scope() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq([
+        "stats",
+        pqtdir.to_string_lossy().as_ref(),
+        "--all-devices",
+        "--stream",
+        "7",
+    ])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected stream/device scope error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.data.scope-stream-requires-device"),
+        "--stream should not filter across all devices: {v}",
+    );
+    let message = at(&v, "/error/message")?
+        .as_str()
+        .context("error.message must be a string")?;
+    assert!(
+        message.contains("--stream 7") && message.contains("--device"),
+        "message should explain the missing device scope: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stats_group_by_stream_requires_device_parent_axis() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq([
+        "stats",
+        pqtdir.to_string_lossy().as_ref(),
+        "--all-devices",
+        "--group-by",
+        "stream",
+    ])?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected group-by parent-axis error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.query.stats-group-by-device-parent-required"),
+        "got: {v}",
+    );
+    let message = at(&v, "/error/message")?
+        .as_str()
+        .context("error.message must be a string")?;
+    assert!(
+        message.contains("--group-by stream") && message.contains("device,stream"),
+        "message should point at safe comparison grouping: {message}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stats_all_devices_group_by_device_stream_is_valid_comparison() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = run_veloq([
+        "stats",
+        pqtdir.to_string_lossy().as_ref(),
+        "--all-devices",
+        "--group-by",
+        "device,stream",
+    ])?;
+    assert!(
+        out.status.success(),
+        "expected grouped comparison to succeed; exit={:?}; stdout={}; stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(at(&v, "/data/count")?.as_u64(), Some(2));
+    assert_eq!(
+        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
+        Some("device"),
+        "all-device comparison should still mark aggregated_over: {v}",
+    );
+    let rows = at(&v, "/data/rows")?
+        .as_array()
+        .context("data.rows must be an array")?;
+    assert!(
+        rows.iter()
+            .any(|row| row.pointer("/device_id").and_then(Value::as_i64) == Some(0)),
+        "expected a device 0 row: {v}",
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.pointer("/device_id").and_then(Value::as_i64) == Some(1)),
+        "expected a device 1 row: {v}",
+    );
+    Ok(())
+}
+
+#[test]
+fn stats_by_size_group_by_context_requires_device_parent_axis() -> Result<()> {
+    let (_dir, pqtdir) = build_two_device_trace()?;
+    let out = Command::new(veloq_bin())
+        .env("VELOQ_UNSTABLE", "1")
+        .args([
+            "stats",
+            pqtdir.to_string_lossy().as_ref(),
+            "--by",
+            "size",
+            "--all-devices",
+            "--group-by",
+            "context",
+        ])
+        .output()
+        .context("spawn veloq binary")?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "expected group-by parent-axis error; stdout={}; stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let v = parse_stdout(&out)?;
+    assert_eq!(
+        at(&v, "/error/code")?.as_str(),
+        Some("nsys.query.stats-group-by-device-parent-required"),
+        "got: {v}",
+    );
     Ok(())
 }
 

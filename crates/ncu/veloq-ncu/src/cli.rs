@@ -229,9 +229,8 @@ pub enum Cmd {
     /// Emit the strict JSON Schema for one NCU response payload.
     /// Meta endpoint — does not read a trace.
     Schema {
-        /// Subcommand whose response schema to print. One of:
-        /// `summary`, `launches`, `inspect`, `metrics`, `disasm`,
-        /// `ranges`, `graphs`, `sources`, `source-metrics`, `warp-stalls`.
+        /// Subcommand whose response schema to print. The valid target
+        /// list is injected at runtime from `schema_targets::TARGETS`.
         target: String,
     },
 }

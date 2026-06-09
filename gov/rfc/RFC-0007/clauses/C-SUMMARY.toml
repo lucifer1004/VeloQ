@@ -1,0 +1,17 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies the PyTorch/Kineto Chrome trace source wire contract for VeloQ.
+It refines the product, CLI I/O, list identity, source, and artifact contracts in [[RFC-0001]], [[RFC-0002]], [[RFC-0003]], [[RFC-0004]], and [[RFC-0005]] for the experimental PyTorch source.
+
+**Scope:** This RFC covers the PyTorch source identity, supported input form, source-owned command IDs, PyTorch event row identifiers, EventRef objects, concrete PyTorch row key formats, rank/local-axis scope validation, generated artifacts, and compatibility expectations while the source remains version `v0`. It does not prescribe SQL architecture, private ingest heuristics beyond the externally visible typed fields, internal cache record schemas, DuckDB table names, Parquet column schemas, implementation module layout, or full response field inventories beyond the invariants named here; full response field inventories are exposed by the PyTorch `schema` targets.
+
+**Rationale:** PyTorch/Kineto traces vary across profiler versions and capture settings. Agents need a documented source-specific wire contract so they can query CPU/GPU/communication evidence, round-trip row identifiers, and compare output rows without depending on private ingestion details."""

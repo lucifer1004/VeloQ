@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-TRUNCATION-AND-EMPTY"
+title = "Truncation and empty results"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A successful empty list MUST be represented as success.
+
+A successful empty list MUST return `rows` as an empty array.
+
+A successful empty list MUST return `count` as zero.
+
+A limit or truncation mechanism SHOULD preserve enough metadata for an agent to tell returned rows from total matches when total matches are available.
+
+A command SHOULD validate limits before running expensive query work when invalid limits can be detected from command input alone.
+
+A command MUST NOT encode truncation as a failure when the command completed successfully under the requested limit.
+
+**Rationale:** Empty and truncated results are normal query outcomes. Agents need to distinguish no evidence, limited evidence, and command failure."""

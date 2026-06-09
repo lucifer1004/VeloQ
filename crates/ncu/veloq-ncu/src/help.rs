@@ -58,7 +58,10 @@ pub fn inject_long_about(mut cmd: clap::Command) -> clap::Command {
             sub.long_about(composed)
         });
     }
-    cmd
+    cmd.mut_subcommand("schema", |sub| {
+        sub.long_about(long_about_schema())
+            .mut_arg("target", |arg| arg.help(schema_target_arg_help()))
+    })
 }
 
 fn render_recipes_block(recipes: &[&'static veloq_core::recipes::Recipe]) -> String {
@@ -72,4 +75,21 @@ fn render_recipes_block(recipes: &[&'static veloq_core::recipes::Recipe]) -> Str
         out.pop();
     }
     out
+}
+
+pub(crate) fn long_about_schema() -> String {
+    format!(
+        "Emit the strict JSON Schema for one NCU response payload. \
+         Meta endpoint -- reads no report.\n\nValid targets: {}.\n\n\
+         Response envelope:\n  {{ schema: \"v1\", source: {{ kind: \"ncu\", version: \"v1\" }}, \
+         command: \"ncu.schema\", data: {{ target: <string>, schema: <JSON Schema document> }} }}",
+        crate::schema_targets::render_target_list()
+    )
+}
+
+fn schema_target_arg_help() -> String {
+    format!(
+        "Subcommand whose response schema to print. One of: {}",
+        crate::schema_targets::render_target_list()
+    )
 }

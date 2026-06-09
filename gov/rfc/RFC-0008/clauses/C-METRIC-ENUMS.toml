@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-METRIC-ENUMS"
+title = "Metric enum fields"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU metric payloads that expose metric type information MUST report `metric_type` as a stable enum-name string.
+
+NCU metric payloads that expose metric subtype information MUST report `metric_subtype` as a stable enum-name string when the subtype is known.
+
+NCU metric payloads that expose rollup information MUST report `rollup` as a stable enum-name string when the rollup is known.
+
+NCU metric payloads MAY omit `metric_subtype` or `rollup` when the native report has no corresponding value.
+
+NCU metric payloads SHOULD preserve native integer enum codes as `metric_type_code`, `metric_subtype_code`, and `rollup_code` when those codes are available.
+
+NCU metric enum-name fields MUST use `unknown` rather than failing deserialization when a future NCU version exposes a value VeloQ does not yet name.
+
+NCU metric enum-name fields MUST NOT be replaced by integer-only fields without an NCU source version bump.
+
+NCU metric enum code fields MUST remain auxiliary to the enum-name fields.
+
+**Rationale:** Agents need readable, stable metric categories for jq filters and reports. Keeping native integer codes alongside names preserves diagnostic detail without making consumers depend on NVIDIA's raw enum numbering."""

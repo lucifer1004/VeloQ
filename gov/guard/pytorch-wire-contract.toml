@@ -1,0 +1,21 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-PYTORCH-WIRE-CONTRACT"
+title = "contract: PyTorch wire"
+refs = [
+    "RFC-0007",
+    "RFC-0007:C-SOURCE-IDENTITY",
+    "RFC-0007:C-SUPPORTED-INPUTS",
+    "RFC-0007:C-COMMAND-SURFACE",
+    "RFC-0007:C-ROW-ID",
+    "RFC-0007:C-EVENT-REF",
+    "RFC-0007:C-ROW-KEYS",
+    "RFC-0007:C-RANK-SCOPE",
+    "RFC-0007:C-ARTIFACTS",
+    "RFC-0007:C-COMPATIBILITY",
+]
+
+[check]
+command = "bash -c 'cargo test --profile ci -p veloq-pytorch -p veloq-pytorch-query -p veloq-pytorch-data && cargo test --profile ci -p veloq --test cli_smoke pytorch_'"
+timeout_secs = 900

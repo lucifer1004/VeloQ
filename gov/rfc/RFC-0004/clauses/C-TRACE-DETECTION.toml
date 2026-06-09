@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-TRACE-DETECTION"
+title = "Trace detection"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A source that participates in automatic trace detection MUST provide a side-effect-free detection path.
+
+Trace detection MUST NOT create generated artifacts.
+
+Trace detection MUST NOT modify the input profile.
+
+Trace detection SHOULD avoid expensive ingestion work.
+
+Two sources MUST NOT both claim the same input path through automatic detection.
+
+When no source claims an input path, the caller SHOULD receive a structured diagnostic rather than a misleading source selection.
+
+**Rationale:** Automatic detection is an ergonomic feature for agents and humans. It must be cheap and predictable because it can run before VeloQ knows which source-specific logic applies."""

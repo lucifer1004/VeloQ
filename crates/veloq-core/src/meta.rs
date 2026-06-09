@@ -166,6 +166,10 @@ pub enum WarningCode {
     /// scope or opt into aggregation. Emitted as `meta.warnings` on an
     /// error envelope.
     MultiDeviceAmbiguous,
+    /// PyTorch trace has more than one distributed rank and the agent
+    /// did not pick a rank or opt into aggregation. Emitted as
+    /// `meta.warnings` on an error envelope.
+    MultiRankAmbiguous,
     /// PM-counter coverage on the queried time window is below the
     /// "trust" threshold (per `metrics --type gpu|nic` semantics).
     CoverageLow,
@@ -240,6 +244,7 @@ mod tests {
             (WarningCode::NarrowWindow, "narrow-window"),
             (WarningCode::EmptyWithScope, "empty-with-scope"),
             (WarningCode::MultiDeviceAmbiguous, "multi-device-ambiguous"),
+            (WarningCode::MultiRankAmbiguous, "multi-rank-ambiguous"),
             (WarningCode::CoverageLow, "coverage-low"),
             (WarningCode::SchemaFallback, "schema-fallback"),
         ];

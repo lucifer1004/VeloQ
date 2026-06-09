@@ -1,0 +1,9 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-WORKSPACE-CHECK"
+title = "default/release: workspace check"
+
+[check]
+command = "cargo check --profile ci --workspace --all-targets"
+timeout_secs = 1200

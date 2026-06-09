@@ -28,6 +28,7 @@ pub mod metrics;
 pub mod native;
 pub mod row_id;
 pub mod schema;
+pub mod schema_targets;
 pub mod source;
 pub mod source_metrics;
 pub mod views;

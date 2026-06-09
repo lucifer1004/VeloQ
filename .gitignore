@@ -48,3 +48,6 @@ veloq-*-macos
 veloq-*-windows.exe
 veloq-*.sha256
 install.sh.sha256
+.govctl.lock
+.govctl/
+gov/.govctl.lock

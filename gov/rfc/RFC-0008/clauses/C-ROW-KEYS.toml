@@ -1,0 +1,52 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROW-KEYS"
+title = "Concrete row keys"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU row keys MUST follow the canonical list identity contract in [[RFC-0003:C-ROW-KEY]].
+
+NCU row keys MUST be treated by consumers as opaque equality strings.
+
+Consumers SHOULD NOT parse NCU row keys by splitting on delimiter characters because trace-derived names and file paths may contain those characters.
+
+`ncu summary` rows MUST use `totals` for the single summary row key.
+
+`ncu launches` rows MUST use `launch:<idx>` for both `key` and `row_id`.
+
+`ncu inspect` found launch rows MUST use `launch:<idx>` for both `key` and `row_id`.
+
+`ncu inspect` not-found rows MUST use the requested row identifier for both `key` and `row_id`.
+
+`ncu metrics` long-form rows MUST use `launch:<idx>|counter:<name>`.
+
+`ncu metrics` per-launch rows MUST use `launch:<idx>`.
+
+`ncu disasm` kernel rows MUST use `kernel|<function_name>`.
+
+`ncu ranges` rows MUST use `range:<idx>`.
+
+`ncu graphs` rows MUST use `graph:<idx>`.
+
+`ncu sources` rows MUST use `source:<launch_idx>`.
+
+`ncu source-metrics --by line` rows MUST use `launch:<idx>|line:<file>:<line>`.
+
+`ncu source-metrics --by sass` rows MUST use `launch:<idx>|sass:0x<addr>` with a lowercase hexadecimal address and no leading zero padding requirement.
+
+`ncu source-metrics --by file` rows MUST use `launch:<idx>|file:<file>`.
+
+`ncu warp-stalls --by line` rows MUST use `launch:<idx>|line:<file>:<line>`.
+
+`ncu warp-stalls --by sass` rows MUST use `launch:<idx>|sass:0x<addr>` with a lowercase hexadecimal address and no leading zero padding requirement.
+
+`ncu warp-stalls --by reason` rows MUST use `launch:<idx>|reason:<reason>`.
+
+A stable NCU response that adds a new primary `rows[]` item shape MUST define that shape's row key in this clause before it is treated as part of the stable public contract.
+
+**Rationale:** Row keys are the join substrate for agent workflows and cross-report comparison. The key formats must be stable enough to compare equal rows, while consumers must avoid delimiter parsing because NCU names and source paths are trace data rather than schema tokens."""

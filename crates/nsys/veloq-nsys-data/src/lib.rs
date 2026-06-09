@@ -29,6 +29,8 @@ pub mod adapter;
 pub mod capabilities;
 pub mod correlation;
 pub mod error;
+pub mod gpu_work;
+pub mod gpu_work_events;
 pub mod hardware;
 pub mod meta_cache;
 pub mod nsys_rep;
@@ -38,6 +40,7 @@ pub mod nvtx_tree;
 pub mod runtime_nvtx_parent;
 pub mod scope;
 pub mod sidecar;
+pub mod sidecar_registry;
 pub mod sql_expr;
 pub mod trace_map;
 
@@ -54,6 +57,8 @@ pub use correlation::{
     native_pid_from_global_tid,
 };
 pub use error::{DuckdbPhase, NsysDataError, NsysDataResult};
+pub use gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
+pub use gpu_work_events::{GPU_WORK_EVENTS_VERSION, GpuWorkEventRecord};
 pub use hardware::{CpuInfo, DriverInfo, GpuInfo, HostInfo, NicInfo, SystemInfo};
 pub use meta_cache::{META_CACHE_VERSION, PerTableEntry, TraceMetaCache};
 pub use nvtx_nesting::{NvtxEntry, NvtxNesting};
@@ -61,6 +66,7 @@ pub use nvtx_tree::{NVTX_TREE_VERSION, NvtxTree, NvtxTreeRecord};
 pub use runtime_nvtx_parent::{
     EnclosingNvtx, RUNTIME_NVTX_PARENT_VERSION, RuntimeNvtxParent, RuntimeParentEntry,
 };
+pub use sidecar_registry::{NsysSidecar, NsysSidecarStatus};
 pub use veloq_core::time::TimeWindow;
 
 use duckdb::Connection;
@@ -248,6 +254,7 @@ impl Trace {
         let choice = pick_adapter(&conn, &pqtdir_path)?;
 
         attach_nvtx_tree_view_if_present(&conn, &source_path)?;
+        sidecar_registry::attach_optional_views(&conn, &source_path);
 
         Ok(Self {
             conn,

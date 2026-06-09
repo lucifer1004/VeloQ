@@ -1,0 +1,70 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-EVENT-REF"
+title = "EventRef objects"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Each row in `search.rows[]` MUST be an EventRef object.
+
+Each embedded event in `correlate.rows[].events[]` MUST be an EventRef object.
+
+An EventRef object MUST carry a top-level `type` discriminator.
+
+The EventRef `type` value MUST be one of `kernel`, `memcpy`, `memset`, `sync`, `runtime`, `osrt`, `nvtx`, `graph`, `graph_node`, `graph_event`, `cuda_event`, or `overhead`.
+
+An EventRef object MUST carry `key`, `row_id`, `name`, `start_ns`, and `duration_ns`.
+
+An EventRef `key` MUST be a string.
+
+An EventRef `row_id` MUST follow [[RFC-0006:C-ROW-ID]].
+
+An EventRef `name` MUST be a string.
+
+An EventRef `start_ns` MUST be an integer nanosecond timestamp in the opened trace timebase.
+
+An EventRef `duration_ns` MUST be an integer nanosecond duration.
+
+An EventRef object MAY carry `device_id`, `stream_id`, `global_tid`, `depth`, and `nvtx_context` when those values are known for the event.
+
+An EventRef `device_id`, `stream_id`, and `global_tid` value MUST be an integer when present.
+
+An EventRef `depth` value MUST be a non-negative integer when present.
+
+A `kernel` EventRef SHOULD carry `grid`, `block`, `registers_per_thread`, `static_shared_memory`, `dynamic_shared_memory`, `demangled_name`, and `mangled_name` when those values are available in the trace.
+
+A `kernel` EventRef `grid` value MUST be an array of three integers when present.
+
+A `kernel` EventRef `block` value MUST be an array of three integers when present.
+
+A `kernel` EventRef `registers_per_thread`, `static_shared_memory`, and `dynamic_shared_memory` value MUST be an integer when present.
+
+A `kernel` EventRef `demangled_name` and `mangled_name` value MUST be a string when present.
+
+A `memcpy` EventRef SHOULD carry `bytes`, `copy_kind`, and `copy_kind_name` when those values are available in the trace.
+
+A `memcpy` EventRef `bytes` value MUST be an integer byte count when present.
+
+A `memcpy` EventRef `copy_kind` value MUST be an integer when present.
+
+A `memcpy` EventRef `copy_kind_name` value MUST be a string when present.
+
+A `memset` EventRef SHOULD carry `bytes` and `value` when those values are available in the trace.
+
+A `memset` EventRef `bytes` value MUST be an integer byte count when present.
+
+A `memset` EventRef `value` value MUST be an integer when present.
+
+An `nvtx` EventRef SHOULD carry `event_type` and `domain_id` when those values are available in the trace.
+
+An `nvtx` EventRef `event_type` and `domain_id` value MUST be an integer when present.
+
+An EventRef MUST omit unavailable optional values instead of fabricating placeholder values.
+
+An EventRef `key` MUST equal its `row_id` unless a future source version explicitly defines a different key contract.
+
+**Rationale:** EventRef is the shared row shape that lets agents inspect search and correlation evidence without an immediate follow-up query for common headline fields. Optional values reflect trace schema variation; fabricated values would make agent conclusions less trustworthy."""

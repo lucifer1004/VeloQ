@@ -101,7 +101,7 @@ cargo build --release -p veloq
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v1" },
+  "source": { "kind": "nsys", "version": "v2" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "..." },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },

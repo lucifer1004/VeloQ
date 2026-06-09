@@ -1,0 +1,33 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-007"
+title = "Include graph trace work in NSys gaps"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Fix NSys gaps to treat CUPTI graph_trace rows as GPU-busy work, matching timeline/concurrency semantics for --cuda-graph-trace=graph captures. Update the gpu_work_events sidecar content and cold gaps path without bumping the sidecar version because this sidecar change has not shipped."
+
+[[content.acceptance_criteria]]
+text = "NSys gaps cold path includes graph_trace rows as busy intervals"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "gpu_work_events sidecar includes graph_trace rows without bumping the sidecar version"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "graph-trace-only fixture gaps show graph-bracketed idle intervals in cold and warm sidecar states"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "targeted gaps/data tests and govctl check pass"
+status = "done"
+category = "chore"

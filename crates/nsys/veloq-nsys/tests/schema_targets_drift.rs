@@ -80,26 +80,3 @@ fn schema_target_arg_help_lists_every_registry_target() -> Result<()> {
     }
     Ok(())
 }
-
-#[test]
-fn prep_status_appears_in_all_three_sites() -> Result<()> {
-    // prep-status is the canonical drift case: this test fails if any
-    // of the three sites loses it.
-    assert!(
-        TARGETS.iter().any(|t| t.name == "prep-status"),
-        "prep-status missing from TARGETS registry"
-    );
-    let _ = schema_value_for("prep-status")?;
-    assert!(long_about_schema().contains("prep-status"));
-    let sub = built_schema_subcommand()?;
-    let target_arg = sub
-        .get_arguments()
-        .find(|a| a.get_id() == "target")
-        .ok_or_else(|| anyhow::anyhow!("target arg not found"))?;
-    let help = target_arg
-        .get_help()
-        .map(|s| s.to_string())
-        .unwrap_or_default();
-    assert!(help.contains("prep-status"));
-    Ok(())
-}

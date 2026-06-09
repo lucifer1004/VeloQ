@@ -1,0 +1,35 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0005"
+title = "Generated artifact and cache lifecycle"
+version = "0.1.0"
+status = "normative"
+phase = "stable"
+owners = ["@Zihua Wu"]
+created = "2026-06-08"
+updated = "2026-06-08"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+]
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-ARTIFACT-ROOT.toml",
+    "clauses/C-FRESHNESS.toml",
+    "clauses/C-CACHE-REUSE.toml",
+    "clauses/C-CLEANUP.toml",
+    "clauses/C-CONCURRENCY.toml",
+    "clauses/C-LEAK-SAFETY.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-08"
+notes = "Initial draft"

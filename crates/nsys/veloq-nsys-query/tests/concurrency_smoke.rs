@@ -62,17 +62,23 @@ fn device_stream_and_compute_copy_overlap_match_rfc_example() -> Result<()> {
 
 #[test]
 fn device_filter_keeps_only_requested_device() -> Result<()> {
-    let trace = fixture::concurrency_overlap()?;
+    let trace = fixture::concurrency_two_devices()?;
+    let all = run(trace.path(), ConcurrencyRequest::default())?;
+    let all_devices: Vec<i32> = all.rows.iter().map(|row| row.device_id).collect();
+    assert_eq!(all_devices, vec![0, 1]);
+
     let r = run(
         trace.path(),
         ConcurrencyRequest {
-            device: Some(0),
+            device: Some(1),
             ..Default::default()
         },
     )?;
     assert_eq!(r.count, 1);
-    let d = r.rows.first().ok_or_else(|| anyhow!("expected device 0"))?;
-    assert_eq!(d.device_id, 0);
+    assert_eq!(r.total_matched, 1);
+    let d = r.rows.first().ok_or_else(|| anyhow!("expected device 1"))?;
+    assert_eq!(d.device_id, 1);
+    assert_eq!(d.union_busy_ns, 30_000_000);
 
     // A device that doesn't exist yields no rows (no empty/zero row).
     let empty = run(

@@ -1,0 +1,9 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-FULL-CI-TEST"
+title = "release: full ci test"
+
+[check]
+command = "cargo test --profile ci --workspace"
+timeout_secs = 1800

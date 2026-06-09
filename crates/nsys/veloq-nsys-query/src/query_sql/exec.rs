@@ -30,6 +30,7 @@ impl duckdb_exec::SqlErrorMapper<NsysQueryError> for SqlLabel {
 
 pub(crate) const CONCURRENCY_INTERVAL: SqlLabel = SqlLabel::new("concurrency", "interval");
 pub(crate) const GAPS_GAP: SqlLabel = SqlLabel::new("gaps", "gap");
+pub(crate) const GAPS_NAME_LOOKUP: SqlLabel = SqlLabel::new("gaps", "name-lookup");
 pub(crate) const GAPS_STREAM_ACTIVITY: SqlLabel = SqlLabel::new("gaps", "stream-activity");
 pub(crate) const GRAPH_REPLAYS_LAUNCHER_LOOKUP: SqlLabel =
     SqlLabel::new("graph-replays", "launcher lookup");

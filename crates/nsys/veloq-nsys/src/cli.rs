@@ -53,6 +53,9 @@ pub enum Cmd {
         /// non-kernel kinds with this axis error up-front. Examples:
         /// `device`, `demangled,device`, `mangled,device`,
         /// `demangled,grid_block`, `nvtx-path`, `no-name,device,stream`.
+        /// `stream` and `context` are device-local: use `--device`
+        /// for one device, or include `device` in this list for
+        /// cross-device comparison.
         #[arg(long, default_value = "short")]
         group_by: String,
 
@@ -218,15 +221,16 @@ pub enum Cmd {
         trace_arg: TraceArg,
     },
 
-    /// Prepare a trace for fast queries: export to a parquetdir and warm the metadata cache (`--status` inspects cache state without building).
+    /// Prepare a trace for fast queries: export to a parquetdir and warm registered sidecars (`--status` inspects readiness without building).
     Prep {
         #[command(flatten)]
         trace_arg: TraceArg,
 
         /// Report cache state without building anything. Exits with
-        /// `0` regardless of cache state; check `parquet_cache.present`
-        /// / `parquet_cache.tables` and `meta_cache.fingerprint_match`
-        /// / `meta_cache.format_version_on_disk` in the response.
+        /// `0` regardless of cache state; check
+        /// `auxiliary.parquet_cache` plus `rows[]` sidecar readiness
+        /// fields such as `fingerprint_match` and
+        /// `format_version_on_disk` in the response.
         #[arg(long)]
         status: bool,
     },
@@ -249,7 +253,7 @@ pub enum Cmd {
         trace_arg: TraceArg,
 
         /// Aggregation scope. `device` (default) | `stream` | `trace`.
-        /// See `gaps --help` for per-scope semantics.
+        /// Trace scope implies all devices when no device is selected.
         #[arg(long, default_value = "device", value_name = "SCOPE")]
         scope: String,
 

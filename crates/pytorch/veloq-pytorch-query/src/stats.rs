@@ -1,5 +1,5 @@
 use crate::dto::{StatsAuxiliary, StatsResponse, StatsRow};
-use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::filter::{EventFilterRequest, limit_ref, validate_event_scope};
 use crate::query_sql::{
     event_filter,
     exec::{self, SqlLabel, SqlVerb},
@@ -7,16 +7,23 @@ use crate::query_sql::{
 };
 use crate::{PytorchQueryError, PytorchQueryResult};
 use std::collections::BTreeMap;
+use veloq_core::{AxisParentError, AxisUsage};
 use veloq_pytorch_data::{Capabilities, PytorchSidecar, QueryTrace};
 use veloq_query::duckdb::list::{TotalCarrier, count_from_i64, split_rows_and_total};
+
+const NO_AXES: &[&str] = &[];
+const RANK_AXIS: &[&str] = &["rank"];
+const DEVICE_AXIS: &[&str] = &["device"];
+const RANK_DEVICE_AXES: &[&str] = &["rank", "device"];
 
 pub fn stats(
     trace: &QueryTrace,
     request: EventFilterRequest,
     group_by: &[String],
 ) -> PytorchQueryResult<StatsResponse> {
-    require_rank_scope(trace, request.rank_scope)?;
     validate_group_by(&trace.capabilities, group_by)?;
+    validate_group_by_scope(trace, &request, group_by)?;
+    validate_event_scope(trace, &request)?;
     stats_sql(trace, request, group_by)
 }
 
@@ -117,6 +124,83 @@ fn validate_group_by(capabilities: &Capabilities, group_by: &[String]) -> Pytorc
         }
     }
     Ok(())
+}
+
+fn validate_group_by_scope(
+    trace: &QueryTrace,
+    request: &EventFilterRequest,
+    group_by: &[String],
+) -> PytorchQueryResult<()> {
+    let has_device = has_axis(group_by, "device");
+    let has_stream = has_axis(group_by, "stream");
+    let usage = stats_axis_usage(trace, request, group_by);
+
+    if has_device && let Err(err) = usage.validate_projection("device", RANK_AXIS) {
+        return Err(stats_group_by_parent_error(&err));
+    }
+
+    if has_stream && let Err(err) = usage.validate_projection("stream", RANK_DEVICE_AXES) {
+        return Err(stats_group_by_parent_error(&err));
+    }
+
+    Ok(())
+}
+
+fn stats_axis_usage<'a>(
+    trace: &QueryTrace,
+    request: &EventFilterRequest,
+    group_by: &[String],
+) -> AxisUsage<'a> {
+    let fixed = match (
+        !trace.is_multi_rank() || request.rank_scope.rank.is_some(),
+        request.device.is_some(),
+    ) {
+        (true, true) => RANK_DEVICE_AXES,
+        (true, false) => RANK_AXIS,
+        (false, true) => DEVICE_AXIS,
+        (false, false) => NO_AXES,
+    };
+    let projected = match (has_axis(group_by, "rank"), has_axis(group_by, "device")) {
+        (true, true) => RANK_DEVICE_AXES,
+        (true, false) => RANK_AXIS,
+        (false, true) => DEVICE_AXIS,
+        (false, false) => NO_AXES,
+    };
+    AxisUsage::new(fixed, projected)
+}
+
+fn stats_group_by_parent_error(err: &AxisParentError) -> PytorchQueryError {
+    match (
+        err.axis(),
+        err.missing_contains("rank"),
+        err.missing_contains("device"),
+    ) {
+        ("device", true, _) => {
+            PytorchQueryError::stats_group_by_parent_required("device", "rank", "rank,device")
+        }
+        ("stream", true, true) => PytorchQueryError::stats_group_by_parent_required(
+            "stream",
+            "rank,device",
+            "rank,device,stream",
+        ),
+        ("stream", true, false) => PytorchQueryError::stats_group_by_parent_required(
+            "stream",
+            "rank",
+            "rank,device,stream",
+        ),
+        ("stream", false, true) | ("stream", false, false) => {
+            PytorchQueryError::stats_group_by_parent_required("stream", "device", "device,stream")
+        }
+        _ => PytorchQueryError::stats_group_by_parent_required(
+            err.axis(),
+            "parent axis",
+            "the parent axis",
+        ),
+    }
+}
+
+fn has_axis(group_by: &[String], axis: &str) -> bool {
+    group_by.iter().any(|candidate| candidate == axis)
 }
 
 fn stats_key(axes: &BTreeMap<String, String>) -> String {

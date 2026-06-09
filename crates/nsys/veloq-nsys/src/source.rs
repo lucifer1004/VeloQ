@@ -36,7 +36,7 @@ impl NsysSource {
     /// (`domain_id`, `domain_pid`) plus its `domain_name` when
     /// registered. Same-name/same-parent ranges in distinct
     /// `(pid, domainId)` domains stay distinct.
-    pub const VERSION: &'static str = "v1";
+    pub const VERSION: &'static str = "v2";
 }
 
 impl ProfileSource for NsysSource {
@@ -143,4 +143,70 @@ fn emit_err(
     fmt: OutputFormat,
 ) {
     crate::output::emit_error(verb, trace, trace_span, err, fmt);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::collections::BTreeSet;
+    use std::fs;
+
+    #[test]
+    fn stable_command_surface_matches_rfc_0006() {
+        let actual: BTreeSet<String> = NsysSource
+            .cli()
+            .get_subcommands()
+            .map(|cmd| cmd.get_name().to_string())
+            .collect();
+        let expected: BTreeSet<String> = [
+            "concurrency",
+            "correlate",
+            "correlation-stats",
+            "gaps",
+            "graph-replays",
+            "hardware",
+            "inspect",
+            "metrics",
+            "ncu-command",
+            "prep",
+            "schema",
+            "search",
+            "slices",
+            "stats",
+            "summary",
+            "timeline",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn detect_claims_nsys_wire_inputs() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("trace.nsys-rep");
+        fs::write(&source, b"source")?;
+
+        let direct_pqtdir = dir.path().join("trace_pqtdir");
+        fs::create_dir_all(&direct_pqtdir)?;
+
+        let generated = veloq_nsys_data::nsys_rep::pqtdir_path_for(&source);
+        fs::create_dir_all(&generated)?;
+
+        let sqlite = dir.path().join("trace.sqlite");
+        fs::write(&sqlite, b"sqlite")?;
+
+        let orphan_generated = dir.path().join("missing.nsys-rep.veloq/parquetdir");
+        fs::create_dir_all(&orphan_generated)?;
+
+        assert!(NsysSource.detect(&source));
+        assert!(NsysSource.detect(&direct_pqtdir));
+        assert!(NsysSource.detect(&generated));
+        assert!(!NsysSource.detect(&sqlite));
+        assert!(!NsysSource.detect(&orphan_generated));
+        Ok(())
+    }
 }

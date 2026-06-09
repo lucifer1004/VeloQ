@@ -263,3 +263,171 @@ pub struct NvtxContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iter_index: Option<u32>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Result, anyhow};
+    use serde_json::Value;
+
+    fn base(kind: EventKind, rowid: i64, name: &str) -> EventRefBase {
+        let row_id = RowId::new(kind, rowid);
+        EventRefBase {
+            key: row_id.to_string(),
+            row_id,
+            name: name.to_string(),
+            start_ns: 100,
+            duration_ns: 25,
+            device_id: None,
+            stream_id: None,
+            global_tid: None,
+            depth: None,
+            nvtx_context: None,
+        }
+    }
+
+    fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing string field `{field}` in {value}"))
+    }
+
+    fn i64_field(value: &Value, field: &str) -> Result<i64> {
+        value
+            .get(field)
+            .and_then(Value::as_i64)
+            .ok_or_else(|| anyhow!("missing integer field `{field}` in {value}"))
+    }
+
+    #[test]
+    fn event_ref_contract_serializes_tagged_kernel_with_shared_and_headline_fields() -> Result<()> {
+        let mut base = base(EventKind::Kernel, 7, "kernel_name");
+        base.device_id = Some(0);
+        base.stream_id = Some(3);
+        let value = serde_json::to_value(EventRef::Kernel(EventRefKernel {
+            base,
+            grid: Some([1, 2, 3]),
+            block: Some([4, 5, 6]),
+            registers_per_thread: Some(32),
+            static_shared_memory: Some(128),
+            dynamic_shared_memory: Some(256),
+            demangled_name: Some("void kernel_name()".to_string()),
+            mangled_name: Some("_Z11kernel_namev".to_string()),
+        }))?;
+
+        assert_eq!(string_field(&value, "type")?, "kernel");
+        assert_eq!(string_field(&value, "key")?, "kernel:7");
+        assert_eq!(string_field(&value, "row_id")?, "kernel:7");
+        assert_eq!(string_field(&value, "name")?, "kernel_name");
+        assert_eq!(i64_field(&value, "start_ns")?, 100);
+        assert_eq!(i64_field(&value, "duration_ns")?, 25);
+        assert_eq!(i64_field(&value, "device_id")?, 0);
+        assert_eq!(i64_field(&value, "stream_id")?, 3);
+        assert_eq!(i64_field(&value, "registers_per_thread")?, 32);
+        assert_eq!(i64_field(&value, "static_shared_memory")?, 128);
+        assert_eq!(i64_field(&value, "dynamic_shared_memory")?, 256);
+        assert_eq!(
+            string_field(&value, "demangled_name")?,
+            "void kernel_name()"
+        );
+        assert_eq!(string_field(&value, "mangled_name")?, "_Z11kernel_namev");
+
+        let grid: Vec<i64> = value
+            .get("grid")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("missing grid array in {value}"))?
+            .iter()
+            .filter_map(Value::as_i64)
+            .collect();
+        assert_eq!(grid, vec![1, 2, 3]);
+        let block: Vec<i64> = value
+            .get("block")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("missing block array in {value}"))?
+            .iter()
+            .filter_map(Value::as_i64)
+            .collect();
+        assert_eq!(block, vec![4, 5, 6]);
+        Ok(())
+    }
+
+    #[test]
+    fn event_ref_contract_serializes_kind_specific_optional_headlines() -> Result<()> {
+        let memcpy = serde_json::to_value(EventRef::Memcpy(EventRefMemcpy {
+            base: base(EventKind::Memcpy, 8, "memcpy_h2d"),
+            bytes: Some(4096),
+            copy_kind: Some(1),
+            copy_kind_name: Some("cudaMemcpyHostToDevice"),
+        }))?;
+        assert_eq!(string_field(&memcpy, "type")?, "memcpy");
+        assert_eq!(string_field(&memcpy, "row_id")?, "memcpy:8");
+        assert_eq!(i64_field(&memcpy, "bytes")?, 4096);
+        assert_eq!(i64_field(&memcpy, "copy_kind")?, 1);
+        assert_eq!(
+            string_field(&memcpy, "copy_kind_name")?,
+            "cudaMemcpyHostToDevice"
+        );
+
+        let memset = serde_json::to_value(EventRef::Memset(EventRefMemset {
+            base: base(EventKind::Memset, 9, "memset"),
+            bytes: Some(1024),
+            value: Some(0),
+        }))?;
+        assert_eq!(string_field(&memset, "type")?, "memset");
+        assert_eq!(string_field(&memset, "row_id")?, "memset:9");
+        assert_eq!(i64_field(&memset, "bytes")?, 1024);
+        assert_eq!(i64_field(&memset, "value")?, 0);
+
+        let nvtx = serde_json::to_value(EventRef::Nvtx(EventRefNvtx {
+            base: base(EventKind::Nvtx, 10, "step"),
+            event_type: Some(60),
+            domain_id: Some(2),
+        }))?;
+        assert_eq!(string_field(&nvtx, "type")?, "nvtx");
+        assert_eq!(string_field(&nvtx, "row_id")?, "nvtx:10");
+        assert_eq!(i64_field(&nvtx, "event_type")?, 60);
+        assert_eq!(i64_field(&nvtx, "domain_id")?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn event_ref_contract_omits_unavailable_optional_fields() -> Result<()> {
+        let value = serde_json::to_value(EventRef::Runtime(base(
+            EventKind::Runtime,
+            11,
+            "cudaLaunchKernel",
+        )))?;
+        assert_eq!(string_field(&value, "type")?, "runtime");
+        assert_eq!(string_field(&value, "key")?, "runtime:11");
+        assert_eq!(string_field(&value, "row_id")?, "runtime:11");
+        for absent in [
+            "device_id",
+            "stream_id",
+            "global_tid",
+            "depth",
+            "nvtx_context",
+            "grid",
+            "bytes",
+            "event_type",
+        ] {
+            assert!(
+                value.get(absent).is_none(),
+                "optional field `{absent}` should be omitted when unavailable: {value}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn event_ref_contract_from_base_rejects_cpu_sample() {
+        let outcome = EventRef::from_base(
+            EventKind::CpuSample,
+            base(EventKind::CpuSample, 12, "sample"),
+        );
+        assert!(matches!(
+            outcome,
+            Err(NsysQueryError::SearchCpuSampleUnsupported)
+        ));
+    }
+}

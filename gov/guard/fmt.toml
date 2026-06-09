@@ -1,0 +1,9 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-FMT"
+title = "default: fmt"
+
+[check]
+command = "cargo fmt --all -- --check"
+timeout_secs = 120

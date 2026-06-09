@@ -1,5 +1,5 @@
 use crate::dto::{TimelineAuxiliary, TimelineBucketRow, TimelineResponse};
-use crate::filter::{EventFilterRequest, limit_ref, require_rank_scope};
+use crate::filter::{EventFilterRequest, limit_ref, validate_event_scope};
 use crate::query_sql::{
     event_filter,
     exec::{self, SqlLabel, SqlVerb},
@@ -25,7 +25,7 @@ pub fn timeline(
     request: EventFilterRequest,
     interval_ns: i64,
 ) -> PytorchQueryResult<TimelineResponse> {
-    require_rank_scope(trace, request.rank_scope)?;
+    validate_event_scope(trace, &request)?;
     if interval_ns <= 0 {
         return Err(PytorchQueryError::IntervalTooSmall);
     }

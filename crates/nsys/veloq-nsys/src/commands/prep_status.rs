@@ -1,19 +1,45 @@
 use std::path::Path;
 
 use crate::error::{NsysSourceError, NsysSourceResult};
-use crate::payloads::{ParquetCacheStatus, PrepStatusPayload, SidecarStatus};
+use crate::payloads::{ParquetCacheStatus, PrepAuxiliary, PrepPayload, PrepRow};
 
-/// `veloq prep --status` — assemble the cache-status payload without
-/// rebuilding anything. Reads filesystem metadata only. The
-/// parquetdir has no manifest; its contents are
-/// whatever `nsys export -t parquetdir` last wrote next to the trace.
-pub(super) fn collect_prep_status(trace: &Path) -> NsysSourceResult<PrepStatusPayload> {
-    // Where the parquetdir lives. For a `.nsys-rep`, that's
-    // `<trace>.veloq/parquetdir/`; for a directly-passed `_pqtdir/`,
-    // that's the input itself.
+/// Assemble the `prep` / `prep --status` payload.
+///
+/// The caller decides whether sidecars were prepared first. This
+/// function is read-only: it reports the current parquetdir + registered
+/// sidecar state without building missing artifacts.
+pub(super) fn collect_prep_response(
+    trace: &Path,
+    prepared: bool,
+    elapsed_ms: u64,
+) -> NsysSourceResult<PrepPayload> {
     let source_path = veloq_nsys_data::nsys_rep::sidecar_source_path(trace);
+    let parquet_cache = collect_parquet_status(trace, &source_path)?;
+    let rows = veloq_nsys_data::sidecar_registry::sidecar_statuses(&source_path)
+        .into_iter()
+        .map(PrepRow::from)
+        .collect::<Vec<_>>();
+    Ok(PrepPayload {
+        count: rows.len(),
+        total_matched: rows.len(),
+        rows,
+        auxiliary: PrepAuxiliary {
+            cache_root: veloq_core::artifact_dir_for(&source_path)
+                .display()
+                .to_string(),
+            parquet_cache,
+            prepared,
+            elapsed_ms,
+        },
+    })
+}
+
+fn collect_parquet_status(
+    trace: &Path,
+    source_path: &Path,
+) -> NsysSourceResult<ParquetCacheStatus> {
     let parquet_dir = if source_path.extension().and_then(|e| e.to_str()) == Some("nsys-rep") {
-        veloq_nsys_data::nsys_rep::pqtdir_path_for(&source_path)
+        veloq_nsys_data::nsys_rep::pqtdir_path_for(source_path)
     } else {
         trace.to_path_buf()
     };
@@ -31,51 +57,9 @@ pub(super) fn collect_prep_status(trace: &Path) -> NsysSourceResult<PrepStatusPa
         Vec::new()
     };
     tables.sort();
-    let parquet_status = ParquetCacheStatus {
+    Ok(ParquetCacheStatus {
         dir: parquet_dir.display().to_string(),
         present: parquet_dir.is_dir(),
         tables,
-    };
-
-    let meta_path = veloq_nsys_data::meta_cache::path_for(&source_path);
-    let (present, size_bytes, mtime_secs) = match std::fs::metadata(&meta_path) {
-        Ok(m) => {
-            let mtime = m
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64);
-            (true, Some(m.len()), mtime)
-        }
-        Err(_) => (false, None, None),
-    };
-    let meta_version_on_disk = veloq_nsys_data::meta_cache::read_header(&source_path)
-        .ok()
-        .flatten()
-        .map(|h| h.version);
-    // `try_load_existing` returns `Some(_)` only when the sidecar's
-    // version + trace fingerprint both validate. Errors fold to
-    // `false` so a corrupt or unreadable file shows up as
-    // "present but not fingerprint-matching."
-    let fingerprint_match = veloq_nsys_data::meta_cache::try_load_existing(&source_path)
-        .ok()
-        .flatten()
-        .is_some();
-    let meta_status = SidecarStatus {
-        path: meta_path.display().to_string(),
-        present,
-        size_bytes,
-        mtime_secs,
-        format_version_expected: veloq_nsys_data::META_CACHE_VERSION,
-        format_version_on_disk: meta_version_on_disk,
-        fingerprint_match,
-    };
-
-    Ok(PrepStatusPayload {
-        cache_root: veloq_core::artifact_dir_for(&source_path)
-            .display()
-            .to_string(),
-        parquet_cache: parquet_status,
-        meta_cache: meta_status,
     })
 }

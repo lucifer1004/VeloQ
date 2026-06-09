@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMMAND-SURFACE"
+title = "Command surface"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The stable NSys source-owned command surface MUST include `summary`, `stats`, `search`, `inspect`, `correlate`, `gaps`, `slices`, `timeline`, `concurrency`, `graph-replays`, `hardware`, `metrics`, `prep`, `correlation-stats`, `ncu-command`, and `schema`.
+
+The stable NSys source-owned command surface MUST preserve the source command rules in [[RFC-0004:C-COMMAND-SURFACE]].
+
+A gated hidden or unstable NSys command or schema target MUST NOT be treated as part of the stable public command surface until this clause explicitly lists it as stable.
+
+A gated hidden or unstable NSys response shape MUST NOT be covered by the stable compatibility guarantees in this RFC.
+
+The `schema` command MUST emit a normal VeloQ JSON envelope.
+
+The `schema` command envelope `data` field MUST contain the requested JSON schema document.
+
+The `schema` command MUST omit `trace` because it does not inspect a trace.
+
+A command added to the stable NSys public command surface MUST either conform to the contracts in [[RFC-0002]], [[RFC-0003]], and this RFC, or document a source-specific exception in this RFC.
+
+**Rationale:** The command surface is part of the external agent contract. Gated development surfaces can exist without accidentally becoming stable wire contracts."""

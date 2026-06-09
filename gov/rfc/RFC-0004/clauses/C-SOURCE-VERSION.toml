@@ -1,0 +1,30 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-VERSION"
+title = "Source wire version"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Each profile source MUST expose a source-specific wire compatibility version.
+
+A source-specific wire compatibility version MUST change when that source makes a breaking payload-shape change.
+
+A breaking payload-shape change is a source response change that can invalidate a consumer that follows the documented source contract.
+
+Removing a documented field from a source payload MUST be treated as a breaking payload-shape change.
+
+Changing the type or meaning of a documented field in a source payload MUST be treated as a breaking payload-shape change.
+
+Changing documented row key semantics MUST be treated as a breaking payload-shape change.
+
+A source-specific wire compatibility version SHOULD remain unchanged for additive payload fields.
+
+A source-specific wire compatibility version MUST be independent from the top-level envelope schema version.
+
+A breaking change to one source MUST NOT require unrelated sources to change their source-specific wire compatibility version.
+
+**Rationale:** Agents pin source payload behavior independently from the shared envelope. A change in one source should not create false compatibility churn in other sources."""

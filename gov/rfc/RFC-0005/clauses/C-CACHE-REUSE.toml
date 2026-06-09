@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-CACHE-REUSE"
+title = "Cache reuse"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A command SHOULD reuse fresh generated artifacts when reuse preserves public evidence semantics.
+
+A command MUST NOT silently reuse a stale generated artifact when staleness is detectable.
+
+A command MAY eagerly prepare generated artifacts when the user explicitly requests preparation.
+
+A command MAY lazily prepare generated artifacts when preparation is required to answer the query.
+
+A command SHOULD report preparation failures as structured diagnostics.
+
+**Rationale:** Reuse is the performance win, but only if it preserves the answer. Eager and lazy preparation are both valid as long as failures and freshness are explicit."""

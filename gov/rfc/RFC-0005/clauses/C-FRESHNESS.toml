@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-FRESHNESS"
+title = "Freshness semantics"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A reusable generated artifact MUST have documented freshness semantics.
+
+A reusable generated artifact MUST NOT be treated as fresh when the source can determine that the artifact belongs to different input evidence.
+
+A reusable generated artifact MUST NOT be silently reused when freshness cannot be proven.
+
+When freshness cannot be proven and rebuild is possible, the source MAY rebuild the generated artifact.
+
+When freshness cannot be proven and rebuild is not performed, the caller MUST receive a structured diagnostic.
+
+A source SHOULD choose freshness signals that are stable for its input format and distribution model.
+
+**Rationale:** Cache reuse is only valid when the artifact still represents the input evidence. Different profiler formats may need different freshness signals, but every reusable artifact needs a rule."""

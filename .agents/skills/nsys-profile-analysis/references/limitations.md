@@ -104,7 +104,11 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   kernels get `graph_id: null` and roll into their own row.
 - **`gaps` scopes**: default `--scope device` is cross-stream
   (gap = no stream running GPU work on that device), so an idle
-  peer stream does not produce phantom gaps. `--scope stream`
+  peer stream does not produce phantom gaps. GPU work counts
+  kernel + memcpy + memset + graph-trace, so `--cuda-graph-trace=graph`
+  counts graph-trace intervals as busy (graph-only workloads
+  no longer show phantom idle) and a gap's `prev` / `next` may be
+  `kind: graph`. `--scope stream`
   reverts to per-(device, stream) for starvation diagnostics —
   with overlap on the same stream (rare; CUDA Graphs may do this)
   producing non-positive gaps that `--min-duration` drops.
@@ -117,9 +121,10 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   graphs — those kernels do not appear in `kernel_ns`. Treat
   `kernel_ns + memcpy_ns + memset_ns + graph_ns` as the per-bucket
   GPU busy total.
-- **`slices` doesn't filter by `--device`/`--stream`**: primary
-  axis is NVTX-range; `gpu_attributed` already splits per (device,
-  stream).
+- **`slices --stream` needs a device parent**: stream ids are
+  device-local. Use `--device D --stream S` for one lane, or keep
+  the query all-device and read the per-(device, stream)
+  `gpu_attributed` breakdown for comparison.
 - **`metrics --type gpu --bucket` aggregator**: `mean` by default;
   `sum` for `[Cycles Active]` / `[Requests]` tally counters only.
   Other tally-shaped units (`[Bytes]`, `[Instructions Issued]`,
@@ -168,13 +173,13 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   round-tripping through `inspect` / `correlate` verbatim.
 - **`schema`** bumps on removal or rename of envelope-shape
   fields; additive evolution stays on the same string. Current
-  value is `"v1"`. Every list response uses the canonical
+  value is `"v2"`. Every list response uses the canonical
   `data.rows[]` shape with a per-row `key`, search and event
   results share the `EventRef` form, and the envelope carries
   `trace_span`.
 - **`source.version`** is per-source and bumps independently on
   any breaking shape change to that source's payloads. Currently
-  `"v1"` for NSys and `"v1"` for NCU; source versions are
+  `"v2"` for NSys and `"v1"` for NCU; source versions are
   independent.
 - **Agents should ignore unknown JSON keys**. VeloQ adds fields
   forward-compatibly between schema bumps; consumers that
@@ -192,6 +197,7 @@ DuckDB, PyArrow, pandas, or ad hoc SQL during normal profile analysis.
 | `<trace>.veloq/parquetdir/<TABLE>.parquet` | First command on a `.nsys-rep`, or `veloq prep`               | hundreds of MB, multi-second |
 | `<trace>.veloq/correlation.bin`            | First `correlate` / `correlation-stats` call                  | KB-MB, sub-second            |
 | `<trace>.veloq/meta.bin`                   | First `summary` call, or `veloq prep`                         | few KB, ms                   |
+| `<trace>.veloq/gpu-work-events.parquet`    | `veloq prep`, or first full-trace `gaps` call                 | MB-scale, sub-second to seconds |
 | `<trace>.veloq/nvtx-parent.parquet`        | First NVTX-parent grouped stats path that needs it            | KB-MB, sub-second to seconds |
 | `<trace>.veloq/nvtx-tree.parquet`          | First NVTX path grouping or `inspect nvtx:N` hierarchy lookup | KB-MB, sub-second to seconds |
 

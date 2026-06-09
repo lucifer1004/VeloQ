@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-STDOUT-STDERR"
+title = "stdout and stderr"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+stdout MUST carry the primary response payload for the selected output format.
+
+A JSON-mode command MUST NOT write progress messages to stdout.
+
+stderr MUST NOT be required to parse the primary response payload.
+
+Progress messages SHOULD be written to stderr.
+
+Human-readable diagnostic mirrors SHOULD be written to stderr when a non-JSON output mode would otherwise hide the error message.
+
+In JSON output mode, handled errors SHOULD avoid duplicating the error message on stderr.
+
+**Rationale:** stdout discipline is what makes `veloq ... | jq` reliable. stderr can remain useful for humans and progress without contaminating the payload stream."""

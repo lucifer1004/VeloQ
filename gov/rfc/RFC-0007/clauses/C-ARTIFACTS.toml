@@ -1,0 +1,38 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ARTIFACTS"
+title = "Artifacts and caches"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+PyTorch generated artifacts MUST live under the VeloQ artifact root for the input path, in a source-local `pytorch/` child directory.
+
+PyTorch generated artifacts MUST NOT be written beside unrelated source artifacts outside the source-local `pytorch/` child directory.
+
+PyTorch `prep.rows[]` MUST report sidecar rows for `meta.bin`, `events.parquet`, `args.parquet`, `flows.parquet`, `links.parquet`, and `collectives.parquet`.
+
+Each PyTorch `prep.rows[]` sidecar row MUST carry a `key` using the `sidecar|<sidecar_name>` format defined by [[RFC-0007:C-ROW-KEYS]].
+
+Each PyTorch `prep.rows[]` sidecar row MUST carry `name`, `path`, and `present`.
+
+PyTorch `prep.auxiliary` MUST carry `input_path`, `artifact_dir`, `cache_version`, `cache_fresh`, and `built`.
+
+PyTorch `prep.auxiliary` MAY carry `schema_survey` when a fresh parsed cache is available.
+
+PyTorch `prep --status` MUST report cache and sidecar state without intentionally building missing sidecars.
+
+PyTorch `prep` without `--status` MUST build or refresh the PyTorch cache and sidecars before emitting its response.
+
+PyTorch cache freshness MUST be keyed on the input trace file path, mtime, and size while the source supports only single-file inputs.
+
+PyTorch query commands MAY use source-local query metadata and Parquet sidecars to avoid reparsing the full JSON trace.
+
+PyTorch query commands MUST rebuild query sidecars when required query sidecars are missing, unreadable, or missing required query columns.
+
+PyTorch query commands MUST NOT require callers to know private cache file formats or private sidecar schema details.
+
+**Rationale:** The artifact root keeps generated files cleanly owned by VeloQ, while source-local sidecars make repeat PyTorch queries fast. `prep` needs a stable report shape so agents can build caches, verify readiness, and keep stdout machine-readable."""

@@ -1,7 +1,10 @@
 use super::HIST_BOUNDARIES_NS;
 use super::sql::NVTX_STYLE_EXPR;
 use crate::{NsysQueryError, NsysQueryResult};
-use veloq_core::{Direction, SortKeyDef, SortKeySpec, SortSpec};
+use veloq_core::{AxisUsage, Direction, SortKeyDef, SortKeySpec, SortSpec};
+
+const NO_AXES: &[&str] = &[];
+const DEVICE_AXIS: &[&str] = &["device"];
 
 /// Identity dimension: how the kernel name folds across rows.
 /// Mutually exclusive (only one can be active in any `--group-by`).
@@ -550,6 +553,41 @@ pub(super) fn stats_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
 }
 
 impl GroupBy {
+    /// Validate local child axes whose ids are only meaningful under a
+    /// device parent. `--device <id>` fixes the parent; otherwise the
+    /// parent must be projected as part of the group key.
+    pub(crate) fn validate_device_parent_axes(
+        self,
+        verb: &'static str,
+        device: Option<i32>,
+    ) -> NsysQueryResult<()> {
+        let fixed = if device.is_some() {
+            DEVICE_AXIS
+        } else {
+            NO_AXES
+        };
+        let projected = if self.device { DEVICE_AXIS } else { NO_AXES };
+        let usage = AxisUsage::new(fixed, projected);
+        // Validate every active device-local child axis independently.
+        // `stream` and `context` each require the device parent, so a
+        // dropped `else if` (or a future child axis with a different
+        // parent) can't silently skip a check. `stream` is validated
+        // first so its name is the one surfaced when several offend.
+        for (active, axis) in [(self.stream, "stream"), (self.context, "context")] {
+            if active {
+                usage
+                    .validate_projection(axis, DEVICE_AXIS)
+                    .map_err(
+                        |err| crate::NsysQueryError::StatsGroupByDeviceParentRequired {
+                            verb,
+                            axis: err.axis(),
+                        },
+                    )?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_arg(s: &str) -> NsysQueryResult<Self> {
         let mut out = Self::default();
         let mut name_seen: Option<&'static str> = None;

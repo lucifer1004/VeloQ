@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUPPORTED-INPUTS"
+title = "Supported inputs"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU automatic source detection MUST follow the side-effect-free trace detection contract in [[RFC-0004:C-TRACE-DETECTION]].
+
+NCU automatic source detection MUST claim path names whose extension is `.ncu-rep`.
+
+NCU automatic source detection MUST NOT claim `.nsys-rep`, `_pqtdir`, `.pt.trace.json`, `.pt.trace.json.gz`, `.sqlite`, or path names whose extension is not `.ncu-rep`.
+
+An NCU trace-bearing command MUST accept `.ncu-rep` report inputs when the report is present and a fresh or buildable native sidecar is available.
+
+An NCU trace-bearing command MAY accept a missing `.ncu-rep` report path when the corresponding VeloQ artifact root already contains a readable native NCU sidecar with a supported native schema.
+
+An NCU trace-bearing command MUST emit a handled diagnostic error when neither the `.ncu-rep` report nor a readable native NCU sidecar with a supported native schema is available.
+
+An NCU command that opens a supported input MUST keep generated artifacts under the artifact root defined by [[RFC-0005:C-ARTIFACT-ROOT]].
+
+**Rationale:** Detection must remain deterministic and side-effect-free. Committed-sidecar mode lets tests, examples, and leak-free artifacts query a report-shaped path without shipping proprietary `.ncu-rep` files that may contain local machine details."""

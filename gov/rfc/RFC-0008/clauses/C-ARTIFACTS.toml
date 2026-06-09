@@ -1,0 +1,40 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ARTIFACTS"
+title = "Artifacts and caches"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU generated artifacts MUST live under the report artifact root defined by [[RFC-0005:C-ARTIFACT-ROOT]].
+
+NCU's native report sidecar MUST be named `ncu-native.json.gz` within the report artifact root.
+
+NCU's native sidecar freshness marker MUST be named `ncu-native.sha256` within the report artifact root.
+
+NCU MAY create an `ncu-native.lock` file within the report artifact root while coordinating native sidecar builds.
+
+NCU commands MAY leave `ncu-native.lock` in the artifact root after command completion.
+
+NCU disassembly correlation artifacts MUST live under `disasm/` within the report artifact root.
+
+NCU disassembly correlation JSON artifacts MUST use the `disasm/<sha>.correlated.json` path form within the report artifact root.
+
+NCU extracted cubin artifacts MAY use the `disasm/<sha>.cubin` path form within the report artifact root.
+
+When the `.ncu-rep` report exists, NCU native sidecar freshness MUST be keyed on a content hash of the report bytes rather than on local absolute paths.
+
+When the `.ncu-rep` report is missing but a readable native sidecar with a supported native schema exists, NCU MAY treat that sidecar as authoritative committed-sidecar input.
+
+NCU command-line query workflows MUST accept the report path as the user-facing input.
+
+NCU command-line query workflows MUST NOT require users to pass `ncu-native.json.gz`, `ncu-native.sha256`, `ncu-native.lock`, or `disasm/` child paths as positional inputs.
+
+A stale or missing NCU native sidecar MUST be reported as a handled diagnostic when VeloQ cannot rebuild it from the report.
+
+This RFC specifies source-owned artifact names and ownership, not the private lock acquisition or removal algorithm.
+
+**Rationale:** NCU artifacts need checkout-stable freshness and leak-free committed fixtures. Keeping all artifacts under the report root lets `veloq clean` and agent workflows reason about ownership without knowing implementation details."""

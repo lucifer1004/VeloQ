@@ -78,6 +78,13 @@ fn summary_covers_nic_counters() -> Result<()> {
     assert_eq!(names, vec!["IB: Bytes sent", "IB: Send waits"]);
 
     let bytes = counter_by_idx(&r.rows, 6)?;
+    assert_eq!(
+        bytes.key,
+        format!(
+            "nic_counter|nic:{}|port:{}|metric:{}",
+            bytes.nic_id, bytes.port_id, bytes.metrics_idx
+        )
+    );
     assert_eq!(bytes.nic_id, 0);
     assert_eq!(bytes.nic_name, "mlx5_0");
     assert_eq!(bytes.port_id, 0);
@@ -90,6 +97,13 @@ fn summary_covers_nic_counters() -> Result<()> {
     assert!((bytes.mean - 45.0).abs() < 1e-9);
 
     let waits = counter_by_idx(&r.rows, 10)?;
+    assert_eq!(
+        waits.key,
+        format!(
+            "nic_counter|nic:{}|port:{}|metric:{}",
+            waits.nic_id, waits.port_id, waits.metrics_idx
+        )
+    );
     assert_eq!(waits.unit.as_deref(), Some("ticks/ms"));
     assert_eq!(waits.samples, 10);
     assert!((waits.mean - 4.0).abs() < 1e-9);
@@ -266,6 +280,13 @@ fn bucket_mode_emits_long_form_rows() -> Result<()> {
     let b1 = bytes
         .get(1)
         .ok_or_else(|| anyhow!("missing bucket 1 for NIC metric 6"))?;
+    assert_eq!(
+        b0.key,
+        format!(
+            "nic_bucket|{}|nic:{}|port:{}|metric:{}",
+            b0.t_start_ns, b0.nic_id, b0.port_id, b0.metrics_idx
+        )
+    );
     assert_eq!(b0.agg, "mean");
     assert_eq!(b0.name, "IB: Bytes sent");
     assert!((b0.value - 20.0).abs() < 1e-9);
@@ -279,6 +300,13 @@ fn bucket_mode_emits_long_form_rows() -> Result<()> {
     let w1 = waits
         .get(1)
         .ok_or_else(|| anyhow!("missing bucket 1 for NIC metric 10"))?;
+    assert_eq!(
+        w0.key,
+        format!(
+            "nic_bucket|{}|nic:{}|port:{}|metric:{}",
+            w0.t_start_ns, w0.nic_id, w0.port_id, w0.metrics_idx
+        )
+    );
     assert_eq!(w0.agg, "mean");
     assert!((w0.value - 4.0).abs() < 1e-9);
     assert!((w1.value - 4.0).abs() < 1e-9);

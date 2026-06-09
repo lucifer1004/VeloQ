@@ -1,0 +1,36 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-IDENTITY"
+title = "Source identity"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+NCU success responses MUST set `source.kind` to `ncu`.
+
+NCU success responses MUST set `source.version` to `v1` for the wire contract specified by this RFC.
+
+NCU handled error responses MUST set `source.kind` to `ncu` when source context is known.
+
+NCU handled error responses MUST set `source.version` to `v1` when source context is known.
+
+The NCU source namespace MUST be `ncu`.
+
+An NCU source-owned command ID MUST use the `ncu.<verb>` form.
+
+An NCU trace-bearing success response MUST include `trace` when the input path is known.
+
+An NCU trace-bearing handled error response MUST include `trace` when the input path is known.
+
+NCU responses SHOULD omit `trace_span` because NCU reports do not expose a single trace-wide wall-clock time span comparable to NSys timeline traces.
+
+The NCU `schema` command MUST NOT require a trace input.
+
+The NCU `schema` command MUST omit `trace` and `trace_span` from its envelope.
+
+A breaking change to an NCU source payload MUST change the NCU source version according to [[RFC-0004:C-SOURCE-VERSION]].
+
+**Rationale:** Source identity, source version, and command IDs are the dispatch context agents use after parsing an envelope. NCU has a distinct report model from timeline traces, so omitting `trace_span` is a source-specific semantic choice, not missing metadata."""

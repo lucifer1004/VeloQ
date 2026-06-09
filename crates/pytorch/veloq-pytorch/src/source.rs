@@ -4,9 +4,11 @@ use crate::commands;
 use clap::{ArgMatches, Command, FromArgMatches, Subcommand};
 use std::path::Path;
 use veloq_core::{
-    EnvelopeTraceRef, OutputFormat, ProfileSource, SourceRef, SourceRunResult, TraceSpan,
+    EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta,
+    SourceRef, SourceRunResult, TraceSpan, Warning, WarningCode, WarningSeverity, shell_quote,
     write_diagnostic_error_envelope,
 };
+use veloq_pytorch_query::PytorchQueryError;
 
 pub struct PytorchSource;
 
@@ -51,7 +53,7 @@ impl ProfileSource for PytorchSource {
             .about("PyTorch Kineto/Profiler trace query verbs")
             .subcommand_required(true)
             .arg_required_else_help(true);
-        Cmd::augment_subcommands(parent)
+        crate::help::inject_long_about(Cmd::augment_subcommands(parent))
     }
 
     fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {
@@ -81,11 +83,65 @@ fn emit_err(
     match err {
         PytorchSourceError::Command(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Query(rank_err @ PytorchQueryError::MultiRankRequiresScope) => {
+            emit_rank_scope_error(verb, trace, trace_span, rank_err, fmt);
+        }
         PytorchSourceError::Query(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::Tabular(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
         PytorchSourceError::SerializeEnvelope { .. } => {
             emit_diagnostic(verb, trace, trace_span, err, fmt);
         }
+    }
+}
+
+fn emit_rank_scope_error(
+    verb: &str,
+    trace: Option<&Path>,
+    trace_span: Option<TraceSpan>,
+    err: &PytorchQueryError,
+    fmt: OutputFormat,
+) {
+    use veloq_core::VeloqDiagnostic;
+    // Source the message, code, and hint from the typed error's
+    // VeloqDiagnostic impl so this enriched envelope cannot drift from
+    // the generic `emit_diagnostic` path for the same variant.
+    let message = err.to_string();
+    let trace_arg = trace
+        .map(|path| shell_quote(&path.display().to_string()))
+        .unwrap_or_else(|| "<trace>".to_string());
+    let mut env = EnvelopeError::new(
+        Some(PytorchSource::source_ref()),
+        Some(format!("{}.{}", PytorchSource::KIND, verb)),
+        trace.map(PytorchSource::trace_ref),
+        trace_span,
+        Some(ResponseMeta {
+            next_steps: vec![
+                NextStep {
+                    hint: "Aggregate intentionally across every PyTorch rank.".to_string(),
+                    command: format!("veloq pytorch {verb} {trace_arg} --all-ranks"),
+                },
+                NextStep {
+                    hint: "Inspect one PyTorch rank before comparing peers.".to_string(),
+                    command: format!("veloq pytorch {verb} {trace_arg} --rank 0"),
+                },
+            ],
+            warnings: vec![Warning {
+                severity: WarningSeverity::Warn,
+                code: WarningCode::MultiRankAmbiguous,
+                message: message.clone(),
+            }],
+            ..ResponseMeta::default()
+        }),
+        message.clone(),
+        Vec::new(),
+    );
+    env.error.code = Some(err.code());
+    env.error.hint = err.hint().map(|hint| hint.into_owned());
+    if !matches!(fmt, OutputFormat::Json) {
+        eprintln!("veloq: {message}");
+    }
+    if let Ok(s) = env.to_json_pretty() {
+        println!("{s}");
     }
 }
 

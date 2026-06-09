@@ -13,7 +13,7 @@
 //! hidden-exposure rule. Public targets live in [`TARGETS`].
 
 use crate::error::{NsysSourceError, NsysSourceResult};
-use crate::payloads::{CorrelationStatsPayload, PrepPayload, PrepStatusPayload};
+use crate::payloads::{CorrelationStatsPayload, PrepPayload};
 use veloq_nsys_query::{
     concurrency::ConcurrencyResponse, correlate::CorrelateResponse, gaps::GapsResponse,
     graph_replays::GraphReplaysResponse, hardware::HardwareResponse, inspect::InspectResponse,
@@ -59,7 +59,6 @@ pub const TARGETS: &[SchemaTarget] = &[
     target!("hardware", HardwareResponse),
     target!("metrics", MetricsResponse),
     target!("prep", PrepPayload),
-    target!("prep-status", PrepStatusPayload),
     target!("correlation-stats", CorrelationStatsPayload),
 ];
 
@@ -130,17 +129,6 @@ mod tests {
             );
         }
         Ok(())
-    }
-
-    #[test]
-    fn prep_status_in_registry() {
-        // Regression: prep-status must be in the TARGETS registry so
-        // schema.rs, cli.rs, and help.rs all stay in sync. This test
-        // closes that drift gap — do not delete.
-        assert!(
-            TARGETS.iter().any(|t| t.name == "prep-status"),
-            "prep-status must be in TARGETS"
-        );
     }
 
     #[test]

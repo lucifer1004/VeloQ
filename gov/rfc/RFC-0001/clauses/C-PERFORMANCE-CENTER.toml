@@ -1,0 +1,30 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-PERFORMANCE-CENTER"
+title = "Performance design center"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST be designed for repeated queries over large profiler artifacts without requiring the caller to re-run expensive ingestion work for every command.
+
+VeloQ SHOULD reuse validated derived evidence when doing so preserves correctness and public evidence semantics.
+
+VeloQ SHOULD avoid repeated full raw-payload scans when an equivalent validated query path is available.
+
+User-visible generated artifacts MUST have documented freshness semantics or be explicitly documented as ephemeral.
+
+User-visible generated artifacts SHOULD have a documented cleanup path.
+
+Performance optimizations MUST NOT silently change the public evidence contract.
+
+Performance claims in committed docs, release notes, or public material MUST avoid private trace details.
+
+Performance claims in committed docs, release notes, or public material SHOULD be backed by reproducible commands or leak-free summaries.
+
+VeloQ MAY defer automated performance gates when fixture availability, local-information leakage, or CI cost makes the gate less trustworthy than targeted functional validation.
+
+**Rationale:** High performance is a product requirement because agents often issue several profile queries while narrowing a performance question. The performance goal is practical iteration speed over real traces, not benchmark theater. Correctness and stable evidence shape remain mandatory; speedups are valuable only when they preserve the meaning of the answer."""
