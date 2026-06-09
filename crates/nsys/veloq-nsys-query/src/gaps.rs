@@ -3,8 +3,8 @@
 //! Three scopes, picked via `--scope`:
 //!
 //! - **`device` (default)**: per device, gap = window where *no
-//!   stream* was running a kernel / memcpy / memset. Multi-stream
-//!   workloads see only the real device-wide idle bubbles —
+//!   stream* was running GPU work. Multi-stream workloads see only
+//!   the real device-wide idle bubbles —
 //!   streams running concurrently don't produce phantom gaps on
 //!   their idle peers.
 //! - **`stream`**: per (device, stream), gap = window between
@@ -41,7 +41,7 @@ use veloq_core::{
     Direction, SortKeyDef, SortKeySpec, SortSpec,
     time::{TimeWindow, parse_duration_ns},
 };
-use veloq_nsys_data::Trace;
+use veloq_nsys_data::{GPU_WORK_INTERVAL_KINDS, GpuWorkKind, Trace};
 
 use crate::{EventKind, NsysQueryError, NsysQueryResult, RowId};
 
@@ -751,13 +751,9 @@ fn sidecar_gpu_event_source() -> GpuEventSource {
 
 fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource>> {
     let mut subqueries: Vec<String> = Vec::new();
-    for kind in [
-        EventKind::Kernel,
-        EventKind::Memcpy,
-        EventKind::Memset,
-        EventKind::Graph,
-    ] {
-        if trace.table_exists(kind.table()) {
+    for work in GPU_WORK_INTERVAL_KINDS {
+        if trace.table_exists(work.table) {
+            let kind = event_kind_for_gpu_work(work)?;
             subqueries.push(per_kind_select(kind)?);
         }
     }
@@ -775,6 +771,17 @@ fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {
         Some(kind) => Ok(kind),
         None => Err(NsysQueryError::internal_sql_kind_tag_invalid("gaps", s)),
     }
+}
+
+fn event_kind_for_gpu_work(work: &GpuWorkKind) -> NsysQueryResult<EventKind> {
+    let kind = EventKind::parse(work.label)
+        .ok_or_else(|| NsysQueryError::internal_sql_kind_tag_invalid("gaps", work.label))?;
+    if kind.table() != work.table {
+        return Err(NsysQueryError::internal_unsupported_kind(
+            "gaps", work.label,
+        ));
+    }
+    Ok(kind)
 }
 
 /// SQL and bind params for a gaps row query plus its minimal count
@@ -1266,12 +1273,13 @@ fn build_unified_event_input(
 
 /// SQL fragment emitting (kind, row_id, device_id, stream_id, name,
 /// start_ns, end_ns) for one event table. Name resolution + memcpy
-/// copyKind labels come from `kind_sql` so the three GPU branches stay
+/// copyKind labels come from `kind_sql` so GPU work branches stay
 /// in sync with the other commands.
 ///
-/// Returns an error when called with a non-GPU kind. Upstream filters
-/// to kernel/memcpy/memset, but the workspace's no-panic policy
-/// routes the precondition through `Result` instead of `unreachable!`.
+/// Returns an error when called with a host-side kind. The normal
+/// caller derives kinds from the shared NSys GPU work definition, but
+/// the workspace's no-panic policy routes the precondition through
+/// `Result` instead of `unreachable!`.
 fn per_kind_select(kind: EventKind) -> NsysQueryResult<String> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
         return Err(NsysQueryError::internal_unsupported_kind(

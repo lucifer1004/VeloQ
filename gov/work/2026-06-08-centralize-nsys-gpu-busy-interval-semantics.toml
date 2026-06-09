@@ -1,0 +1,33 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-08-008"
+title = "Centralize NSys GPU busy interval semantics"
+status = "done"
+created = "2026-06-08"
+started = "2026-06-08"
+completed = "2026-06-08"
+refs = ["RFC-0006"]
+
+[content]
+description = "Consolidate the NSys GPU busy interval kind definition used by gaps raw SQL and gpu_work_events sidecar generation so both paths share one source of truth for duration-bearing GPU work. This is an internal refactor to prevent drift after graph_trace support; it must not change the JSON wire shape or bump sidecar/source versions."
+
+[[content.acceptance_criteria]]
+text = "gaps cold path derives busy kinds from the shared NSys GPU work definition"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "gpu_work_events sidecar generation derives busy kinds from the same shared definition"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "existing graph trace cold/warm gaps and sidecar tests cover the shared definition"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "targeted nsys query/data checks and govctl check pass"
+status = "done"
+category = "chore"

@@ -14,6 +14,7 @@
 
 mod parquet;
 
+use crate::gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
 use crate::{NsysDataResult, Trace};
 use parquet::{read_parquet, sidecar_is_fresh, write_parquet};
 use std::fs;
@@ -34,30 +35,6 @@ pub struct GpuWorkEventRecord {
     pub start_ns: i64,
     pub end_ns: i64,
 }
-
-struct GpuWorkKind {
-    label: &'static str,
-    table: &'static str,
-}
-
-const GPU_WORK_KINDS: &[GpuWorkKind] = &[
-    GpuWorkKind {
-        label: "kernel",
-        table: "CUPTI_ACTIVITY_KIND_KERNEL",
-    },
-    GpuWorkKind {
-        label: "memcpy",
-        table: "CUPTI_ACTIVITY_KIND_MEMCPY",
-    },
-    GpuWorkKind {
-        label: "memset",
-        table: "CUPTI_ACTIVITY_KIND_MEMSET",
-    },
-    GpuWorkKind {
-        label: "graph",
-        table: "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
-    },
-];
 
 /// Filesystem path of the sidecar parquet under `<trace>.veloq/`.
 pub fn sidecar_path_for(trace_path: &Path) -> PathBuf {
@@ -172,7 +149,7 @@ pub fn view_sql_for(sidecar_path: &Path) -> Option<String> {
 
 fn compute(trace: &Trace) -> NsysDataResult<Vec<GpuWorkEventRecord>> {
     let mut records = Vec::new();
-    for kind in GPU_WORK_KINDS {
+    for kind in GPU_WORK_INTERVAL_KINDS {
         collect_kind(trace, kind, &mut records)?;
     }
     records.sort_by(|a, b| {
@@ -195,14 +172,18 @@ fn collect_kind(
         return Ok(());
     }
     let table = crate::quote_sql_identifier(kind.table);
+    let start_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.start_ns);
+    let end_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.end_ns);
+    let device_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.device_id);
+    let stream_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.stream_id);
     let sql = format!(
         r#"
         SELECT
             t.rowid AS row_id,
-            CAST(t.deviceId AS INTEGER) AS device_id,
-            CAST(COALESCE(t.streamId, 0) AS BIGINT) AS stream_id,
-            t.start AS start_ns,
-            t."end" AS end_ns
+            CAST(t.{device_col} AS INTEGER) AS device_id,
+            CAST(COALESCE(t.{stream_col}, 0) AS BIGINT) AS stream_id,
+            t.{start_col} AS start_ns,
+            t.{end_col} AS end_ns
         FROM nsight.{table} t
         ORDER BY start_ns, row_id
         "#

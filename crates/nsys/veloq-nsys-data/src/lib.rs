@@ -29,6 +29,7 @@ pub mod adapter;
 pub mod capabilities;
 pub mod correlation;
 pub mod error;
+pub mod gpu_work;
 pub mod gpu_work_events;
 pub mod hardware;
 pub mod meta_cache;
@@ -56,6 +57,7 @@ pub use correlation::{
     native_pid_from_global_tid,
 };
 pub use error::{DuckdbPhase, NsysDataError, NsysDataResult};
+pub use gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
 pub use gpu_work_events::{GPU_WORK_EVENTS_VERSION, GpuWorkEventRecord};
 pub use hardware::{CpuInfo, DriverInfo, GpuInfo, HostInfo, NicInfo, SystemInfo};
 pub use meta_cache::{META_CACHE_VERSION, PerTableEntry, TraceMetaCache};
