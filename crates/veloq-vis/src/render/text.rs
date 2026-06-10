@@ -1,4 +1,6 @@
-use crate::{VizHighlight, VizInterval, VizLabelPolicy};
+use veloq_core::time::format_duration_ns;
+
+use crate::{VizHighlight, VizHighlightScore, VizInterval, VizLabelPolicy};
 
 pub(super) fn tooltip_for(item: &VizInterval, highlight: Option<&VizHighlight>) -> Option<String> {
     let mut parts = Vec::new();
@@ -10,6 +12,9 @@ pub(super) fn tooltip_for(item: &VizInterval, highlight: Option<&VizHighlight>) 
     }
     if let Some(highlight) = highlight {
         parts.push(format!("highlight: {}", highlight.full_label));
+        if let Some(score) = &highlight.score {
+            parts.push(format!("score: {}", format_highlight_score(score)));
+        }
     }
     if parts.is_empty() {
         None
@@ -53,30 +58,28 @@ pub(super) fn estimate_text_width(label: &str, font_px: f64) -> f64 {
     label.chars().count() as f64 * font_px * 0.58
 }
 
-pub(super) fn format_time_tick(ns: i64) -> String {
-    let abs = ns.saturating_abs();
-    if abs < 1_000 {
-        format!("{ns} ns")
-    } else if abs < 1_000_000 {
-        format!("{} us", format_decimal(ns as f64 / 1_000.0, 3))
-    } else if abs < 1_000_000_000 {
-        format!("{} ms", format_decimal(ns as f64 / 1_000_000.0, 3))
-    } else {
-        format!("{} s", format_decimal(ns as f64 / 1_000_000_000.0, 3))
+pub(super) fn format_highlight_score(score: &VizHighlightScore) -> String {
+    let label = match score.metric.as_str() {
+        "total_duration_ns" => format!("total {}", format_duration_ns(score.value)),
+        "instance_count" => format!("count {}x", score.value),
+        "max_duration_ns" => format!("max {}", format_duration_ns(score.value)),
+        _ => format!("score {}", score.value),
+    };
+    match score.metric.as_str() {
+        "total_duration_ns" | "instance_count" => format_score_share(label, score),
+        _ => label,
     }
 }
 
-fn format_decimal(value: f64, decimals: usize) -> String {
-    let mut out = format!("{value:.decimals$}");
-    if out.contains('.') {
-        while out.ends_with('0') {
-            out.pop();
-        }
-        if out.ends_with('.') {
-            out.pop();
-        }
+fn format_score_share(label: String, score: &VizHighlightScore) -> String {
+    let Some(total) = score.total else {
+        return label;
+    };
+    if total <= 0 {
+        return label;
     }
-    out
+    let percentage = score.value as f64 * 100.0 / total as f64;
+    format!("{label} ({percentage:.1}%)")
 }
 
 pub(super) fn escape_xml(s: &str) -> String {

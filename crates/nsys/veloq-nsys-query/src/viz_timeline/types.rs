@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::Serialize;
 use veloq_core::time::TimeWindow;
-use veloq_vis::{VizAxis, VizHighlight, VizLabelPolicy, VizRenderPolicy};
+use veloq_vis::{VizAxis, VizHighlight, VizHighlightScore, VizLabelPolicy, VizRenderPolicy};
 
 #[derive(Debug, Clone, Default)]
 pub struct VizTimelineRequest {
@@ -69,6 +69,9 @@ pub struct VizResolvedHighlight {
     pub full_name: String,
     pub scope: String,
     pub metric: String,
+    pub score: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_total: Option<i64>,
     pub total_duration_ns: i64,
     pub instance_count: usize,
     pub max_duration_ns: i64,
@@ -85,6 +88,11 @@ impl VizResolvedHighlight {
             color: self.color.clone(),
             rank: Some(self.rank),
             scope: Some(self.scope.clone()),
+            score: Some(VizHighlightScore {
+                metric: self.metric.clone(),
+                value: self.score,
+                total: self.score_total,
+            }),
         }
     }
 }

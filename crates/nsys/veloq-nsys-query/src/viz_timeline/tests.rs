@@ -98,6 +98,8 @@ fn name_highlights_rank_by_full_name_but_label_with_short_name() -> anyhow::Resu
 
     assert_eq!(highlight.label, "short");
     assert_eq!(highlight.full_name, "void short<double>()");
+    assert_eq!(highlight.score, 300);
+    assert_eq!(highlight.score_total, Some(450));
     assert_eq!(highlight.total_duration_ns, 300);
     assert_eq!(highlight.instance_count, 1);
     assert_eq!(
@@ -116,6 +118,37 @@ fn name_highlights_rank_by_full_name_but_label_with_short_name() -> anyhow::Resu
         ),
         None
     );
+    Ok(())
+}
+
+#[test]
+fn kernel_highlight_score_uses_selected_metric() -> anyhow::Result<()> {
+    let tracks = vec![VizTrack {
+        key: gpu_summary_track_key(0),
+        label: "busy summary".to_string(),
+        kind: "gpu-summary".to_string(),
+        role: VizRole::Summary,
+        depth: 1,
+        axes: vec![axis("device", 0)],
+    }];
+    let events = vec![
+        event_named(1, 0, 7, 0, 10, "many", "void many()"),
+        event_named(2, 0, 7, 10, 20, "many", "void many()"),
+        event_named(3, 0, 7, 20, 120, "slow", "void slow()"),
+    ];
+    let spec = KernelHighlightSpec::parse("top=1,scope=name,by=count")?;
+    let resolved = resolve_kernel_highlights(&[spec], &tracks, &events);
+    let highlight = resolved
+        .response_highlights
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected one highlight"))?;
+
+    assert_eq!(highlight.label, "many");
+    assert_eq!(highlight.metric, "instance_count");
+    assert_eq!(highlight.score, 2);
+    assert_eq!(highlight.score_total, Some(3));
+    assert_eq!(highlight.total_duration_ns, 20);
+    assert_eq!(highlight.instance_count, 2);
     Ok(())
 }
 
@@ -143,6 +176,8 @@ fn instance_highlights_attach_row_id() -> anyhow::Result<()> {
 
     assert_eq!(highlight.label, "slow");
     assert_eq!(highlight.full_name, "void slow()");
+    assert_eq!(highlight.score, 300);
+    assert_eq!(highlight.score_total, Some(400));
     assert_eq!(highlight.row_id.as_deref(), Some("kernel:2"));
     assert_eq!(
         resolved.assignments.for_event(

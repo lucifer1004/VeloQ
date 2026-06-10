@@ -12,8 +12,8 @@ mod render;
 pub use artifact::write_svg_artifact;
 pub use error::VisualizationError;
 pub use model::{
-    SvgRenderResult, SvgRenderSummary, VizAggregation, VizAxis, VizHighlight, VizInterval,
-    VizLabelMode, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene, VizSceneMetadata,
-    VizTimeWindow, VizTrack, VizTrackMetadata, WrittenSvgArtifact,
+    SvgRenderResult, SvgRenderSummary, VizAggregation, VizAxis, VizHighlight, VizHighlightScore,
+    VizInterval, VizLabelMode, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene,
+    VizSceneMetadata, VizTimeWindow, VizTrack, VizTrackMetadata, WrittenSvgArtifact,
 };
 pub use render::render_svg;

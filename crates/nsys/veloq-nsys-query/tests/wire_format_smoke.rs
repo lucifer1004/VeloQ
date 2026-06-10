@@ -274,6 +274,8 @@ fn viz_timeline_response_projects() {
             "full_name",
             "scope",
             "metric",
+            "score",
+            "score_total",
             "total_duration_ns",
             "instance_count",
             "max_duration_ns",

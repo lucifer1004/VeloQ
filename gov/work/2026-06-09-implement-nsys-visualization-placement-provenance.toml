@@ -3,9 +3,10 @@
 [govctl]
 id = "WI-2026-06-09-006"
 title = "Implement NSys visualization placement provenance"
-status = "active"
+status = "done"
 created = "2026-06-09"
 started = "2026-06-09"
+completed = "2026-06-10"
 refs = [
     "RFC-0009",
     "RFC-0009:C-TRACK-PLACEMENT",

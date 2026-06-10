@@ -119,6 +119,8 @@ fn top_kernel_highlights_report_metadata_and_svg_markers() -> Result<()> {
     assert_eq!(highlight.full_name, "slow_kernel");
     assert_eq!(highlight.scope, "name");
     assert_eq!(highlight.metric, "total_duration_ns");
+    assert_eq!(highlight.score, 20_000_000);
+    assert_eq!(highlight.score_total, Some(22_000_000));
     assert_eq!(highlight.total_duration_ns, 20_000_000);
     assert_eq!(highlight.instance_count, 2);
     assert_eq!(highlight.max_duration_ns, 10_000_000);

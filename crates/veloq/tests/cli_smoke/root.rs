@@ -131,6 +131,14 @@ fn nsys_viz_timeline_writes_svg_artifact() -> Result<()> {
         highlight.get("metric").and_then(Value::as_str),
         Some("total_duration_ns")
     );
+    assert_eq!(
+        highlight.get("score").and_then(Value::as_i64),
+        Some(1_000_000)
+    );
+    assert_eq!(
+        highlight.get("score_total").and_then(Value::as_i64),
+        Some(1_000_000)
+    );
     assert!(
         row.get("rendered_item_count")
             .and_then(Value::as_u64)

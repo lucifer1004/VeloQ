@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
-    VizAxis, VizHighlight, VizInterval, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene,
-    VizTimeWindow, VizTrack,
+    VizAxis, VizHighlight, VizHighlightScore, VizInterval, VizLabelPolicy, VizRenderPolicy,
+    VizRole, VizScene, VizTimeWindow, VizTrack,
 };
 
 fn scene() -> VizScene {
@@ -227,6 +227,11 @@ fn render_svg_marks_highlights_and_keeps_separate_legend() -> anyhow::Result<()>
         color: "#f97316".to_string(),
         rank: Some(1),
         scope: Some("name".to_string()),
+        score: Some(VizHighlightScore {
+            metric: "total_duration_ns".to_string(),
+            value: 1_500_000,
+            total: Some(5_000_000),
+        }),
     }];
 
     let rendered = render_svg(&scene)?;
@@ -237,6 +242,7 @@ fn render_svg_marks_highlights_and_keeps_separate_legend() -> anyhow::Result<()>
     assert!(rendered.svg.contains("highlight-legend-item"));
     assert!(rendered.svg.contains("kernel</text>"));
     assert!(rendered.svg.contains("#1 very_long_kernel_name_for_legend"));
+    assert!(rendered.svg.contains("total 1.5 ms (30.0%)"));
     assert!(
         rendered
             .svg

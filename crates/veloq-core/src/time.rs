@@ -84,6 +84,33 @@ pub fn parse_duration_ns(s: &str) -> Result<i64, TimeParseError> {
     Ok(ns as i64)
 }
 
+/// Format a nanosecond duration for compact human-facing labels.
+pub fn format_duration_ns(ns: i64) -> String {
+    let abs = ns.saturating_abs();
+    if abs < 1_000 {
+        format!("{ns} ns")
+    } else if abs < 1_000_000 {
+        format!("{} us", trim_decimal(ns as f64 / 1_000.0))
+    } else if abs < 1_000_000_000 {
+        format!("{} ms", trim_decimal(ns as f64 / 1_000_000.0))
+    } else {
+        format!("{} s", trim_decimal(ns as f64 / 1_000_000_000.0))
+    }
+}
+
+fn trim_decimal(value: f64) -> String {
+    let mut out = format!("{value:.3}");
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    out
+}
+
 /// Endpoint of a `TimeWindow`. Two anchors:
 /// - `Relative(ns)` — offset from the trace's primary origin (default
 ///   for bare literals like `1.2s`).
@@ -292,6 +319,14 @@ mod tests {
         assert_eq!(parse_duration_ns("1.5ms")?, 1_500_000);
         assert_eq!(parse_duration_ns("1.2s")?, 1_200_000_000);
         Ok(())
+    }
+
+    #[test]
+    fn duration_labels_are_compact() {
+        assert_eq!(format_duration_ns(42), "42 ns");
+        assert_eq!(format_duration_ns(1_500), "1.5 us");
+        assert_eq!(format_duration_ns(12_345_678), "12.346 ms");
+        assert_eq!(format_duration_ns(1_200_000_000), "1.2 s");
     }
 
     #[test]

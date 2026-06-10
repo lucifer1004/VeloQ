@@ -6,7 +6,7 @@ use crate::EventKind;
 
 use super::events::TimelineEvent;
 use super::keys::{gpu_summary_track_key, stream_track_key};
-use super::spec::{HighlightScope, KernelHighlightSpec};
+use super::spec::{HighlightMetric, HighlightScope, KernelHighlightSpec};
 use super::types::{VizResolvedHighlight, VizUnresolvedHighlight};
 
 #[derive(Debug, Default)]
@@ -147,6 +147,7 @@ fn resolve_name_highlights(
             ))
             .then_with(|| a.0.cmp(&b.0))
     });
+    let score_total = aggregate_score_total(spec.metric, &ranked);
     for (idx, (name, agg)) in ranked.into_iter().take(spec.top).enumerate() {
         let rank = idx + 1;
         let key = format!("kernel-highlight|name|spec:{spec_idx}|rank:{rank}");
@@ -154,6 +155,11 @@ fn resolve_name_highlights(
             .by_full_name
             .insert(name.clone(), key.clone());
         let label = agg.label.unwrap_or_else(|| name.clone());
+        let score = spec.metric.score(
+            agg.total_duration_ns,
+            agg.instance_count,
+            agg.max_duration_ns,
+        );
         out.response_highlights.push(VizResolvedHighlight {
             key,
             rank,
@@ -162,6 +168,8 @@ fn resolve_name_highlights(
             full_name: name,
             scope: spec.scope.as_str().to_string(),
             metric: spec.metric.as_str().to_string(),
+            score,
+            score_total,
             total_duration_ns: agg.total_duration_ns,
             instance_count: agg.instance_count,
             max_duration_ns: agg.max_duration_ns,
@@ -176,6 +184,7 @@ fn resolve_instance_highlights(
     candidates: &[&TimelineEvent],
     out: &mut ResolvedKernelHighlights,
 ) {
+    let score_total = instance_score_total(spec.metric, candidates);
     let mut ranked = candidates.to_vec();
     ranked.sort_by(|a, b| {
         let a_duration = a.duration_ns();
@@ -203,11 +212,39 @@ fn resolve_instance_highlights(
             full_name: event.full_name.clone(),
             scope: spec.scope.as_str().to_string(),
             metric: spec.metric.as_str().to_string(),
+            score: spec.metric.score(duration_ns, 1, duration_ns),
+            score_total,
             total_duration_ns: duration_ns,
             instance_count: 1,
             max_duration_ns: duration_ns,
             row_id: Some(row_id),
         });
+    }
+}
+
+fn aggregate_score_total(
+    metric: HighlightMetric,
+    ranked: &[(String, KernelAggregate)],
+) -> Option<i64> {
+    match metric {
+        HighlightMetric::Duration => Some(ranked.iter().fold(0i64, |total, (_, agg)| {
+            total.saturating_add(agg.total_duration_ns)
+        })),
+        HighlightMetric::Count => Some(ranked.iter().fold(0i64, |total, (_, agg)| {
+            let count = i64::try_from(agg.instance_count).unwrap_or(i64::MAX);
+            total.saturating_add(count)
+        })),
+        HighlightMetric::MaxDuration => None,
+    }
+}
+
+fn instance_score_total(metric: HighlightMetric, candidates: &[&TimelineEvent]) -> Option<i64> {
+    match metric {
+        HighlightMetric::Duration => Some(candidates.iter().fold(0i64, |total, event| {
+            total.saturating_add(event.duration_ns())
+        })),
+        HighlightMetric::Count => Some(i64::try_from(candidates.len()).unwrap_or(i64::MAX)),
+        HighlightMetric::MaxDuration => None,
     }
 }
 

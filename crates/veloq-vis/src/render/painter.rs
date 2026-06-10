@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
+use veloq_core::time::format_duration_ns;
 
 use crate::{
     VizHighlight, VizInterval, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene,
@@ -8,7 +9,7 @@ use crate::{
 
 use super::layout::Layout;
 use super::style::{item_color, item_opacity};
-use super::text::{escape_xml, estimate_text_width, format_time_tick, truncate_label};
+use super::text::{escape_xml, estimate_text_width, format_highlight_score, truncate_label};
 
 pub(super) fn push_svg_header(svg: &mut String, layout: &Layout, scene: &VizScene) {
     svg.push_str(&format!(
@@ -102,13 +103,13 @@ pub(super) fn push_ticks(svg: &mut String, layout: &Layout, window: VizTimeWindo
         svg,
         layout.label_width,
         16.0,
-        &format_time_tick(window.start_ns),
+        &format_duration_ns(window.start_ns),
     );
     push_note_anchored(
         svg,
         layout.label_width + layout.plot_width,
         16.0,
-        &format_time_tick(window.end_ns),
+        &format_duration_ns(window.end_ns),
         "end",
     );
 }
@@ -204,7 +205,22 @@ fn highlight_legend_label(highlight: &VizHighlight, plot_width: f64) -> String {
         |rank| format!("#{rank} {}", highlight.label),
     );
     let max_chars = ((plot_width - 24.0) / 6.0).floor().max(24.0) as usize;
-    truncate_label(&prefix, max_chars).0
+    let suffix = highlight
+        .score
+        .as_ref()
+        .map(|score| format!(" | {}", format_highlight_score(score)))
+        .unwrap_or_default();
+    if suffix.is_empty() {
+        return truncate_label(&prefix, max_chars).0;
+    }
+
+    let suffix_chars = suffix.chars().count();
+    if max_chars <= suffix_chars.saturating_add(4) {
+        return truncate_label(&format!("{prefix}{suffix}"), max_chars).0;
+    }
+
+    let label = truncate_label(&prefix, max_chars - suffix_chars).0;
+    format!("{label}{suffix}")
 }
 
 fn ordered_legend_classes<'a>(classes: &BTreeSet<&'a str>) -> Vec<&'a str> {

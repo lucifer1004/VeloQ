@@ -1,0 +1,28 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-10-001"
+title = "Expose top-k kernel scores in NSys timeline legends"
+status = "done"
+created = "2026-06-10"
+started = "2026-06-10"
+completed = "2026-06-10"
+refs = ["RFC-0009"]
+
+[content]
+description = "Expose the natural top-k kernel ranking score in NSys timeline visualization legends, including percentage share for additive metrics, while keeping score data structured for renderers."
+
+[[content.acceptance_criteria]]
+text = "NSys viz timeline resolved highlights expose score and additive score_total"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "SVG top-k kernel legends show score values and additive percentage shares"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Relevant visualization, wire, CLI, fmt, clippy, and govctl checks pass"
+status = "done"
+category = "chore"
