@@ -1,0 +1,62 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-002"
+title = "Implement NSys viz timeline command"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-09"
+refs = [
+    "ADR-0001",
+    "RFC-0002:C-SUCCESS-RESPONSE",
+    "RFC-0003:C-LIST-SHAPE",
+    "RFC-0005:C-ARTIFACT-ROOT",
+    "RFC-0006:C-SUPPORTED-INPUTS",
+    "RFC-0009:C-COMMAND-SURFACE",
+    "RFC-0009:C-TRACK-SPECS",
+    "RFC-0009:C-TRACK-TREE",
+    "RFC-0009:C-ARTIFACTS",
+    "RFC-0009:C-RENDER-LIMITS",
+    "RFC-0009:C-LABEL-POLICY",
+    "RFC-0009:C-COMPATIBILITY",
+]
+depends_on = ["WI-2026-06-09-001"]
+
+[content]
+description = "Implement the `NSys` `viz timeline` command described by the visualization RFC. This work owns `NSys` track parsing, bounded evidence extraction, deterministic track resolution, canonical `JSON` response rows, and `SVG` artifact generation through the shared visualization foundation."
+
+[[content.acceptance_criteria]]
+text = "Parse default and explicit `NSys` `viz timeline` track specs, including `device`, `stream`, `top`, and `depth` selectors, with structured diagnostics"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Generate canonical `JSON` list rows for `SVG` timeline artifacts with request fingerprint, resolved tracks, render policy, label policy, and render counters"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Render dense bounded `NSys` intervals to `SVG` without misleading stretching, and report suppressed, truncated, aggregated, and omitted counts"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Add the `NSys` `viz timeline` CLI surface with required bounded time window validation and `RFC-0009` track-spec parsing"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Add command, wire-contract, and artifact lifecycle tests for `NSys` `viz timeline`"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Resolve `NSys` device, stream, CUDA API, NVTX, and gaps-overlay tracks deterministically when matching evidence exists"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"

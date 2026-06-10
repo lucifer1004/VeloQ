@@ -1,0 +1,34 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMPATIBILITY"
+title = "Compatibility"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Adding `nsys.viz.timeline` MUST NOT change the response shape of existing NSys commands.
+
+Adding `nsys.viz.timeline` MAY keep the current NSys source version when existing NSys command responses remain compatible.
+
+Changing the `nsys.viz.timeline` command ID after the command is stabilized MUST be treated as a breaking command-surface change.
+
+Removing a stable track kind after the command is stabilized MUST be treated as a breaking visualization contract change.
+
+Changing a stable selector's meaning after the command is stabilized MUST be treated as a breaking visualization contract change.
+
+Removing a required field from the figure row after the command is stabilized MUST be treated as a breaking source payload change.
+
+Changing the type or meaning of a required figure row field after the command is stabilized MUST be treated as a breaking source payload change.
+
+Changing SVG visual styling MAY remain compatible when the required JSON response fields, track semantics, artifact lifecycle, and required SVG metadata semantics remain compatible.
+
+Changing default render limits MAY remain compatible when the effective render limits are reported in the JSON response.
+
+Adding new track kinds, selectors, optional response fields, or optional SVG metadata MAY remain compatible when existing behavior is preserved.
+
+Adding a raw-SVG stdout mode MUST require an RFC amendment that documents the output exception.
+
+**Rationale:** The figure command is additive to existing NSys query behavior, but once agents depend on it, command identity, track semantics, and response fields become part of the public source contract. Styling can evolve more freely than evidence semantics as long as the response tells agents what was rendered."""

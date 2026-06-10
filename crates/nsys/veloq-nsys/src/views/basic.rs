@@ -2,7 +2,7 @@ use crate::views::meta::{push_nvtx_scope_meta, push_time_window_meta};
 use veloq_core::tabular::{TabularView, cell_opt, push_count_meta};
 use veloq_nsys_query::{
     concurrency::ConcurrencyResponse, gaps::GapsResponse, search::SearchResponse,
-    timeline::TimelineResponse,
+    timeline::TimelineResponse, viz_timeline::VizTimelineResponse,
 };
 
 pub fn search_view(data: &SearchResponse) -> TabularView {
@@ -142,4 +142,101 @@ pub fn gaps_view(data: &GapsResponse) -> TabularView {
     push_count_meta(&mut v, data.count, data.total_matched);
     push_time_window_meta(&mut v, data.time_window_ns);
     v
+}
+
+pub fn viz_timeline_view(data: &VizTimelineResponse) -> TabularView {
+    let mut v = TabularView::new(vec![
+        "path",
+        "format",
+        "track_count",
+        "rendered_item_count",
+        "total_item_count",
+        "aggregated",
+        "omitted_track_count",
+        "suppressed_label_count",
+        "truncated_label_count",
+    ]);
+    for row in &data.rows {
+        v.push_row(vec![
+            row.path.clone(),
+            row.format.clone(),
+            row.track_count.to_string(),
+            row.rendered_item_count.to_string(),
+            row.total_item_count.to_string(),
+            row.aggregated.to_string(),
+            row.omitted_track_count.to_string(),
+            row.suppressed_label_count.to_string(),
+            row.truncated_label_count.to_string(),
+        ]);
+    }
+    if let Some(row) = data.rows.first() {
+        let [start, end] = row.time_window_ns;
+        v.push_meta("time_window_ns", format!("{start}-{end}"));
+    }
+    push_count_meta(&mut v, data.count, data.total_matched);
+    v.push_meta(
+        "requested_tracks",
+        data.auxiliary.requested_tracks.len().to_string(),
+    );
+    v.push_meta(
+        "resolved_tracks",
+        data.auxiliary.resolved_tracks.len().to_string(),
+    );
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use veloq_nsys_query::viz_timeline::{
+        VizLabelPolicyEcho, VizRenderPolicyEcho, VizTimelineAuxiliary, VizTimelineFigureRow,
+    };
+    use veloq_vis::{VizLabelPolicy, VizRenderPolicy};
+
+    #[test]
+    fn viz_timeline_view_emits_time_window_meta_once() -> anyhow::Result<()> {
+        let data = VizTimelineResponse {
+            count: 2,
+            total_matched: 2,
+            rows: vec![figure_row("a.svg", [10, 20]), figure_row("b.svg", [10, 20])],
+            auxiliary: VizTimelineAuxiliary {
+                requested_tracks: Vec::new(),
+                resolved_tracks: Vec::new(),
+                requested_highlights: Vec::new(),
+                resolved_highlights: Vec::new(),
+                unresolved_highlights: Vec::new(),
+                render_policy: VizRenderPolicyEcho::from(&VizRenderPolicy::default()),
+                label_policy: VizLabelPolicyEcho::from(&VizLabelPolicy::default()),
+            },
+        };
+
+        let view = viz_timeline_view(&data);
+        let time_window_meta = view
+            .meta
+            .iter()
+            .filter(|(key, _)| key == "time_window_ns")
+            .collect::<Vec<_>>();
+        assert_eq!(time_window_meta.len(), 1);
+        let (_, value) = time_window_meta
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing time_window_ns meta"))?;
+        assert_eq!(value.as_str(), "10-20");
+        Ok(())
+    }
+
+    fn figure_row(path: &str, time_window_ns: [i64; 2]) -> VizTimelineFigureRow {
+        VizTimelineFigureRow {
+            key: format!("figure|{path}"),
+            path: path.to_string(),
+            format: "svg".to_string(),
+            time_window_ns,
+            track_count: 0,
+            rendered_item_count: 0,
+            total_item_count: 0,
+            aggregated: false,
+            omitted_track_count: 0,
+            suppressed_label_count: 0,
+            truncated_label_count: 0,
+        }
+    }
 }

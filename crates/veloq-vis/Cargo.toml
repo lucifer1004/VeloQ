@@ -1,0 +1,23 @@
+[package]
+name = "veloq-vis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Source-neutral visualization scene and SVG rendering helpers for VeloQ."
+include = ["src/**/*.rs"]
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+veloq-core.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

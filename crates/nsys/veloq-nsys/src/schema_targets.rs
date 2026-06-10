@@ -19,7 +19,7 @@ use veloq_nsys_query::{
     graph_replays::GraphReplaysResponse, hardware::HardwareResponse, inspect::InspectResponse,
     metrics::MetricsResponse, ncu_command::NcuCommandResponse, search::SearchResponse,
     slices::SlicesResponse, stats::StatsResponse, stats_by_size::StatsBySizeResponse,
-    summary::Summary, timeline::TimelineResponse,
+    summary::Summary, timeline::TimelineResponse, viz_timeline::VizTimelineResponse,
 };
 
 /// One row of the schema-target registry. `schema_fn` returns the
@@ -55,6 +55,7 @@ pub const TARGETS: &[SchemaTarget] = &[
     target!("concurrency", ConcurrencyResponse),
     target!("gaps", GapsResponse),
     target!("timeline", TimelineResponse),
+    target!("viz.timeline", VizTimelineResponse),
     target!("slices", SlicesResponse),
     target!("hardware", HardwareResponse),
     target!("metrics", MetricsResponse),

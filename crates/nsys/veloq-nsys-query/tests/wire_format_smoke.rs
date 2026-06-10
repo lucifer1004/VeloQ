@@ -24,6 +24,7 @@ use veloq_nsys_query::slices::SlicesResponse;
 use veloq_nsys_query::stats::StatsResponse;
 use veloq_nsys_query::summary::Summary;
 use veloq_nsys_query::timeline::TimelineResponse;
+use veloq_nsys_query::viz_timeline::VizTimelineResponse;
 
 /// Helper: every snapshot assertion checks that a list of canonical
 /// field names appears somewhere in the projected text (root or
@@ -238,6 +239,51 @@ fn timeline_response_projects() {
 }
 
 #[test]
+fn viz_timeline_response_projects() {
+    let text = wire_format_for::<VizTimelineResponse>().render();
+    assert_contains_all(
+        &text,
+        &[
+            "count",
+            "total_matched",
+            "rows",
+            "key",
+            "path",
+            "format",
+            "time_window_ns",
+            "track_count",
+            "rendered_item_count",
+            "total_item_count",
+            "aggregated",
+            "omitted_track_count",
+            "suppressed_label_count",
+            "truncated_label_count",
+            "auxiliary",
+            "requested_tracks",
+            "resolved_tracks",
+            "role",
+            "requested_highlights",
+            "resolved_highlights",
+            "unresolved_highlights",
+            "rank",
+            "color",
+            "label",
+            "full_name",
+            "scope",
+            "metric",
+            "total_duration_ns",
+            "instance_count",
+            "max_duration_ns",
+            "row_id",
+            "spec",
+            "reason",
+            "render_policy",
+            "label_policy",
+        ],
+    );
+}
+
+#[test]
 fn slices_response_projects() {
     // slices → rows. `view` distinguishes instance rows from
     // aggregate rows.
@@ -386,6 +432,7 @@ fn every_primary_rows_item_carries_key() -> anyhow::Result<()> {
     check_rows_have_key::<GapsResponse>()?;
     check_rows_have_key::<GraphReplaysResponse>()?;
     check_rows_have_key::<TimelineResponse>()?;
+    check_rows_have_key::<VizTimelineResponse>()?;
     check_rows_have_key::<SlicesResponse>()?;
     check_rows_have_key::<HardwareResponse>()?;
     // MetricsResponse is a serde-tagged union over four mode bodies;

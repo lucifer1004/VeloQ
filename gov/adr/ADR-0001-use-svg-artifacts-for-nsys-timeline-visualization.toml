@@ -1,0 +1,101 @@
+#:schema ../schema/adr.schema.json
+
+[govctl]
+id = "ADR-0001"
+title = "Use SVG artifacts for NSys timeline visualization"
+status = "proposed"
+date = "2026-06-09"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0005",
+    "RFC-0009",
+]
+
+[content]
+context = """
+The visualization RFC introduces an NSys static timeline visualization command so agents can include report-ready figures when explaining profiling evidence. The feature needs to make Nsight Systems-style tracks inspectable in written reports without turning VeloQ into a GUI or weakening the CLI contract.
+
+This decision is needed before implementation because the first visualization command will establish the stdout/artifact boundary that agents and report recipes depend on. Changing that boundary later would be more expensive than deciding it while the feature is still at the contract stage.
+
+The decision is constrained by VeloQ's center of gravity: agent-friendly JSON on stdout, high-performance one-shot profile queries, source-owned profile semantics, and generated artifacts that live under the trace artifact root. Those constraints come from the foundational product, I/O, artifact, and visualization contracts listed in the ADR references.
+
+The specific question is how the visualization should be exposed. The competing options are a JSON response that points to an SVG artifact, raw SVG output as a command projection, an external renderer description that agents render themselves, or a larger interactive browser/GUI surface."""
+decision = """
+VeloQ will expose NSys static timeline visualization as a JSON success envelope that points to an SVG artifact. The command owns the trace, source, time window, track request, resolved track metadata, render policy, label policy, and artifact path in the response; the SVG is the report-ready artifact produced by that command.
+
+The reusable boundary for future sources is the visualization scene and track model, not NSys SQL semantics and not raw SVG as a generic output format. That reusable boundary lives in a dedicated `veloq-vis` crate so `veloq-core` remains limited to cross-source CLI contracts, diagnostics, time/query helpers, and artifact-root primitives. NSys owns NSys track selection and evidence extraction. Any future PyTorch or NCU visualization support must define its own source semantics and may reuse only source-neutral rendering primitives.
+
+Raw SVG stdout is not part of this decision. If VeloQ later needs a raw SVG projection, that should be specified as an explicit exception to the stdout contract rather than added implicitly."""
+consequences = """
+### Positive
+
+Agent report generation becomes simpler: the agent can run one command, read one JSON envelope, and embed or link a stable SVG artifact with enough metadata to explain what was rendered.
+
+VeloQ's CLI and artifact contracts stay coherent. Generated figures live under the same artifact-root and cleanup model as other derived products, while stdout remains structured for agents and diagnostics.
+
+Keeping visualization primitives in `veloq-vis` gives future sources a reusable rendering dependency without making `veloq-core` carry renderer-specific scene, SVG, label, or legend APIs.
+
+### Negative
+
+The NSys source takes on renderer and artifact complexity. It must build bounded timeline evidence, resolve tracks deterministically, render dense intervals without misleading stretching, and report label suppression or aggregation.
+
+The mitigation is to keep the renderer boundary narrow: test JSON response metadata separately from SVG artifact behavior, keep NSys evidence extraction source-owned, and treat render policy and label policy as explicit command metadata rather than implicit styling state.
+
+Adding a `veloq-vis` crate introduces one more internal crate dependency. The mitigation is to keep it source-neutral and renderer-focused: it may depend on `veloq-core` diagnostics and artifact primitives, but `veloq-core` must not depend on `veloq-vis` or re-export its APIs.
+
+### Neutral
+
+PyTorch and NCU visualization remain out of scope for this decision. A later source can reuse rendering primitives only after it defines its own track semantics and compatibility contract."""
+
+[[content.alternatives]]
+text = "JSON envelope with an SVG artifact and a source-neutral visualization boundary"
+status = "accepted"
+pros = ["Preserves the default JSON envelope and command metadata that agents already consume; produces a self-contained, report-ready SVG under the VeloQ artifact lifecycle; keeps NSys-specific track semantics in the NSys source while allowing a future shared scene/render layer; makes rendered output testable through both response metadata and artifact contents"]
+cons = ["Adds renderer and artifact-management complexity beyond row-shaped query output; requires explicit policy for labels, aggregation, and min-width rendering"]
+
+[[content.alternatives]]
+text = "Expose SVG as --format svg on existing query verbs"
+status = "rejected"
+pros = [
+    "Looks familiar because VeloQ already has JSON, CSV, and table projections",
+    "Could reuse some existing command plumbing",
+]
+cons = [
+    "Existing verbs are row/list queries, while timeline figures combine tracks, overlays, labels, and aggregation policy",
+    "Would blur the distinction between data projection and generated report artifact",
+]
+rejection_reason = "visualization is a composed artifact with its own request, metadata, and lifecycle, not a simple output projection of an existing row response"
+
+[[content.alternatives]]
+text = "Write raw SVG to stdout by default"
+status = "rejected"
+pros = ["Makes shell redirection simple for a human caller"]
+cons = [
+    "Breaks the default JSON success envelope that agents rely on for command, source, trace, and diagnostic context",
+    "Makes artifact metadata, cleanup, and error reporting less uniform",
+]
+rejection_reason = "VeloQ's default stdout contract is JSON; raw outputs require an explicit exception and RFC amendment"
+
+[[content.alternatives]]
+text = "Emit a renderer specification for agents to render externally"
+status = "rejected"
+pros = [
+    "Reduces VeloQ's in-process rendering code",
+    "Could let different agents choose their preferred rendering stack",
+]
+cons = [
+    "Introduces agent-side renderer dependencies and inconsistent visual output",
+    "Weakens reproducibility because the artifact is no longer produced by the VeloQ command that owns the evidence",
+]
+rejection_reason = "the feature is intended to give agents a stable, portable figure artifact directly tied to the trace and command response"
+
+[[content.alternatives]]
+text = "Build an interactive browser or GUI timeline"
+status = "rejected"
+pros = ["Would support richer exploratory interaction than a static figure"]
+cons = [
+    "Adds a long-lived UI surface outside VeloQ's one-shot CLI model",
+    "Increases dependency, packaging, and support burden before the report-figure use case is proven",
+]
+rejection_reason = "the near-term requirement is static report evidence for agents, not an interactive profiling UI"

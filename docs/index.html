@@ -340,6 +340,24 @@
         font-size: 12px;
       }
 
+      .timeline-figure {
+        margin: 26px 0 0;
+      }
+      .timeline-figure img {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #ffffff;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+      }
+      .timeline-figure figcaption {
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13.5px;
+        text-align: center;
+      }
+
       /* ---- code blocks ---- */
       pre {
         background: var(--surface);
@@ -685,6 +703,32 @@
         </div>
       </section>
 
+      <!-- FIGURE -->
+      <section id="figures">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="kicker">report-ready figures</p>
+            <h2>Static timeline SVGs, generated from the CLI</h2>
+            <p>
+              <code>veloq viz timeline</code> writes a bounded NSys timeline
+              artifact while stdout stays a JSON envelope. Agents can cite the
+              row metadata and embed the SVG directly in a report.
+            </p>
+          </div>
+          <figure class="timeline-figure">
+            <img
+              src="assets/examples/nsys-timeline.svg"
+              alt="Example VeloQ NSys timeline SVG with GPU, stream, CUDA API, idle gaps, and highlighted kernels"
+              loading="lazy"
+            />
+            <figcaption>
+              Example <code>viz timeline</code> artifact with top-kernel
+              highlights, track roles, CUDA API annotations, and idle gaps.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
       <!-- EXAMPLE -->
       <section id="example">
         <div class="wrap">
@@ -807,6 +851,7 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
               ><span class="chip">search</span> <span class="chip">inspect</span
               ><span class="chip">correlate</span><span class="chip">gaps</span>
               <span class="chip">timeline</span
+              ><span class="chip">viz timeline</span
               ><span class="chip">concurrency</span
               ><span class="chip">graph-replays</span>
               <span class="chip">slices</span><span class="chip">hardware</span

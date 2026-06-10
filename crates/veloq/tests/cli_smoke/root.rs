@@ -36,6 +36,116 @@ fn nsys_graph_replays_schema_endpoint_is_registered() -> Result<()> {
 }
 
 #[test]
+fn nsys_viz_timeline_schema_endpoint_is_registered() -> Result<()> {
+    let out = run_veloq(["schema", "viz.timeline"])?;
+    let _ = assert_schema_envelope(&out, "nsys.schema", "nsys", "v2", "viz.timeline")?;
+    Ok(())
+}
+
+#[test]
+fn nsys_viz_timeline_requires_paired_window_bounds() -> Result<()> {
+    for (provided, missing) in [("--from", "--to"), ("--to", "--from")] {
+        let out = run_veloq(["viz", "timeline", "trace.nsys-rep", provided, "@100ms"])?;
+        assert!(
+            !out.status.success(),
+            "single-sided {provided} should fail during clap parsing"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.is_empty(),
+            "JSON parse-error must keep stderr clean; got: {stderr}"
+        );
+        let v: Value =
+            serde_json::from_slice(&out.stdout).context("parse-error stdout must be valid JSON")?;
+        let message = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing error.message: {v}"))?;
+        assert!(
+            message.contains(missing),
+            "single-sided {provided} should require {missing}; got: {message}"
+        );
+        let chain_entry = v
+            .get("error")
+            .and_then(|e| e.get("chain"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing error.chain[0]: {v}"))?;
+        assert!(
+            chain_entry.contains("MissingRequiredArgument"),
+            "single-sided {provided} should be a clap missing-argument error; got: {chain_entry}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn nsys_viz_timeline_writes_svg_artifact() -> Result<()> {
+    let (_trace_dir, trace) = build_minimal_trace()?;
+    let trace_arg = trace.to_string_lossy();
+    let out = run_veloq([
+        "viz",
+        "timeline",
+        trace_arg.as_ref(),
+        "--from",
+        "@100ms",
+        "--to",
+        "@102ms",
+        "--highlight-kernels",
+        "top=1,scope=name",
+    ])?;
+    assert!(
+        out.status.success(),
+        "viz timeline failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value =
+        serde_json::from_slice(&out.stdout).context("viz timeline stdout must be JSON")?;
+    assert_eq!(
+        v.get("command").and_then(Value::as_str),
+        Some("nsys.viz.timeline")
+    );
+    let row = v
+        .pointer("/data/rows/0")
+        .ok_or_else(|| anyhow!("missing figure row: {v}"))?;
+    let path = row
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing figure path: {row}"))?;
+    assert!(
+        path.starts_with("figures/nsys/timeline/") && path.ends_with(".svg"),
+        "figure path must be artifact-root relative SVG path, got {path}"
+    );
+    assert_eq!(row.get("format").and_then(Value::as_str), Some("svg"));
+    let highlight = v
+        .pointer("/data/auxiliary/resolved_highlights/0")
+        .ok_or_else(|| anyhow!("missing resolved highlight: {v}"))?;
+    assert_eq!(
+        highlight.get("label").and_then(Value::as_str),
+        Some("smoke_kernel")
+    );
+    assert_eq!(highlight.get("scope").and_then(Value::as_str), Some("name"));
+    assert_eq!(
+        highlight.get("metric").and_then(Value::as_str),
+        Some("total_duration_ns")
+    );
+    assert!(
+        row.get("rendered_item_count")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+            > 0,
+        "figure should render at least one item: {row}"
+    );
+    assert!(
+        veloq_core::artifact_dir_for(&trace).join(path).exists(),
+        "SVG artifact should exist under the trace artifact root"
+    );
+    Ok(())
+}
+
+#[test]
 fn nsys_namespace_routes_default_source_verbs() -> Result<()> {
     let (_trace_dir, trace) = build_minimal_trace()?;
     let out = run_veloq(["nsys", "summary", &trace.to_string_lossy()])?;

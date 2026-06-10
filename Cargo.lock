@@ -3415,6 +3415,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "terminal_size",
  "thiserror",
  "toml",
@@ -3469,6 +3470,7 @@ dependencies = [
  "veloq-core",
  "veloq-nsys-data",
  "veloq-nsys-query",
+ "veloq-vis",
 ]
 
 [[package]]
@@ -3506,6 +3508,7 @@ dependencies = [
  "veloq-core",
  "veloq-nsys-data",
  "veloq-query",
+ "veloq-vis",
 ]
 
 [[package]]
@@ -3562,6 +3565,18 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "duckdb",
+ "veloq-core",
+]
+
+[[package]]
+name = "veloq-vis"
+version = "0.2.2"
+dependencies = [
+ "anyhow",
+ "schemars",
+ "serde",
+ "tempfile",
+ "thiserror",
  "veloq-core",
 ]
 

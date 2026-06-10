@@ -19,7 +19,7 @@ mod metrics;
 mod stats;
 mod summary;
 
-pub use basic::{concurrency_view, gaps_view, search_view, timeline_view};
+pub use basic::{concurrency_view, gaps_view, search_view, timeline_view, viz_timeline_view};
 pub use events::{correlate_view, inspect_view};
 pub use graph_slices::{graph_replays_view, slices_view};
 pub use hardware::hardware_view;

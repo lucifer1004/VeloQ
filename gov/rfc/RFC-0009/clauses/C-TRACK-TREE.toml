@@ -1,0 +1,68 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-TRACK-TREE"
+title = "Track tree resolution"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The `nsys viz timeline` command MUST resolve requested track specifications into a deterministic track tree before rendering.
+
+Each rendered track row MUST have a stable `track_key`.
+
+Each rendered track row MUST have a human-readable label.
+
+Each rendered track row MUST have an explicit role.
+
+The stable role set MUST include `group`, `summary`, `detail`, `annotation`, and `overlay`.
+
+A `group` role row MUST represent hierarchy or ownership context rather than source intervals.
+
+A `summary` role row MUST represent rollup evidence for a parent resource, such as GPU busy activity for one device.
+
+A `detail` role row MUST represent concrete source intervals on a specific execution lane, such as a CUDA stream.
+
+An `annotation` role row MUST represent explanatory or CPU-side context, such as CUDA API or NVTX ranges.
+
+An `overlay` role item MUST represent derived explanatory evidence, such as idle gaps or selection windows, and MUST be visually distinguishable from ordinary source intervals.
+
+Each rendered track row SHOULD carry source axes that identify the selected evidence, such as device, context, stream, process, thread, domain, or NVTX depth when those axes apply.
+
+GPU-related track rows SHOULD be grouped under their owning device in the resolved track tree.
+
+CUDA stream track rows SHOULD be grouped under their owning CUDA device.
+
+CUDA context groupings MAY be present.
+
+CPU API track rows SHOULD be grouped by process and thread when the selected evidence is thread-local.
+
+NVTX track rows SHOULD carry the rendered depth for each displayed range row when a depth selector applies.
+
+NVTX track row labels SHOULD include the nearest visible parent path when the requested depth is greater than one and the range has a visible parent.
+
+Expansion track kinds MUST have deterministic ordering.
+
+Top-N stream expansion SHOULD select streams by descending busy duration in the requested time window, then by device id, then by stream id.
+
+The rendered track tree SHOULD display selected CUDA stream rows under their owning device group; within one device group, stream rows SHOULD preserve the selected stream order.
+
+The response MUST report the number of requested track specifications.
+
+The response MUST report the number of resolved track rows.
+
+The response MUST report when requested tracks were omitted because of render limits.
+
+The SVG MUST render track labels as a left-side tree with indentation that reflects parent-child relationships.
+
+The SVG SHOULD visually distinguish group, summary, detail, annotation, and overlay roles.
+
+Summary rows SHOULD be visually weaker than detail rows when both show the same underlying execution interval.
+
+Summary rows SHOULD avoid default visible item labels that make rollup evidence look like a second concrete execution lane.
+
+**Rationale:** Agents need the exported figure to explain why rows appear and how they relate. Nsight Systems presents rollup rows and detailed rows together, but the GUI has selection and correlation affordances that clarify duplicate appearances. A static VeloQ SVG needs explicit row roles and role-specific rendering so rollups, details, annotations, and overlays remain readable without interaction.
+
+*Since: v0.1.0*"""

@@ -1,0 +1,50 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMMAND-SURFACE"
+title = "Command surface"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The NSys source MAY expose a `viz timeline` command while this RFC remains draft.
+
+When stabilized, the NSys source command surface MUST identify the command as `nsys.viz.timeline` in the JSON envelope.
+
+The `nsys viz timeline` command MUST accept one NSys-supported trace input.
+
+The `nsys viz timeline` command MUST require a bounded time window.
+
+The bounded time window MUST be expressible with `--from` and `--to` using the same time literal semantics as other NSys time-windowed commands.
+
+The command MUST reject a missing lower or upper time bound with a structured diagnostic.
+
+The command MUST reject an empty or negative time window with a structured diagnostic.
+
+The command MUST accept one or more repeated `--track <spec>` arguments.
+
+When no `--track` argument is supplied, the command MUST apply the default track set.
+
+The default track set MUST include `gpu:device=all`.
+
+The default track set MUST include `cuda-streams:device=all,top=<default_top_streams>`.
+
+The default track set MUST include `gaps-overlay:device=all`.
+
+The `<default_top_streams>` value MUST be a documented positive integer.
+
+The default track set MAY include annotation tracks when the source evidence needed by those tracks is present in the trace.
+
+The command MUST echo the resolved time window and resolved track set in its JSON response.
+
+The command MAY accept `--out <path>` to direct the SVG artifact to a caller-selected path.
+
+The command MUST keep stdout reserved for the primary response payload in JSON mode.
+
+The command MUST NOT write the raw SVG to stdout in its default mode.
+
+A future raw-SVG stdout mode MUST be documented as an explicit output exception before it is treated as stable.
+
+**Rationale:** The command is a figure export, not an interactive viewer. Requiring a bounded window prevents accidental full-trace rendering, repeated `--track` keeps agent-generated commands explicit, and the JSON envelope preserves the existing machine-readable contract."""

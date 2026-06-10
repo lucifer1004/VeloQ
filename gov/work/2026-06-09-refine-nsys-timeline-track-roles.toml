@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-004"
+title = "Refine NSys timeline track roles"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-09"
+refs = [
+    "RFC-0009",
+    "ADR-0001",
+]
+
+[content]
+description = "Refine NSys viz timeline so static SVGs mirror Nsight Systems' rollup/detail hierarchy: device rows become grouping context, GPU busy rows become summary lanes, stream/API/NVTX rows carry detail or annotation roles, and overlays are visually distinct from trace events."
+
+[[content.acceptance_criteria]]
+text = "Visualization scene tracks carry explicit role metadata for group, summary, detail, annotation, and overlay semantics"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "NSys default timeline tracks render GPU device context separately from GPU busy summary and stream detail lanes"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "NSys viz timeline smoke tests cover resolved track roles and SVG role styling"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Regenerated sample SVGs visually separate summary, detail, annotation, and idle overlay roles"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"

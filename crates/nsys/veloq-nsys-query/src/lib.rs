@@ -30,6 +30,7 @@ pub mod stats;
 pub mod stats_by_size;
 pub mod summary;
 pub mod timeline;
+pub mod viz_timeline;
 
 pub use error::{NsysQueryError, NsysQueryResult, SqlPhase};
 pub use event_ref::{EventRef, NvtxContext};
