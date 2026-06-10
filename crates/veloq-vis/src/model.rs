@@ -108,6 +108,7 @@ pub struct VizInterval {
 pub enum VizAggregation {
     None,
     ItemLimit,
+    DensityBins,
 }
 
 impl std::fmt::Display for VizAggregation {
@@ -115,6 +116,7 @@ impl std::fmt::Display for VizAggregation {
         f.write_str(match self {
             Self::None => "none",
             Self::ItemLimit => "item_limit",
+            Self::DensityBins => "density_bins",
         })
     }
 }
@@ -125,6 +127,7 @@ pub struct VizRenderPolicy {
     pub max_tracks: usize,
     pub max_items: usize,
     pub min_interval_px: f64,
+    pub density_bin_px: f64,
     pub aggregation: VizAggregation,
 }
 
@@ -135,7 +138,8 @@ impl Default for VizRenderPolicy {
             max_tracks: 64,
             max_items: 5000,
             min_interval_px: 1.0,
-            aggregation: VizAggregation::ItemLimit,
+            density_bin_px: 2.0,
+            aggregation: VizAggregation::DensityBins,
         }
     }
 }
@@ -160,7 +164,6 @@ impl std::fmt::Display for VizLabelMode {
 pub struct VizLabelPolicy {
     pub mode: VizLabelMode,
     pub min_label_px: f64,
-    pub max_chars: usize,
 }
 
 impl Default for VizLabelPolicy {
@@ -168,7 +171,6 @@ impl Default for VizLabelPolicy {
         Self {
             mode: VizLabelMode::Auto,
             min_label_px: 48.0,
-            max_chars: 32,
         }
     }
 }
@@ -207,6 +209,10 @@ pub struct SvgRenderSummary {
     pub track_count: usize,
     pub rendered_item_count: usize,
     pub total_item_count: usize,
+    pub density_item_count: usize,
+    pub density_bin_count: usize,
+    pub density_duration_ns: i64,
+    pub omitted_explicit_item_count: usize,
     pub aggregated: bool,
     pub omitted_track_count: usize,
     pub suppressed_label_count: usize,

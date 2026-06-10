@@ -638,11 +638,23 @@ pub fn run(
                     max_tracks,
                     max_items,
                     min_interval_px,
+                    density_bin_px,
+                    no_density,
                     min_label_px,
-                    max_label_chars,
                     ..
                 },
         } => {
+            if !density_bin_px.is_finite() || density_bin_px <= 0.0 {
+                return Err(crate::error::NsysSourceError::InvalidRenderOption {
+                    flag: "--density-bin-px",
+                    value: density_bin_px.to_string(),
+                });
+            }
+            let aggregation = if no_density {
+                VizAggregation::ItemLimit
+            } else {
+                VizAggregation::DensityBins
+            };
             let data = veloq_nsys_query::viz_timeline::run(
                 trace,
                 veloq_nsys_query::viz_timeline::VizTimelineRequest {
@@ -654,12 +666,12 @@ pub fn run(
                         max_tracks,
                         max_items,
                         min_interval_px,
-                        aggregation: VizAggregation::ItemLimit,
+                        density_bin_px,
+                        aggregation,
                     },
                     label_policy: veloq_vis::VizLabelPolicy {
                         mode: VizLabelMode::Auto,
                         min_label_px,
-                        max_chars: max_label_chars,
                     },
                 },
             )?;
@@ -924,5 +936,49 @@ fn viz_time_window(from: Option<&str>, to: Option<&str>) -> NsysSourceResult<Opt
         }
         (None, None) => Ok(None),
         _ => Err(NsysSourceError::MissingTimeBound),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filters::TraceArg;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn viz_timeline_rejects_invalid_density_bin_even_when_disabled() {
+        let cmd = Cmd::Viz {
+            command: VizCmd::Timeline {
+                trace_arg: TraceArg {
+                    trace: PathBuf::from("missing.nsys-rep"),
+                },
+                from: Some("@0".to_string()),
+                to: Some("@1".to_string()),
+                tracks: Vec::new(),
+                highlight_kernels: Vec::new(),
+                width_px: 1200,
+                max_tracks: 64,
+                max_items: 5000,
+                min_interval_px: 1.0,
+                density_bin_px: -1.0,
+                no_density: true,
+                min_label_px: 48.0,
+            },
+        };
+
+        let err = run(
+            cmd,
+            OutputFormat::Json,
+            Some(Path::new("missing.nsys-rep")),
+            None,
+        );
+
+        assert!(matches!(
+            err,
+            Err(NsysSourceError::InvalidRenderOption {
+                flag: "--density-bin-px",
+                ..
+            })
+        ));
     }
 }

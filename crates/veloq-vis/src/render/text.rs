@@ -2,6 +2,8 @@ use veloq_core::time::format_duration_ns;
 
 use crate::{VizHighlight, VizHighlightScore, VizInterval, VizLabelPolicy};
 
+use super::style::{INTERVAL_LABEL_FONT_PX, INTERVAL_LABEL_MIN_WIDTH_PX, INTERVAL_LABEL_PADDING_X};
+
 pub(super) fn tooltip_for(item: &VizInterval, highlight: Option<&VizHighlight>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(row_id) = &item.row_id {
@@ -22,21 +24,60 @@ pub(super) fn tooltip_for(item: &VizInterval, highlight: Option<&VizHighlight>) 
         Some(parts.join(" | "))
     }
 }
+
+pub(super) struct DensityTooltipBreakdown<'a> {
+    pub(super) class: &'a str,
+    pub(super) count: usize,
+    pub(super) total_duration_ns: i64,
+}
+
+pub(super) fn density_tooltip_for(
+    dominant_class: &str,
+    count: usize,
+    total_duration_ns: i64,
+    max_duration_ns: i64,
+    start_ns: i64,
+    end_ns: i64,
+    breakdown: &[DensityTooltipBreakdown<'_>],
+) -> String {
+    let mut parts = vec![format!(
+        "density: {count} intervals | dominant {dominant_class} | total {} | max {} | bin {}..{}",
+        format_duration_ns(total_duration_ns),
+        format_duration_ns(max_duration_ns),
+        format_duration_ns(start_ns),
+        format_duration_ns(end_ns)
+    )];
+    if breakdown.len() > 1 {
+        let classes = breakdown
+            .iter()
+            .map(|class| {
+                format!(
+                    "{}: {}x/{}",
+                    class.class,
+                    class.count,
+                    format_duration_ns(class.total_duration_ns)
+                )
+            })
+            .collect::<Vec<_>>();
+        parts.push(format!("breakdown: {}", classes.join(", ")));
+    }
+    parts.join(" | ")
+}
+
 pub(super) fn fit_interval_label(
     label: &str,
     raw_width: f64,
     policy: &VizLabelPolicy,
 ) -> Option<(String, bool)> {
-    if raw_width < policy.min_label_px || policy.max_chars == 0 {
+    // Text is clipped to the interval bar, so the string can be longer than
+    // the visible span. This threshold only prevents noisy one-letter labels.
+    let min_visible_width = INTERVAL_LABEL_MIN_WIDTH_PX.max(policy.min_label_px);
+    if raw_width < min_visible_width {
         return None;
     }
-    // 8px horizontal padding, ~6.4px average character width.
-    let width_chars = ((raw_width - 8.0) / 6.4).floor();
-    if width_chars < 4.0 {
-        return None;
-    }
-    let max_chars = policy.max_chars.min(width_chars as usize);
-    Some(truncate_label(label, max_chars))
+    let available_width = (raw_width - INTERVAL_LABEL_PADDING_X).max(0.0);
+    let truncated = estimate_text_width(label, INTERVAL_LABEL_FONT_PX) > available_width;
+    Some((label.to_string(), truncated))
 }
 
 pub(super) fn truncate_label(label: &str, max_chars: usize) -> (String, bool) {

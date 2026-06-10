@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-11
+
+### Added
+
+- **Timeline placement provenance** — `veloq viz timeline` now reports
+  source axes, placement axes, and placement source for resolved tracks so
+  agents can explain whether lanes are native device/stream tracks or
+  attribution-derived context.
+- **Top-k highlight scores** — timeline top-k kernel highlights include the
+  ranking score and score total, and SVG legends show each highlighted
+  kernel's contribution share.
+- **Density rendering for dense timelines** — very small same-track intervals
+  can be compacted into density bins instead of turning into misleading
+  stretched bars or unreadable ticks. The response reports selected,
+  rendered, density, and omitted counts.
+- **Visualization examples** — add an example NSys timeline-visualization
+  report with generated SVG figures and evidence summaries.
+
+### Changed
+
+- **NSys source wire version v3** — remove the `viz timeline`
+  character-count label cap from the command surface and from
+  `data.auxiliary.label_policy`. Timeline labels now use available pixel
+  space and SVG clipping instead of a fixed character limit.
+- **NSys timeline visualization internals** — split the NSys timeline
+  exporter and `veloq-vis` renderer into focused modules for events,
+  tracks, highlights, layout, painting, text fitting, and artifact writing.
+- **Agent-facing NSys docs** — update the NSys Agent Skill, README, website,
+  and RFC-0009 materials to describe placement provenance, density bins,
+  and timeline figure interpretation.
+
+### Fixed
+
+- **SVG class sanitization** — sanitize interval CSS class tokens and escape
+  raw class metadata in SVG output.
+- **Release metadata** — bump workspace crates and Agent Skills plugin
+  manifests to `0.4.0` so release artifacts do not reuse the already-published
+  `0.3.0` version.
+
 ## [0.3.0] - 2026-06-10
 
 ### Added
@@ -135,6 +174,7 @@ Initial public release.
   `nsys-profile-analysis` and `ncu-profile-analysis` Agent Skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
+[0.4.0]: https://github.com/lucifer1004/veloq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lucifer1004/veloq/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/lucifer1004/veloq/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lucifer1004/veloq/compare/v0.2.0...v0.2.1

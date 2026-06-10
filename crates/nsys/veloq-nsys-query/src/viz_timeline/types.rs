@@ -29,6 +29,10 @@ pub struct VizTimelineFigureRow {
     pub track_count: usize,
     pub rendered_item_count: usize,
     pub total_item_count: usize,
+    pub density_item_count: usize,
+    pub density_bin_count: usize,
+    pub density_duration_ns: i64,
+    pub omitted_explicit_item_count: usize,
     pub aggregated: bool,
     pub omitted_track_count: usize,
     pub suppressed_label_count: usize,
@@ -109,6 +113,7 @@ pub struct VizRenderPolicyEcho {
     pub max_tracks: usize,
     pub max_items: usize,
     pub min_interval_px: f64,
+    pub density_bin_px: f64,
     pub aggregation: String,
 }
 
@@ -119,6 +124,7 @@ impl From<&VizRenderPolicy> for VizRenderPolicyEcho {
             max_tracks: policy.max_tracks,
             max_items: policy.max_items,
             min_interval_px: policy.min_interval_px,
+            density_bin_px: policy.density_bin_px,
             aggregation: policy.aggregation.to_string(),
         }
     }
@@ -128,7 +134,6 @@ impl From<&VizRenderPolicy> for VizRenderPolicyEcho {
 pub struct VizLabelPolicyEcho {
     pub mode: String,
     pub min_label_px: f64,
-    pub max_chars: usize,
 }
 
 impl From<&VizLabelPolicy> for VizLabelPolicyEcho {
@@ -136,7 +141,6 @@ impl From<&VizLabelPolicy> for VizLabelPolicyEcho {
         Self {
             mode: policy.mode.to_string(),
             min_label_px: policy.min_label_px,
-            max_chars: policy.max_chars,
         }
     }
 }

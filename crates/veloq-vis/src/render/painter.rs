@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::layout::Layout;
-use super::style::{item_color, item_opacity};
+use super::style::{INTERVAL_LABEL_FONT_PX, item_color, item_opacity};
 use super::text::{escape_xml, estimate_text_width, format_highlight_score, truncate_label};
 
 pub(super) fn push_svg_header(svg: &mut String, layout: &Layout, scene: &VizScene) {
@@ -23,20 +23,21 @@ pub(super) fn push_svg_header(svg: &mut String, layout: &Layout, scene: &VizScen
         svg.push_str("</title>\n");
     }
     push_metadata(svg, scene);
-    svg.push_str(
+    svg.push_str(&format!(
         r#"<style>
-text{font-family:"DejaVu Sans","Liberation Sans",Arial,sans-serif;font-size:11px;fill:#17202a}
-.axis{stroke:#c9d1d9;stroke-width:1}
-.track-line{stroke:#edf1f5;stroke-width:1}
-.track-label{font-size:11px;fill:#2b3440}
-.track-label-group{font-weight:600;fill:#111827}
-.track-label-summary{fill:#4b5563}
-.interval-label{font-size:10px;fill:#ffffff;pointer-events:none}
-.note{font-size:10px;fill:#6b7280}
-.legend-label{font-size:10px;fill:#4b5563}
-</style>
-"#,
-    );
+text{{font-family:"DejaVu Sans","Liberation Sans",Arial,sans-serif;font-size:11px;fill:#17202a}}
+.axis{{stroke:#c9d1d9;stroke-width:1}}
+.track-line{{stroke:#edf1f5;stroke-width:1}}
+.track-label{{font-size:11px;fill:#2b3440}}
+.track-label-group{{font-weight:600;fill:#111827}}
+.track-label-summary{{fill:#4b5563}}
+	.interval-label{{font-size:{INTERVAL_LABEL_FONT_PX:.1}px;fill:#ffffff;pointer-events:none}}
+	.density-heat{{pointer-events:none}}
+	.note{{font-size:10px;fill:#6b7280}}
+	.legend-label{{font-size:10px;fill:#4b5563}}
+	</style>
+"#
+    ));
     svg.push_str(&format!(
         r##"<rect x="0" y="0" width="{:.0}" height="{:.0}" fill="#ffffff"/>"##,
         layout.width, layout.height
@@ -293,6 +294,23 @@ pub(super) struct TickDraw<'a> {
     pub(super) title: Option<&'a str>,
 }
 
+pub(super) struct DensityBinDraw<'a> {
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) hit_y: f64,
+    pub(super) width: f64,
+    pub(super) height: f64,
+    pub(super) hit_height: f64,
+    pub(super) color: &'a str,
+    pub(super) opacity: f64,
+    pub(super) class: &'a str,
+    pub(super) highlight_key: Option<&'a str>,
+    pub(super) dashed: bool,
+    pub(super) count: usize,
+    pub(super) total_duration_ns: i64,
+    pub(super) title: &'a str,
+}
+
 pub(super) fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
     let x = rect.x;
     let y = rect.y;
@@ -326,6 +344,49 @@ pub(super) fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
     svg.push_str("</rect>\n");
 }
 
+pub(super) fn push_density_bin(svg: &mut String, bin: DensityBinDraw<'_>) {
+    let x = bin.x;
+    let y = bin.y;
+    let hit_y = bin.hit_y;
+    let width = bin.width;
+    let height = bin.height;
+    let hit_height = bin.hit_height;
+    let color = bin.color;
+    let opacity = bin.opacity;
+    let class_token = sanitize_css_token(bin.class);
+    let data_class = escape_xml(bin.class);
+    let highlight_class = if bin.highlight_key.is_some() {
+        " density-highlighted"
+    } else {
+        ""
+    };
+    let highlight_attr = bin.highlight_key.map_or_else(String::new, |key| {
+        format!(r#" data-highlight-key="{}""#, escape_xml(key))
+    });
+    let count = bin.count;
+    let total_duration_ns = bin.total_duration_ns;
+    svg.push_str(&format!(
+        r#"<g class="density-bin density-bin-{class_token}{highlight_class}" data-class="{data_class}"{highlight_attr} data-density-count="{count}" data-density-duration-ns="{total_duration_ns}">"#
+    ));
+    svg.push_str("<title>");
+    svg.push_str(&escape_xml(bin.title));
+    svg.push_str("</title>");
+    svg.push_str(&format!(
+        r##"<rect class="density-hit" x="{x:.1}" y="{hit_y:.1}" width="{width:.1}" height="{hit_height:.1}" fill="#ffffff" fill-opacity="0"/>"##
+    ));
+    let y_mid = y + height / 2.0;
+    let dash_attr = if bin.dashed {
+        r#" stroke-dasharray="2 3""#
+    } else {
+        ""
+    };
+    svg.push_str(&format!(
+        r#"<line class="density-heat" x1="{x:.1}" y1="{y_mid:.1}" x2="{:.1}" y2="{y_mid:.1}" stroke="{color}" stroke-opacity="{opacity:.2}" stroke-width="{height:.1}"{dash_attr}/>"#,
+        x + width
+    ));
+    svg.push_str("</g>\n");
+}
+
 fn sanitize_css_token(raw: &str) -> String {
     let mut out = String::new();
     let mut last_was_separator = false;
@@ -350,7 +411,12 @@ pub(super) fn push_tick(svg: &mut String, tick: TickDraw<'_>) {
     let x = tick.x;
     let y = tick.y;
     let color = tick.color;
-    let opacity = tick.opacity;
+    let is_annotation = matches!(tick.role, VizRole::Annotation);
+    let opacity = if is_annotation {
+        tick.opacity.min(0.50)
+    } else {
+        tick.opacity
+    };
     let role = tick.role.to_string();
     let highlight_class = if tick.highlight_key.is_some() {
         " interval-highlighted"
@@ -362,12 +428,15 @@ pub(super) fn push_tick(svg: &mut String, tick: TickDraw<'_>) {
     });
     let stroke_width = if tick.highlight_key.is_some() {
         2.0
+    } else if is_annotation {
+        0.8
     } else {
         1.2
     };
+    let y1 = if is_annotation { y + 3.0 } else { y };
+    let y2 = if is_annotation { y + 11.0 } else { y + 14.0 };
     svg.push_str(&format!(
-        r#"<line class="interval-tick interval-role-{role}{highlight_class}" data-role="{role}"{highlight_attr} x1="{x:.1}" y1="{y:.1}" x2="{x:.1}" y2="{:.1}" stroke="{color}" stroke-opacity="{opacity:.2}" stroke-width="{stroke_width:.1}">"#,
-        y + 14.0
+        r#"<line class="interval-tick interval-role-{role}{highlight_class}" data-role="{role}"{highlight_attr} x1="{x:.1}" y1="{y1:.1}" x2="{x:.1}" y2="{y2:.1}" stroke="{color}" stroke-opacity="{opacity:.2}" stroke-width="{stroke_width:.1}">"#
     ));
     if let Some(title) = tick.title {
         svg.push_str("<title>");
@@ -377,10 +446,31 @@ pub(super) fn push_tick(svg: &mut String, tick: TickDraw<'_>) {
     svg.push_str("</line>\n");
 }
 
-pub(super) fn push_interval_label(svg: &mut String, x: f64, y: f64, label: &str) {
+pub(super) struct IntervalLabelDraw<'a> {
+    pub(super) id: usize,
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) clip_x: f64,
+    pub(super) clip_y: f64,
+    pub(super) clip_width: f64,
+    pub(super) clip_height: f64,
+    pub(super) label: &'a str,
+}
+
+pub(super) fn push_interval_label(svg: &mut String, label: IntervalLabelDraw<'_>) {
+    let clip_id = format!("interval-label-clip-{}", label.id);
     svg.push_str(&format!(
-        r#"<text class="interval-label" x="{x:.1}" y="{y:.1}">{}</text>"#,
-        escape_xml(label)
+        r#"<clipPath id="{clip_id}"><rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}"/></clipPath>"#,
+        label.clip_x,
+        label.clip_y,
+        label.clip_width,
+        label.clip_height
+    ));
+    svg.push_str(&format!(
+        r#"<text class="interval-label" clip-path="url(#{clip_id})" x="{:.1}" y="{:.1}">{}</text>"#,
+        label.x,
+        label.y,
+        escape_xml(label.label)
     ));
     svg.push('\n');
 }

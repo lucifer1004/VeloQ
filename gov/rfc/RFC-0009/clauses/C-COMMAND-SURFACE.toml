@@ -9,9 +9,9 @@ since = "0.1.0"
 
 [content]
 text = """
-The NSys source MAY expose a `viz timeline` command while this RFC remains draft.
+The NSys source command surface MUST include a `viz timeline` command.
 
-When stabilized, the NSys source command surface MUST identify the command as `nsys.viz.timeline` in the JSON envelope.
+The NSys source command surface MUST identify the command as `nsys.viz.timeline` in the JSON envelope.
 
 The `nsys viz timeline` command MUST accept one NSys-supported trace input.
 
