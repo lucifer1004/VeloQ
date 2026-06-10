@@ -12,6 +12,7 @@ include = ["src/**/*.rs"]
 [dependencies]
 schemars.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 veloq-core.workspace = true
 

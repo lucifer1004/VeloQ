@@ -3575,6 +3575,7 @@ dependencies = [
  "anyhow",
  "schemars",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "veloq-core",

@@ -3,9 +3,9 @@
 [govctl]
 id = "RFC-0009"
 title = "NSys static timeline visualization artifact contract"
-version = "0.2.0"
-status = "draft"
-phase = "spec"
+version = "0.3.0"
+status = "normative"
+phase = "test"
 owners = ["@Zihua Wu"]
 created = "2026-06-09"
 updated = "2026-06-09"
@@ -24,7 +24,7 @@ refs = [
     "RFC-0004:C-COMMAND-SURFACE",
     "RFC-0006:C-SUPPORTED-INPUTS",
 ]
-signature = "e6da83a876df04b7206a4621d627755860bd7c03b0a646b81ec5edf22c867a7b"
+signature = "e2e0118c08608dcf04b2d569c78b285d59b471b9f11dbc04aae8eb33549ea952"
 
 [[sections]]
 title = "Summary"
@@ -36,6 +36,7 @@ clauses = [
     "clauses/C-COMMAND-SURFACE.toml",
     "clauses/C-TRACK-SPECS.toml",
     "clauses/C-TRACK-TREE.toml",
+    "clauses/C-TRACK-PLACEMENT.toml",
     "clauses/C-ARTIFACTS.toml",
     "clauses/C-RENDER-LIMITS.toml",
     "clauses/C-LABEL-POLICY.toml",
@@ -43,6 +44,12 @@ clauses = [
     "clauses/C-COMPATIBILITY.toml",
     "clauses/C-HIGHLIGHT-POLICY.toml",
 ]
+
+[[changelog]]
+version = "0.3.0"
+date = "2026-06-09"
+notes = "Add track placement provenance semantics"
+added = ["track placement and axis provenance contract for NSys timeline visualization"]
 
 [[changelog]]
 version = "0.2.0"

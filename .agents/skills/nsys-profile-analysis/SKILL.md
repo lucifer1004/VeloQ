@@ -156,6 +156,9 @@ rollups, `detail` tracks are concrete lanes, `annotation` tracks are
 context, and idle gaps are overlays. Before embedding the figure, check
 `aggregated`, `omitted_track_count`, `suppressed_label_count`, and
 `truncated_label_count`; mention non-zero counters. Use
+`source_axes`, `placement_axes`, and `placement_source` when explaining
+track placement; NVTX ranges grouped under a GPU are derived attribution,
+not native GPU events. Use
 `--highlight-kernels top=<n>,scope=name` when the figure should call out
 dominant kernels, and cite `data.auxiliary.resolved_highlights[]`.
 
@@ -213,15 +216,15 @@ trust signals**: see [references/capabilities.md](references/capabilities.md)
 
 ## Where to look
 
-| You want…                                                                                         | Read                                                         |
-| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Per-command flags, JSON response shape, sort keys, examples                                       | `veloq <cmd> --help`                                         |
-| Strict JSON Schema (machine-validated wire format)                                                | `veloq schema <cmd>`                                         |
-| What questions can this trace answer (capability bits, trust signals)                             | [references/capabilities.md](references/capabilities.md)     |
-| Time-window / NVTX attribution semantics                                                          | [references/time-and-nvtx.md](references/time-and-nvtx.md)   |
-| Per-EventKind sub-shapes for `inspect`                                                            | [references/inspect-shapes.md](references/inspect-shapes.md) |
-| Extended examples, jq snippets, and interpretation notes                                          | [references/cookbook.md](references/cookbook.md)             |
-| Edge cases, capture-time prerequisites, "VeloQ can't do X"                                        | [references/limitations.md](references/limitations.md)       |
+| You want…                                                             | Read                                                         |
+| --------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Per-command flags, JSON response shape, sort keys, examples           | `veloq <cmd> --help`                                         |
+| Strict JSON Schema (machine-validated wire format)                    | `veloq schema <cmd>`                                         |
+| What questions can this trace answer (capability bits, trust signals) | [references/capabilities.md](references/capabilities.md)     |
+| Time-window / NVTX attribution semantics                              | [references/time-and-nvtx.md](references/time-and-nvtx.md)   |
+| Per-EventKind sub-shapes for `inspect`                                | [references/inspect-shapes.md](references/inspect-shapes.md) |
+| Extended examples, jq snippets, and interpretation notes              | [references/cookbook.md](references/cookbook.md)             |
+| Edge cases, capture-time prerequisites, "VeloQ can't do X"            | [references/limitations.md](references/limitations.md)       |
 
 ## Profiling Workflow
 
@@ -232,7 +235,7 @@ Start by classifying the symptom, then gather the minimum evidence:
 | "What dominates wall time?"                | `summary` → `stats --limit 20` → `stats --group-by demangled`                                                                                                                                                                                                                                                                             |
 | GPU idle bubbles                           | `gaps --min-duration ...` → `correlate <next.row_id>` → inspect launch/runtime context                                                                                                                                                                                                                                                    |
 | Poor overlap / "are my streams concurrent" | `concurrency` → per-device `overlap_ns` / `max_concurrency`, per-stream overlap (same-stream PDL), and `compute_vs_copy` (is copy hidden behind compute). Extraction-only; compute ratios in jq                                                                                                                                           |
-| Report-ready visual timeline               | First identify a narrow window with `timeline` / `gaps` / `search` / `slices`, then `viz timeline --from ... --to ...`; cite both the textual evidence and the SVG row metadata                                                                                                                                                         |
+| Report-ready visual timeline               | First identify a narrow window with `timeline` / `gaps` / `search` / `slices`, then `viz timeline --from ... --to ...`; cite both the textual evidence and the SVG row metadata                                                                                                                                                           |
 | CPU blocked on GPU                         | `stats --type sync` → `search --type sync --sort duration:desc` → `correlate sync:N`                                                                                                                                                                                                                                                      |
 | Iteration-to-iteration regression          | Require NVTX. `slices --name ...` → compare root ranges → scoped `stats --nvtx ...`. For nested same-name ranges use `stats --group-by nvtx-path` or `slices --aggregate --group-by path`. For per-kernel attribution: `inspect kernel:N` (default-on `nvtx_context.iter_index`) or `search --type kernel --with-nvtx` for a batched view |
 | CUDA Graph behavior                        | Probe graph capability bits → `veloq recipes graph-replay-survey` or `graph-replay-hotspots`; use cookbook only for extra interpretation                                                                                                                                                                                                  |

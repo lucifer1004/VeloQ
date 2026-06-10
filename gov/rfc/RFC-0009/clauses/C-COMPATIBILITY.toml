@@ -19,16 +19,20 @@ Removing a stable track kind after the command is stabilized MUST be treated as 
 
 Changing a stable selector's meaning after the command is stabilized MUST be treated as a breaking visualization contract change.
 
+Changing stable event-placement semantics after the command is stabilized MUST be treated as a breaking visualization contract change when an existing request would place the same source evidence on different semantic tracks.
+
 Removing a required field from the figure row after the command is stabilized MUST be treated as a breaking source payload change.
 
 Changing the type or meaning of a required figure row field after the command is stabilized MUST be treated as a breaking source payload change.
 
-Changing SVG visual styling MAY remain compatible when the required JSON response fields, track semantics, artifact lifecycle, and required SVG metadata semantics remain compatible.
+Changing the type or meaning of required resolved-track placement metadata after the command is stabilized MUST be treated as a breaking source payload change.
+
+Changing SVG visual styling MAY remain compatible when the required JSON response fields, track semantics, placement semantics, artifact lifecycle, and required SVG metadata semantics remain compatible.
 
 Changing default render limits MAY remain compatible when the effective render limits are reported in the JSON response.
 
-Adding new track kinds, selectors, optional response fields, or optional SVG metadata MAY remain compatible when existing behavior is preserved.
+Adding new track kinds, selectors, optional response fields, optional placement-source values, or optional SVG metadata MAY remain compatible when existing behavior is preserved.
 
 Adding a raw-SVG stdout mode MUST require an RFC amendment that documents the output exception.
 
-**Rationale:** The figure command is additive to existing NSys query behavior, but once agents depend on it, command identity, track semantics, and response fields become part of the public source contract. Styling can evolve more freely than evidence semantics as long as the response tells agents what was rendered."""
+**Rationale:** The figure command is additive to existing NSys query behavior, but once agents depend on it, command identity, track semantics, placement semantics, and response fields become part of the public source contract. Styling can evolve more freely than evidence semantics as long as the response tells agents what was rendered."""

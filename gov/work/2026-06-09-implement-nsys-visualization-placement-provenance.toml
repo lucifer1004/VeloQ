@@ -1,0 +1,32 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-006"
+title = "Implement NSys visualization placement provenance"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-10"
+refs = [
+    "RFC-0009",
+    "RFC-0009:C-TRACK-PLACEMENT",
+    "RFC-0009:C-ARTIFACTS",
+]
+
+[content]
+description = "Implement the RFC-0009 placement provenance contract for NSys timeline visualization by exposing source axes, placement axes, and placement source in resolved tracks, while preserving existing SVG/report generation behavior."
+
+[[content.acceptance_criteria]]
+text = "NSys viz timeline resolved tracks expose source_axes, placement_axes, and placement_source"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Relevant visualization tests and govctl checks pass"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "NVTX device-group placement is reported as derived rather than native source evidence"
+status = "done"
+category = "fixed"

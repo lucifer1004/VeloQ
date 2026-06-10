@@ -1,0 +1,52 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-TRACK-PLACEMENT"
+title = "Track placement and axis provenance"
+kind = "normative"
+status = "active"
+since = "0.3.0"
+
+[content]
+text = """
+The `nsys viz timeline` command MUST distinguish source axes from placement axes when resolving tracks and intervals.
+
+A source axis MUST describe identity present in or directly decoded from source evidence, such as CUDA device, CUDA context, CUDA stream, process, thread, NVTX domain, or NVTX nesting depth.
+
+A placement axis MUST describe the visual resource or grouping row on which selected evidence is rendered.
+
+The command MUST treat event-to-track placement as source-owned query semantics rather than renderer semantics.
+
+The renderer MUST NOT infer NSys-specific event placement from track labels, track keys, SVG classes, or axis names.
+
+The command MUST place events with native GPU resource identity, such as CUDA kernel, memcpy, memset, graph, or graph-node work, on matching GPU device or CUDA stream tracks when those tracks are selected.
+
+The command MAY place CPU-side CUDA API intervals on annotation tracks that are not owned by a GPU device when no source-supported GPU placement is requested or available.
+
+The command MAY derive GPU placement for CPU-side annotation intervals when the source has correlation evidence that connects those intervals to GPU work.
+
+Derived placement MUST NOT be reported as native placement.
+
+Derived placement MUST report the source of the derivation.
+
+NVTX ranges MUST remain CPU annotations.
+
+NVTX ranges MAY additionally receive derived GPU placement when source attribution evidence connects them to GPU work.
+
+When NVTX ranges are rendered under GPU device groups, that grouping MUST be interpreted as derived placement from attribution evidence rather than as an NVTX source-table device axis.
+
+An NVTX range MAY appear under more than one GPU device group when attribution evidence connects the range to work on more than one device.
+
+The command MUST preserve a fallback representation for selected NVTX ranges whose GPU placement cannot be derived.
+
+The command MUST NOT silently drop selected NVTX ranges solely because they cannot be assigned to a GPU device.
+
+The command MUST expose resolved-track metadata for agents to distinguish native placement, derived placement, and fallback placement.
+
+The command MUST expose resolved-track metadata for agents to distinguish source axes from placement axes.
+
+Track keys MUST remain stable for equivalent placement semantics over equivalent input evidence.
+
+Track keys MUST NOT require agents to parse renderer-only styling details in order to understand placement semantics.
+
+**Rationale:** NSys timeline figures combine native GPU lanes, CPU annotations, correlation-derived attribution, and static rendering. Without explicit placement semantics, a figure can imply that CPU-side annotations such as NVTX ranges are native GPU-device events. Separating source axes from placement axes lets VeloQ group annotations under useful GPU context while preserving the evidence provenance agents need for correct reports."""

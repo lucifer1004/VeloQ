@@ -77,6 +77,10 @@ such as GPU busy activity, `detail` rows are concrete lanes such as CUDA
 streams, `annotation` rows are CUDA API or NVTX context, and idle gaps
 are overlays. A kernel may appear in both a summary rollup and a stream
 detail row; that is a rollup/detail relationship, not duplicate work.
+Use each track's `source_axes`, `placement_axes`, and `placement_source`
+when explaining why an annotation appears under a resource group. NVTX
+under a GPU device is derived attribution, not native NVTX device
+evidence.
 This is a static report figure, not an interactive Nsight GUI
 replacement.
 

@@ -44,6 +44,20 @@ fn default_tracks_write_svg_artifact() -> Result<()> {
         roles.contains("detail"),
         "expected CUDA stream detail role: {roles:?}"
     );
+    assert!(
+        resp.auxiliary
+            .resolved_tracks
+            .iter()
+            .all(|track| !track.placement_source.is_empty()),
+        "all resolved tracks should report placement_source"
+    );
+    let summary = resp
+        .auxiliary
+        .resolved_tracks
+        .iter()
+        .find(|track| track.kind == "gpu-summary")
+        .ok_or_else(|| anyhow::anyhow!("expected GPU summary track"))?;
+    assert_eq!(summary.placement_source, "native");
     let row = resp
         .rows
         .first()
@@ -69,6 +83,9 @@ fn default_tracks_write_svg_artifact() -> Result<()> {
         "svg artifact should exist under artifact root"
     );
     let svg = std::fs::read_to_string(artifact_dir_for(trace.path()).join(&row.path))?;
+    assert!(svg.contains("veloq-viz-metadata"));
+    assert!(svg.contains("nsys.viz.timeline"));
+    assert!(svg.contains("placement_source"));
     assert!(svg.contains("data-track-role=\"group\""));
     assert!(svg.contains("data-track-role=\"summary\""));
     assert!(svg.contains("data-track-role=\"detail\""));
@@ -102,6 +119,8 @@ fn top_kernel_highlights_report_metadata_and_svg_markers() -> Result<()> {
     assert_eq!(highlight.full_name, "slow_kernel");
     assert_eq!(highlight.scope, "name");
     assert_eq!(highlight.metric, "total_duration_ns");
+    assert_eq!(highlight.score, 20_000_000);
+    assert_eq!(highlight.score_total, Some(22_000_000));
     assert_eq!(highlight.total_duration_ns, 20_000_000);
     assert_eq!(highlight.instance_count, 2);
     assert_eq!(highlight.max_duration_ns, 10_000_000);
@@ -116,6 +135,51 @@ fn top_kernel_highlights_report_metadata_and_svg_markers() -> Result<()> {
     assert!(svg.contains(&format!("data-highlight-key=\"{}\"", highlight.key)));
     assert!(svg.contains("slow_kernel"));
     assert!(svg.contains("kernel</text>"));
+    Ok(())
+}
+
+#[test]
+fn nvtx_without_device_attribution_uses_fallback_placement() -> Result<()> {
+    let trace = fixture::graph_only_with_nvtx()?;
+    let resp = run(
+        trace.path(),
+        VizTimelineRequest {
+            time_window: Some(TimeWindow::parse("@100ms-@150ms")?),
+            tracks: vec!["nvtx:depth=1".to_string()],
+            ..Default::default()
+        },
+    )?;
+    let nvtx = resp
+        .auxiliary
+        .resolved_tracks
+        .iter()
+        .find(|track| track.track_key == "nvtx|depth:1")
+        .ok_or_else(|| anyhow::anyhow!("expected fallback NVTX track"))?;
+    assert_eq!(nvtx.source_axes.len(), 1);
+    assert!(nvtx.placement_axes.is_empty());
+    assert_eq!(nvtx.placement_source, "fallback");
+    Ok(())
+}
+
+#[test]
+fn nvtx_depth_selector_filters_rendered_ranges() -> Result<()> {
+    let trace = fixture::nvtx_nested()?;
+    let resp = run(
+        trace.path(),
+        VizTimelineRequest {
+            time_window: Some(TimeWindow::parse("@0ms-@150ms")?),
+            tracks: vec!["nvtx:depth=3".to_string()],
+            ..Default::default()
+        },
+    )?;
+    let row = resp
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected one figure row"))?;
+    let svg = std::fs::read_to_string(artifact_dir_for(trace.path()).join(&row.path))?;
+    assert!(svg.contains("leaf"));
+    assert!(!svg.contains("outer"));
+    assert!(!svg.contains("inner"));
     Ok(())
 }
 
