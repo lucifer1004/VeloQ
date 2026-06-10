@@ -484,6 +484,7 @@ const VIZ_TIMELINE_BLURB: &str = "Export a bounded NSys timeline window as a rep
 const VIZ_TIMELINE_EXAMPLES: &[&str] = &[
     "veloq viz timeline T --from @100000000 --to @110000000",
     "veloq viz timeline T --from 1s --to 1.1s --track gpu:device=0 --track cuda-streams:device=0,top=6",
+    "veloq viz timeline T --from 1s --to 1.1s --track cuda-streams:device=0,top=6 --highlight-kernels top=3,scope=name",
 ];
 
 fn long_about_viz_timeline() -> String {

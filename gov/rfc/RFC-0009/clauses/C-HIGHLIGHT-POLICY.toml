@@ -1,0 +1,64 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-HIGHLIGHT-POLICY"
+title = "Highlight policy"
+kind = "normative"
+status = "active"
+since = "0.2.0"
+
+[content]
+text = """
+The `nsys viz timeline` command MAY support explicit highlight requests.
+
+A highlight request MUST identify the source evidence set to highlight.
+
+A top-kernel highlight request MUST define a positive top-K value.
+
+A top-kernel highlight request MUST define whether ranking is over kernel names or concrete kernel instances.
+
+When ranking over kernel names, the command MUST rank names using aggregate evidence within the resolved time window.
+
+When ranking over concrete kernel instances, the command MUST rank individual kernel events within the resolved time window.
+
+The default top-kernel ranking metric SHOULD be total kernel duration in the resolved time window.
+
+The command MAY support additional ranking metrics such as count or maximum instance duration.
+
+Highlight selection MUST be computed after the resolved time window and source axis filters are applied.
+
+Highlight selection MUST NOT change which base intervals are selected for rendering.
+
+Highlighted intervals MUST remain identifiable as their base event class, such as kernel, memcpy, CUDA API, or NVTX.
+
+The SVG MUST visually distinguish highlighted intervals from non-highlighted intervals.
+
+The SVG MUST NOT rely only on base event colors to communicate highlight membership.
+
+The renderer SHOULD keep the base event-type legend separate from the highlight legend.
+
+The highlight legend MUST identify each resolved highlight using a stable rank or label.
+
+For top-kernel name highlights, the highlight legend SHOULD include the full kernel name when space permits.
+
+When the full highlight name is too long for the visible legend, the SVG SHOULD visibly truncate or wrap it without overlapping other content.
+
+The SVG MUST preserve the full highlight name in tooltip-compatible metadata or another SVG metadata element when a full name is available.
+
+The success response MUST report the resolved highlight set when highlights are requested.
+
+Each resolved highlight entry MUST report its rank or stable highlight id.
+
+Each resolved highlight entry MUST report its display color or visual token.
+
+Each resolved highlight entry MUST report the highlight scope, such as name or instance.
+
+Each top-kernel name highlight entry MUST report the full kernel name.
+
+Each top-kernel highlight entry SHOULD report aggregate metrics used for ranking, such as total duration, instance count, or maximum instance duration.
+
+The command MUST report when a requested highlight resolved to no matching evidence.
+
+A highlight request MUST be optional and MUST NOT affect the default timeline figure when omitted.
+
+**Rationale:** Report figures often need to call attention to a small number of dominant kernels without losing base timeline semantics. Treating highlights as a separate visual layer lets agents explain top contributors while preserving the normal kernel/memcpy/API/NVTX legend and the source-owned timeline evidence contract from [[RFC-0009]]."""

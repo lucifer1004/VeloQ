@@ -45,6 +45,7 @@ veloq viz timeline T --from @100000000 --to @120000000 \
   --track gpu:device=all \
   --track cuda-streams:device=all,top=8 \
   --track gaps-overlay:device=all \
+  --highlight-kernels top=3,scope=name \
   | jq '.data.rows[0] as $row | {
       path: $row.path,
       tracks: $row.track_count,
@@ -54,7 +55,8 @@ veloq viz timeline T --from @100000000 --to @120000000 \
       omitted_tracks: $row.omitted_track_count,
       suppressed_labels: $row.suppressed_label_count,
       truncated_labels: $row.truncated_label_count,
-      resolved_tracks: .data.auxiliary.resolved_tracks
+      resolved_tracks: .data.auxiliary.resolved_tracks,
+      resolved_highlights: .data.auxiliary.resolved_highlights
     }'
 ```
 
@@ -62,6 +64,12 @@ The returned `path` is relative to `<trace>.veloq/`. If aggregation,
 omitted tracks, suppressed labels, or truncated labels are non-zero,
 say so in the report. Very narrow events render as ticks instead of
 being stretched into fake-width bars.
+
+`--highlight-kernels top=<n>,scope=name` colors the top kernel names in
+the selected window without changing base event classes. Use
+`scope=instance` when the report needs individual long-running kernel
+instances instead of name aggregates. The response keeps short labels
+and full kernel names in `data.auxiliary.resolved_highlights[]`.
 
 Use `data.auxiliary.resolved_tracks[].role` when interpreting the
 figure: `group` rows are ownership context, `summary` rows are rollups

@@ -160,7 +160,10 @@ gaps as overlays rather than ordinary events. Also read the row counters
 (`aggregated`, `omitted_track_count`, `suppressed_label_count`,
 `truncated_label_count`) before embedding it. Mention those counters
 when they are non-zero; the figure is static evidence, not a GUI-style
-interactive timeline.
+interactive timeline. Add `--highlight-kernels top=<n>,scope=name`
+when a report figure should call out dominant kernels; cite
+`data.auxiliary.resolved_highlights[]` for each highlight's rank, color,
+short `label`, `full_name`, and aggregate duration/count metrics.
 
 **Name search on large traces**: prefer `--name-regex 'foo'` over the
 `--name '*foo*'` glob. Regex lets VeloQ resolve the matching names once

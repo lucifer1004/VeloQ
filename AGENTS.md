@@ -176,6 +176,11 @@ veloq/
     ├── veloq-core/             # Envelope, SourceRef, ProfileSource trait,
     │                             OutputFormat, sort + time helpers
     ├── veloq-data/             # Source-neutral file/parquet cache helpers
+    ├── veloq-query/            # DuckDB-backed query helpers shared by
+    │                             profile backends
+    ├── veloq-vis/              # Source-neutral visualization scene,
+    │                             render policy, SVG renderer, and figure
+    │                             artifact writer
     ├── veloq/                  # The `veloq` binary — thin registry+dispatch
     │                             shell; meta verbs (`info`, `sources`, `clean`)
     ├── nsys/

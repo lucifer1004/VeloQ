@@ -4,12 +4,12 @@
 //! module owns only the portable scene shape, a small SVG renderer, and
 //! artifact-root publishing for generated report figures.
 
-use crate::{ErrorCode, VeloqDiagnostic};
 use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
+use veloq_core::{ErrorCode, VeloqDiagnostic};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct VizTimeWindow {
@@ -27,6 +27,18 @@ impl VizTimeWindow {
 pub struct VizAxis {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct VizHighlight {
+    pub key: String,
+    pub label: String,
+    pub full_label: String,
+    pub color: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rank: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, JsonSchema)]
@@ -74,6 +86,8 @@ pub struct VizInterval {
     pub class: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<VizRole>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub highlight_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -153,6 +167,8 @@ pub struct VizScene {
     pub time_window: VizTimeWindow,
     pub tracks: Vec<VizTrack>,
     pub intervals: Vec<VizInterval>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub highlights: Vec<VizHighlight>,
     pub render_policy: VizRenderPolicy,
     pub label_policy: VizLabelPolicy,
 }
@@ -260,9 +276,14 @@ pub fn render_svg(scene: &VizScene) -> Result<SvgRenderResult, VisualizationErro
         .take(item_limit)
         .collect();
 
-    let layout = Layout::new(scene.render_policy.width_px, rendered_tracks.len());
+    let layout = Layout::new(
+        scene.render_policy.width_px,
+        rendered_tracks.len(),
+        scene.highlights.len(),
+    );
     let span = scene.time_window.span_ns() as f64;
     let scale = layout.plot_width / span;
+    let highlights = highlight_map(&scene.highlights);
     let mut suppressed_label_count = 0usize;
     let mut truncated_label_count = 0usize;
 
@@ -271,6 +292,7 @@ pub fn render_svg(scene: &VizScene) -> Result<SvgRenderResult, VisualizationErro
     push_ticks(&mut svg, &layout, scene.time_window);
     push_track_labels(&mut svg, &layout, &rendered_tracks);
     push_legend(&mut svg, &layout, &items_to_render);
+    push_highlight_legend(&mut svg, &layout, &scene.highlights);
 
     for item in &items_to_render {
         let Some(row) = track_rows.get(item.track_key.as_str()) else {
@@ -284,14 +306,19 @@ pub fn render_svg(scene: &VizScene) -> Result<SvgRenderResult, VisualizationErro
         let x = layout.label_width + ((clipped_start - scene.time_window.start_ns) as f64 * scale);
         let raw_width = (clipped_end - clipped_start) as f64 * scale;
         let y = layout.track_y(*row);
-        let color = item_color(item.class.as_deref());
+        let highlight = item
+            .highlight_key
+            .as_deref()
+            .and_then(|key| highlights.get(key));
+        let color =
+            highlight.map_or_else(|| item_color(item.class.as_deref()), |h| h.color.as_str());
         let Some(track) = rendered_tracks.get(*row) else {
             continue;
         };
         let track_role = track.role;
         let item_role = item.role.unwrap_or(track_role);
         let style = item_style(track_role, item_role, item.class.as_deref());
-        let title = tooltip_for(item);
+        let title = tooltip_for(item, highlight.copied());
         if raw_width >= scene.render_policy.min_interval_px {
             push_rect(
                 &mut svg,
@@ -304,18 +331,22 @@ pub fn render_svg(scene: &VizScene) -> Result<SvgRenderResult, VisualizationErro
                     opacity: style.opacity,
                     role: item_role,
                     class: item.class.as_deref(),
+                    highlight_key: item.highlight_key.as_deref(),
                     title: title.as_deref(),
                 },
             );
         } else {
             push_tick(
                 &mut svg,
-                x,
-                y,
-                color,
-                style.opacity,
-                item_role,
-                title.as_deref(),
+                TickDraw {
+                    x,
+                    y,
+                    color,
+                    opacity: style.opacity,
+                    role: item_role,
+                    highlight_key: item.highlight_key.as_deref(),
+                    title: title.as_deref(),
+                },
             );
         }
 
@@ -418,15 +449,18 @@ struct Layout {
     plot_width: f64,
     top: f64,
     row_height: f64,
+    tracks: usize,
+    highlight_rows: usize,
 }
 
 impl Layout {
-    fn new(width_px: u32, tracks: usize) -> Self {
+    fn new(width_px: u32, tracks: usize, highlights: usize) -> Self {
         let width = f64::from(width_px.max(480));
         let label_width = 240.0;
         let top = 34.0;
         let row_height = 22.0;
-        let height = top + row_height * tracks.max(1) as f64 + 42.0;
+        let highlight_rows = highlights.min(6);
+        let height = top + row_height * tracks.max(1) as f64 + 42.0 + highlight_rows as f64 * 16.0;
         Self {
             width,
             height,
@@ -434,11 +468,25 @@ impl Layout {
             plot_width: width - label_width - 20.0,
             top,
             row_height,
+            tracks,
+            highlight_rows,
         }
     }
 
     fn track_y(&self, row: usize) -> f64 {
         self.top + row as f64 * self.row_height + 4.0
+    }
+
+    fn plot_bottom(&self) -> f64 {
+        self.top + self.row_height * self.tracks.max(1) as f64 + 2.0
+    }
+
+    fn legend_y(&self) -> f64 {
+        self.height - 28.0 - self.highlight_rows as f64 * 16.0
+    }
+
+    fn highlight_legend_y(&self, row: usize) -> f64 {
+        self.legend_y() + 16.0 * (row + 1) as f64
     }
 }
 
@@ -474,6 +522,13 @@ fn track_row_map<'a>(tracks: &[&'a VizTrack]) -> BTreeMap<&'a str, usize> {
         out.insert(track.key.as_str(), idx);
     }
     out
+}
+
+fn highlight_map(highlights: &[VizHighlight]) -> BTreeMap<&str, &VizHighlight> {
+    highlights
+        .iter()
+        .map(|highlight| (highlight.key.as_str(), highlight))
+        .collect()
 }
 
 fn overlaps_window(item: &VizInterval, window: VizTimeWindow) -> bool {
@@ -514,7 +569,7 @@ text{font-family:"DejaVu Sans","Liberation Sans",Arial,sans-serif;font-size:11px
 
 fn push_ticks(svg: &mut String, layout: &Layout, window: VizTimeWindow) {
     let y1 = layout.top - 10.0;
-    let y2 = layout.height - 38.0;
+    let y2 = layout.plot_bottom();
     svg.push_str(&format!(
         r#"<line class="axis" x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}"/>"#,
         layout.label_width, y1, layout.label_width, y2
@@ -578,7 +633,7 @@ fn push_legend(svg: &mut String, layout: &Layout, items: &[&VizInterval]) {
     }
 
     let mut x = layout.label_width;
-    let y = layout.height - 28.0;
+    let y = layout.legend_y();
     for class in ordered_legend_classes(&classes) {
         let color = item_color(Some(class));
         let opacity = legend_opacity(class);
@@ -598,6 +653,38 @@ fn push_legend(svg: &mut String, layout: &Layout, items: &[&VizInterval]) {
             break;
         }
     }
+}
+
+fn push_highlight_legend(svg: &mut String, layout: &Layout, highlights: &[VizHighlight]) {
+    for (idx, highlight) in highlights.iter().take(layout.highlight_rows).enumerate() {
+        let y = layout.highlight_legend_y(idx);
+        svg.push_str("<g class=\"highlight-legend-item\">");
+        svg.push_str("<title>");
+        svg.push_str(&escape_xml(&highlight.full_label));
+        svg.push_str("</title>");
+        svg.push_str(&format!(
+            r##"<rect x="{:.1}" y="{:.1}" width="10" height="10" rx="1.5" fill="{}" stroke="#111827" stroke-width="0.6"/>"##,
+            layout.label_width,
+            y - 8.0,
+            escape_xml(&highlight.color)
+        ));
+        svg.push('\n');
+        svg.push_str(&format!(
+            r#"<text class="legend-label" x="{:.1}" y="{y:.1}">{}</text>"#,
+            layout.label_width + 14.0,
+            escape_xml(&highlight_legend_label(highlight, layout.plot_width))
+        ));
+        svg.push_str("</g>\n");
+    }
+}
+
+fn highlight_legend_label(highlight: &VizHighlight, plot_width: f64) -> String {
+    let prefix = highlight.rank.map_or_else(
+        || highlight.label.clone(),
+        |rank| format!("#{rank} {}", highlight.label),
+    );
+    let max_chars = ((plot_width - 24.0) / 6.0).floor().max(24.0) as usize;
+    truncate_label(&prefix, max_chars).0
 }
 
 fn ordered_legend_classes<'a>(classes: &BTreeSet<&'a str>) -> Vec<&'a str> {
@@ -656,6 +743,17 @@ struct RectDraw<'a> {
     opacity: f64,
     role: VizRole,
     class: Option<&'a str>,
+    highlight_key: Option<&'a str>,
+    title: Option<&'a str>,
+}
+
+struct TickDraw<'a> {
+    x: f64,
+    y: f64,
+    color: &'a str,
+    opacity: f64,
+    role: VizRole,
+    highlight_key: Option<&'a str>,
     title: Option<&'a str>,
 }
 
@@ -668,8 +766,19 @@ fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
     let opacity = rect.opacity;
     let role = rect.role.to_string();
     let class_attr = rect.class.unwrap_or("unknown");
+    let highlight_class = if rect.highlight_key.is_some() {
+        " interval-highlighted"
+    } else {
+        ""
+    };
+    let highlight_attr = rect.highlight_key.map_or_else(String::new, |key| {
+        format!(
+            r##" data-highlight-key="{}" stroke="#111827" stroke-width="0.8""##,
+            escape_xml(key)
+        )
+    });
     svg.push_str(&format!(
-        r#"<rect class="interval interval-{class_attr} interval-role-{role}" data-role="{role}" data-class="{class_attr}" x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="1.5" fill="{color}" fill-opacity="{opacity:.2}">"#
+        r#"<rect class="interval interval-{class_attr} interval-role-{role}{highlight_class}" data-role="{role}" data-class="{class_attr}"{highlight_attr} x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="1.5" fill="{color}" fill-opacity="{opacity:.2}">"#
     ));
     if let Some(title) = rect.title {
         svg.push_str("<title>");
@@ -679,21 +788,30 @@ fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
     svg.push_str("</rect>\n");
 }
 
-fn push_tick(
-    svg: &mut String,
-    x: f64,
-    y: f64,
-    color: &str,
-    opacity: f64,
-    role: VizRole,
-    title: Option<&str>,
-) {
-    let role = role.to_string();
+fn push_tick(svg: &mut String, tick: TickDraw<'_>) {
+    let x = tick.x;
+    let y = tick.y;
+    let color = tick.color;
+    let opacity = tick.opacity;
+    let role = tick.role.to_string();
+    let highlight_class = if tick.highlight_key.is_some() {
+        " interval-highlighted"
+    } else {
+        ""
+    };
+    let highlight_attr = tick.highlight_key.map_or_else(String::new, |key| {
+        format!(r#" data-highlight-key="{}""#, escape_xml(key))
+    });
+    let stroke_width = if tick.highlight_key.is_some() {
+        2.0
+    } else {
+        1.2
+    };
     svg.push_str(&format!(
-        r#"<line class="interval-tick interval-role-{role}" data-role="{role}" x1="{x:.1}" y1="{y:.1}" x2="{x:.1}" y2="{:.1}" stroke="{color}" stroke-opacity="{opacity:.2}" stroke-width="1.2">"#,
+        r#"<line class="interval-tick interval-role-{role}{highlight_class}" data-role="{role}"{highlight_attr} x1="{x:.1}" y1="{y:.1}" x2="{x:.1}" y2="{:.1}" stroke="{color}" stroke-opacity="{opacity:.2}" stroke-width="{stroke_width:.1}">"#,
         y + 14.0
     ));
-    if let Some(title) = title {
+    if let Some(title) = tick.title {
         svg.push_str("<title>");
         svg.push_str(&escape_xml(title));
         svg.push_str("</title>");
@@ -721,13 +839,16 @@ fn push_note_anchored(svg: &mut String, x: f64, y: f64, text: &str, anchor: &str
     svg.push('\n');
 }
 
-fn tooltip_for(item: &VizInterval) -> Option<String> {
+fn tooltip_for(item: &VizInterval, highlight: Option<&VizHighlight>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(row_id) = &item.row_id {
         parts.push(row_id.clone());
     }
     if let Some(label) = &item.label {
         parts.push(label.clone());
+    }
+    if let Some(highlight) = highlight {
+        parts.push(format!("highlight: {}", highlight.full_label));
     }
     if parts.is_empty() {
         None
@@ -887,7 +1008,9 @@ mod tests {
                 row_id: Some("kernel:1".to_string()),
                 class: Some("kernel".to_string()),
                 role: None,
+                highlight_key: None,
             }],
+            highlights: vec![],
             render_policy: VizRenderPolicy::default(),
             label_policy: VizLabelPolicy::default(),
         }
@@ -955,6 +1078,7 @@ mod tests {
                 row_id: Some("kernel:1".to_string()),
                 class: Some("kernel".to_string()),
                 role: None,
+                highlight_key: None,
             },
             VizInterval {
                 track_key: "gpu-summary|dev:0".to_string(),
@@ -964,6 +1088,7 @@ mod tests {
                 row_id: None,
                 class: Some("gap".to_string()),
                 role: Some(VizRole::Overlay),
+                highlight_key: None,
             },
         ];
 
@@ -974,6 +1099,38 @@ mod tests {
         assert!(!rendered.svg.contains(">summary kernel</text>"));
         assert!(!rendered.svg.contains(">idle</text>"));
         assert_eq!(rendered.summary.suppressed_label_count, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn render_svg_marks_highlights_and_keeps_separate_legend() -> anyhow::Result<()> {
+        let mut scene = scene();
+        let Some(interval) = scene.intervals.first_mut() else {
+            anyhow::bail!("test scene must contain an interval");
+        };
+        interval.highlight_key = Some("hot-kernel-1".to_string());
+        scene.highlights = vec![VizHighlight {
+            key: "hot-kernel-1".to_string(),
+            label: "very_long_kernel_name_for_legend".to_string(),
+            full_label: "very_long_kernel_name_for_legend<&>".to_string(),
+            color: "#f97316".to_string(),
+            rank: Some(1),
+            scope: Some("name".to_string()),
+        }];
+
+        let rendered = render_svg(&scene)?;
+
+        assert_eq!(rendered.summary.rendered_item_count, 1);
+        assert!(rendered.svg.contains("data-highlight-key=\"hot-kernel-1\""));
+        assert!(rendered.svg.contains("interval-highlighted"));
+        assert!(rendered.svg.contains("highlight-legend-item"));
+        assert!(rendered.svg.contains("kernel</text>"));
+        assert!(rendered.svg.contains("#1 very_long_kernel_name_for_legend"));
+        assert!(
+            rendered
+                .svg
+                .contains("very_long_kernel_name_for_legend&lt;&amp;&gt;")
+        );
         Ok(())
     }
 

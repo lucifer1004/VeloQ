@@ -3,11 +3,12 @@
 [govctl]
 id = "RFC-0009"
 title = "NSys static timeline visualization artifact contract"
-version = "0.1.0"
+version = "0.2.0"
 status = "draft"
 phase = "spec"
 owners = ["@Zihua Wu"]
 created = "2026-06-09"
+updated = "2026-06-09"
 refs = [
     "RFC-0001",
     "RFC-0002",
@@ -23,6 +24,7 @@ refs = [
     "RFC-0004:C-COMMAND-SURFACE",
     "RFC-0006:C-SUPPORTED-INPUTS",
 ]
+signature = "e6da83a876df04b7206a4621d627755860bd7c03b0a646b81ec5edf22c867a7b"
 
 [[sections]]
 title = "Summary"
@@ -39,7 +41,14 @@ clauses = [
     "clauses/C-LABEL-POLICY.toml",
     "clauses/C-SOURCE-ABSTRACTION.toml",
     "clauses/C-COMPATIBILITY.toml",
+    "clauses/C-HIGHLIGHT-POLICY.toml",
 ]
+
+[[changelog]]
+version = "0.2.0"
+date = "2026-06-09"
+notes = "Add top-kernel timeline highlight semantics"
+added = ["top-kernel highlight selection, legend, SVG metadata, and resolved-highlight response semantics"]
 
 [[changelog]]
 version = "0.1.0"

@@ -19,7 +19,6 @@ pub mod sort;
 pub mod source;
 pub mod tabular;
 pub mod time;
-pub mod visualization;
 pub mod wire_format;
 
 pub use artifacts::{ARTIFACT_DIR_SUFFIX, artifact_dir_for};
@@ -38,8 +37,3 @@ pub use sidecar::{SidecarCache, SidecarError, SidecarHeader, SidecarResult, Sour
 pub use sort::{Direction, SortField, SortKeyDef, SortKeySpec, SortSpec, sort_in_memory};
 pub use source::{OutputFormat, OutputFormatError, ProfileSource, SourceRunError, SourceRunResult};
 pub use tabular::{TabularError, TabularResult};
-pub use visualization::{
-    SvgRenderResult, SvgRenderSummary, VisualizationError, VizAggregation, VizAxis, VizInterval,
-    VizLabelMode, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene, VizTimeWindow, VizTrack,
-    WrittenSvgArtifact, render_svg, write_svg_artifact,
-};

@@ -12,6 +12,7 @@ include = ["src/**/*.rs"]
 [dependencies]
 veloq-core.workspace = true
 veloq-query.workspace = true
+veloq-vis.workspace = true
 veloq-nsys-data.workspace = true
 duckdb.workspace = true
 serde.workspace = true

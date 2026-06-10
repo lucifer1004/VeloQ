@@ -188,6 +188,17 @@ pub enum NsysQueryError {
     #[error("viz timeline selector `{selector}` must be a positive integer")]
     VizTimelineSelectorPositiveInt { selector: String },
 
+    #[error("viz timeline --highlight-kernels requires `top=<n>`")]
+    VizTimelineHighlightTopRequired,
+
+    #[error("unknown viz timeline highlight scope `{scope}` (expected: name, instance)")]
+    VizTimelineUnknownHighlightScope { scope: String },
+
+    #[error(
+        "unknown viz timeline highlight metric `{metric}` (expected: duration, count, max-duration)"
+    )]
+    VizTimelineUnknownHighlightMetric { metric: String },
+
     #[error("viz timeline track `cuda-stream` requires `device=<id>`")]
     VizTimelineCudaStreamDeviceRequired,
 
@@ -200,7 +211,7 @@ pub enum NsysQueryError {
     #[error("visualization artifact failed")]
     VizTimelineArtifact {
         #[source]
-        source: veloq_core::VisualizationError,
+        source: veloq_vis::VisualizationError,
     },
 
     #[error("unknown --group-by `{group_by}` for slices --aggregate (expected: name, path)")]
@@ -850,6 +861,15 @@ impl VeloqDiagnostic for NsysQueryError {
             }
             Self::VizTimelineSelectorPositiveInt { .. } => {
                 ErrorCode::new("nsys.query.viz-timeline-selector-positive-int")
+            }
+            Self::VizTimelineHighlightTopRequired => {
+                ErrorCode::new("nsys.query.viz-timeline-highlight-top-required")
+            }
+            Self::VizTimelineUnknownHighlightScope { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-unknown-highlight-scope")
+            }
+            Self::VizTimelineUnknownHighlightMetric { .. } => {
+                ErrorCode::new("nsys.query.viz-timeline-unknown-highlight-metric")
             }
             Self::VizTimelineCudaStreamDeviceRequired => {
                 ErrorCode::new("nsys.query.viz-timeline-cuda-stream-device-required")

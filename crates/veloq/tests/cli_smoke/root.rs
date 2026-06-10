@@ -54,6 +54,8 @@ fn nsys_viz_timeline_writes_svg_artifact() -> Result<()> {
         "@100ms",
         "--to",
         "@102ms",
+        "--highlight-kernels",
+        "top=1,scope=name",
     ])?;
     assert!(
         out.status.success(),
@@ -78,6 +80,18 @@ fn nsys_viz_timeline_writes_svg_artifact() -> Result<()> {
         "figure path must be artifact-root relative SVG path, got {path}"
     );
     assert_eq!(row.get("format").and_then(Value::as_str), Some("svg"));
+    let highlight = v
+        .pointer("/data/auxiliary/resolved_highlights/0")
+        .ok_or_else(|| anyhow!("missing resolved highlight: {v}"))?;
+    assert_eq!(
+        highlight.get("label").and_then(Value::as_str),
+        Some("smoke_kernel")
+    );
+    assert_eq!(highlight.get("scope").and_then(Value::as_str), Some("name"));
+    assert_eq!(
+        highlight.get("metric").and_then(Value::as_str),
+        Some("total_duration_ns")
+    );
     assert!(
         row.get("rendered_item_count")
             .and_then(Value::as_u64)

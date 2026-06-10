@@ -1,7 +1,7 @@
 //! NSys static timeline SVG figure export.
 //!
 //! This module owns NSys track semantics and evidence extraction. The
-//! source-neutral scene shape and SVG writer live in `veloq-core`.
+//! source-neutral scene shape and SVG writer live in `veloq-vis`.
 
 use crate::query_sql::{
     event_scan::{EventScanFilterOptions, NvtxFilterPolicy, event_scan_filter},
@@ -13,13 +13,14 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use veloq_core::artifact_dir_for;
 use veloq_core::time::TimeWindow;
-use veloq_core::{
-    SvgRenderSummary, VizAxis, VizInterval, VizLabelPolicy, VizRenderPolicy, VizRole, VizScene,
-    VizTimeWindow, VizTrack, artifact_dir_for, render_svg, write_svg_artifact,
-};
 use veloq_nsys_data::Trace;
 use veloq_query::sql::SqlFragment;
+use veloq_vis::{
+    SvgRenderSummary, VizAxis, VizHighlight, VizInterval, VizLabelPolicy, VizRenderPolicy, VizRole,
+    VizScene, VizTimeWindow, VizTrack, render_svg, write_svg_artifact,
+};
 
 pub const DEFAULT_TOP_STREAMS: usize = 8;
 
@@ -27,6 +28,7 @@ pub const DEFAULT_TOP_STREAMS: usize = 8;
 pub struct VizTimelineRequest {
     pub time_window: Option<TimeWindow>,
     pub tracks: Vec<String>,
+    pub highlight_kernels: Vec<String>,
     pub render_policy: VizRenderPolicy,
     pub label_policy: VizLabelPolicy,
 }
@@ -58,6 +60,9 @@ pub struct VizTimelineFigureRow {
 pub struct VizTimelineAuxiliary {
     pub requested_tracks: Vec<String>,
     pub resolved_tracks: Vec<VizResolvedTrack>,
+    pub requested_highlights: Vec<String>,
+    pub resolved_highlights: Vec<VizResolvedHighlight>,
+    pub unresolved_highlights: Vec<VizUnresolvedHighlight>,
     pub render_policy: VizRenderPolicyEcho,
     pub label_policy: VizLabelPolicyEcho,
 }
@@ -71,6 +76,41 @@ pub struct VizResolvedTrack {
     pub axes: Vec<VizAxis>,
     pub render_policy: String,
     pub label_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct VizResolvedHighlight {
+    pub key: String,
+    pub rank: usize,
+    pub color: String,
+    pub label: String,
+    pub full_name: String,
+    pub scope: String,
+    pub metric: String,
+    pub total_duration_ns: i64,
+    pub instance_count: usize,
+    pub max_duration_ns: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<String>,
+}
+
+impl VizResolvedHighlight {
+    fn to_scene_highlight(&self) -> VizHighlight {
+        VizHighlight {
+            key: self.key.clone(),
+            label: self.label.clone(),
+            full_label: self.full_name.clone(),
+            color: self.color.clone(),
+            rank: Some(self.rank),
+            scope: Some(self.scope.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct VizUnresolvedHighlight {
+    pub spec: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -142,6 +182,11 @@ pub fn run<P: AsRef<Path>>(
         .iter()
         .map(|spec| TrackSpec::parse(spec))
         .collect::<NsysQueryResult<Vec<_>>>()?;
+    let parsed_highlights = req
+        .highlight_kernels
+        .iter()
+        .map(|spec| KernelHighlightSpec::parse(spec))
+        .collect::<NsysQueryResult<Vec<_>>>()?;
 
     let gpu_events = query_gpu_events(&trace, (start_ns, end_ns))?;
     let api_events = if parsed_tracks
@@ -167,18 +212,21 @@ pub fn run<P: AsRef<Path>>(
         !api_events.is_empty(),
         !nvtx_events.is_empty(),
     )?;
+    let highlights = resolve_kernel_highlights(&parsed_highlights, &resolved.tracks, &gpu_events);
     let intervals = build_intervals(
         &resolved.tracks,
         &parsed_tracks,
         &gpu_events,
         &api_events,
         &nvtx_events,
+        &highlights.assignments,
     );
     let scene = VizScene {
         title: Some("NSys timeline".to_string()),
         time_window,
         tracks: resolved.tracks.clone(),
         intervals,
+        highlights: highlights.scene_highlights,
         render_policy: req.render_policy.clone(),
         label_policy: req.label_policy.clone(),
     };
@@ -189,6 +237,7 @@ pub fn run<P: AsRef<Path>>(
         start_ns,
         end_ns,
         &requested_tracks,
+        &req.highlight_kernels,
         &req.render_policy,
         &req.label_policy,
     );
@@ -216,6 +265,9 @@ pub fn run<P: AsRef<Path>>(
         auxiliary: VizTimelineAuxiliary {
             requested_tracks,
             resolved_tracks: resolved.response_tracks,
+            requested_highlights: req.highlight_kernels,
+            resolved_highlights: highlights.response_highlights,
+            unresolved_highlights: highlights.unresolved_highlights,
             render_policy: VizRenderPolicyEcho::from(&req.render_policy),
             label_policy: VizLabelPolicyEcho::from(&req.label_policy),
         },
@@ -423,15 +475,343 @@ fn parse_positive_usize(selector: &str, value: &str) -> NsysQueryResult<usize> {
     Ok(parsed)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HighlightScope {
+    Name,
+    Instance,
+}
+
+impl HighlightScope {
+    fn parse(raw: &str) -> NsysQueryResult<Self> {
+        match raw {
+            "name" => Ok(Self::Name),
+            "instance" => Ok(Self::Instance),
+            _ => Err(NsysQueryError::VizTimelineUnknownHighlightScope {
+                scope: raw.to_string(),
+            }),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Instance => "instance",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HighlightMetric {
+    Duration,
+    Count,
+    MaxDuration,
+}
+
+impl HighlightMetric {
+    fn parse(raw: &str) -> NsysQueryResult<Self> {
+        match raw {
+            "duration" | "total-duration" | "total_duration_ns" => Ok(Self::Duration),
+            "count" | "instance-count" | "instance_count" => Ok(Self::Count),
+            "max-duration" | "max_duration" | "max_duration_ns" => Ok(Self::MaxDuration),
+            _ => Err(NsysQueryError::VizTimelineUnknownHighlightMetric {
+                metric: raw.to_string(),
+            }),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Duration => "total_duration_ns",
+            Self::Count => "instance_count",
+            Self::MaxDuration => "max_duration_ns",
+        }
+    }
+
+    fn score(self, total_duration_ns: i64, instance_count: usize, max_duration_ns: i64) -> i64 {
+        match self {
+            Self::Duration => total_duration_ns,
+            Self::Count => i64::try_from(instance_count).unwrap_or(i64::MAX),
+            Self::MaxDuration => max_duration_ns,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct KernelHighlightSpec {
+    raw: String,
+    top: usize,
+    scope: HighlightScope,
+    metric: HighlightMetric,
+}
+
+impl KernelHighlightSpec {
+    fn parse(raw: &str) -> NsysQueryResult<Self> {
+        let mut top = None;
+        let mut scope = HighlightScope::Name;
+        let mut metric = HighlightMetric::Duration;
+        for selector in raw.split(',') {
+            let selector = selector.trim();
+            if selector.is_empty() {
+                continue;
+            }
+            let (name, value) = selector.split_once('=').ok_or_else(|| {
+                NsysQueryError::VizTimelineInvalidSelector {
+                    selector: selector.to_string(),
+                }
+            })?;
+            match name.trim() {
+                "top" => {
+                    top = Some(parse_positive_usize("highlight-kernels.top", value.trim())?);
+                }
+                "scope" => {
+                    scope = HighlightScope::parse(value.trim())?;
+                }
+                "by" | "metric" => {
+                    metric = HighlightMetric::parse(value.trim())?;
+                }
+                other => {
+                    return Err(NsysQueryError::VizTimelineUnknownSelector {
+                        kind: "highlight-kernels".to_string(),
+                        selector: other.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            raw: raw.to_string(),
+            top: top.ok_or(NsysQueryError::VizTimelineHighlightTopRequired)?,
+            scope,
+            metric,
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct ResolvedKernelHighlights {
+    response_highlights: Vec<VizResolvedHighlight>,
+    scene_highlights: Vec<VizHighlight>,
+    unresolved_highlights: Vec<VizUnresolvedHighlight>,
+    assignments: HighlightAssignments,
+}
+
+#[derive(Debug, Default)]
+struct HighlightAssignments {
+    by_full_name: BTreeMap<String, String>,
+    by_row_id: BTreeMap<String, String>,
+}
+
+impl HighlightAssignments {
+    fn for_event(&self, event: &TimelineEvent) -> Option<String> {
+        if event.kind != EventKind::Kernel {
+            return None;
+        }
+        let row_id = event.row_id.to_string();
+        self.by_row_id
+            .get(&row_id)
+            .or_else(|| self.by_full_name.get(&event.full_name))
+            .cloned()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct KernelAggregate {
+    label: Option<String>,
+    total_duration_ns: i64,
+    instance_count: usize,
+    max_duration_ns: i64,
+}
+
+impl KernelAggregate {
+    fn add(&mut self, label: &str, duration_ns: i64) {
+        if self.label.is_none() {
+            self.label = Some(label.to_string());
+        }
+        self.total_duration_ns = self.total_duration_ns.saturating_add(duration_ns);
+        self.instance_count = self.instance_count.saturating_add(1);
+        self.max_duration_ns = self.max_duration_ns.max(duration_ns);
+    }
+}
+
+const HIGHLIGHT_COLORS: &[&str] = &[
+    "#f97316", "#a855f7", "#e11d48", "#ca8a04", "#9333ea", "#dc2626", "#4f46e5", "#0f766e",
+];
+
+fn resolve_kernel_highlights(
+    specs: &[KernelHighlightSpec],
+    tracks: &[VizTrack],
+    gpu_events: &[TimelineEvent],
+) -> ResolvedKernelHighlights {
+    let candidates = highlight_candidate_kernels(tracks, gpu_events);
+    let mut out = ResolvedKernelHighlights::default();
+    for (spec_idx, spec) in specs.iter().enumerate() {
+        let before = out.response_highlights.len();
+        match spec.scope {
+            HighlightScope::Name => {
+                resolve_name_highlights(spec_idx, spec, &candidates, &mut out);
+            }
+            HighlightScope::Instance => {
+                resolve_instance_highlights(spec_idx, spec, &candidates, &mut out);
+            }
+        }
+        if out.response_highlights.len() == before {
+            out.unresolved_highlights.push(VizUnresolvedHighlight {
+                spec: spec.raw.clone(),
+                reason: "no_matching_kernel_events".to_string(),
+            });
+        }
+    }
+    out.scene_highlights = out
+        .response_highlights
+        .iter()
+        .map(VizResolvedHighlight::to_scene_highlight)
+        .collect();
+    out
+}
+
+fn highlight_candidate_kernels<'a>(
+    tracks: &[VizTrack],
+    gpu_events: &'a [TimelineEvent],
+) -> Vec<&'a TimelineEvent> {
+    let track_keys: BTreeSet<&str> = tracks.iter().map(|track| track.key.as_str()).collect();
+    gpu_events
+        .iter()
+        .filter(|event| event.kind == EventKind::Kernel)
+        .filter(|event| kernel_event_has_rendered_gpu_track(event, &track_keys))
+        .collect()
+}
+
+fn kernel_event_has_rendered_gpu_track(event: &TimelineEvent, track_keys: &BTreeSet<&str>) -> bool {
+    if let Some(device) = event.device_id {
+        let key = gpu_summary_track_key(device);
+        if track_keys.contains(key.as_str()) {
+            return true;
+        }
+    }
+    if let (Some(device), Some(stream)) = (event.device_id, event.stream_id) {
+        let key = stream_track_key(device, stream);
+        if track_keys.contains(key.as_str()) {
+            return true;
+        }
+    }
+    false
+}
+
+fn resolve_name_highlights(
+    spec_idx: usize,
+    spec: &KernelHighlightSpec,
+    candidates: &[&TimelineEvent],
+    out: &mut ResolvedKernelHighlights,
+) {
+    let mut aggregates: BTreeMap<String, KernelAggregate> = BTreeMap::new();
+    for event in candidates {
+        aggregates
+            .entry(event.full_name.clone())
+            .or_default()
+            .add(&event.name, event.duration_ns());
+    }
+    let mut ranked: Vec<(String, KernelAggregate)> = aggregates.into_iter().collect();
+    ranked.sort_by(|a, b| {
+        spec.metric
+            .score(
+                b.1.total_duration_ns,
+                b.1.instance_count,
+                b.1.max_duration_ns,
+            )
+            .cmp(&spec.metric.score(
+                a.1.total_duration_ns,
+                a.1.instance_count,
+                a.1.max_duration_ns,
+            ))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    for (idx, (name, agg)) in ranked.into_iter().take(spec.top).enumerate() {
+        let rank = idx + 1;
+        let key = format!("kernel-highlight|name|spec:{spec_idx}|rank:{rank}");
+        out.assignments
+            .by_full_name
+            .insert(name.clone(), key.clone());
+        let label = agg.label.unwrap_or_else(|| name.clone());
+        out.response_highlights.push(VizResolvedHighlight {
+            key,
+            rank,
+            color: highlight_color(out.response_highlights.len()),
+            label,
+            full_name: name,
+            scope: spec.scope.as_str().to_string(),
+            metric: spec.metric.as_str().to_string(),
+            total_duration_ns: agg.total_duration_ns,
+            instance_count: agg.instance_count,
+            max_duration_ns: agg.max_duration_ns,
+            row_id: None,
+        });
+    }
+}
+
+fn resolve_instance_highlights(
+    spec_idx: usize,
+    spec: &KernelHighlightSpec,
+    candidates: &[&TimelineEvent],
+    out: &mut ResolvedKernelHighlights,
+) {
+    let mut ranked = candidates.to_vec();
+    ranked.sort_by(|a, b| {
+        let a_duration = a.duration_ns();
+        let b_duration = b.duration_ns();
+        spec.metric
+            .score(b_duration, 1, b_duration)
+            .cmp(&spec.metric.score(a_duration, 1, a_duration))
+            .then_with(|| b_duration.cmp(&a_duration))
+            .then_with(|| a.start_ns.cmp(&b.start_ns))
+            .then_with(|| a.row_id.to_string().cmp(&b.row_id.to_string()))
+    });
+    for (idx, event) in ranked.into_iter().take(spec.top).enumerate() {
+        let rank = idx + 1;
+        let row_id = event.row_id.to_string();
+        let key = format!("kernel-highlight|instance|spec:{spec_idx}|rank:{rank}");
+        let duration_ns = event.duration_ns();
+        out.assignments
+            .by_row_id
+            .insert(row_id.clone(), key.clone());
+        out.response_highlights.push(VizResolvedHighlight {
+            key,
+            rank,
+            color: highlight_color(out.response_highlights.len()),
+            label: event.name.clone(),
+            full_name: event.full_name.clone(),
+            scope: spec.scope.as_str().to_string(),
+            metric: spec.metric.as_str().to_string(),
+            total_duration_ns: duration_ns,
+            instance_count: 1,
+            max_duration_ns: duration_ns,
+            row_id: Some(row_id),
+        });
+    }
+}
+
+fn highlight_color(idx: usize) -> String {
+    HIGHLIGHT_COLORS
+        .get(idx % HIGHLIGHT_COLORS.len())
+        .copied()
+        .unwrap_or("#f97316")
+        .to_string()
+}
+
 #[derive(Debug, Clone)]
 struct TimelineEvent {
     row_id: RowId,
     kind: EventKind,
     name: String,
+    full_name: String,
     start_ns: i64,
     end_ns: i64,
     device_id: Option<i32>,
     stream_id: Option<i64>,
+}
+
+impl TimelineEvent {
+    fn duration_ns(&self) -> i64 {
+        self.end_ns.saturating_sub(self.start_ns)
+    }
 }
 
 #[derive(Debug)]
@@ -749,6 +1129,7 @@ fn build_intervals(
     gpu_events: &[TimelineEvent],
     api_events: &[TimelineEvent],
     nvtx_events: &[TimelineEvent],
+    highlights: &HighlightAssignments,
 ) -> Vec<VizInterval> {
     let track_keys: BTreeSet<&str> = tracks.iter().map(|track| track.key.as_str()).collect();
     let mut out = Vec::new();
@@ -756,13 +1137,13 @@ fn build_intervals(
         if let Some(device) = event.device_id {
             let key = gpu_summary_track_key(device);
             if track_keys.contains(key.as_str()) {
-                out.push(interval_for_event(key, event));
+                out.push(interval_for_event(key, event, highlights));
             }
         }
         if let (Some(device), Some(stream)) = (event.device_id, event.stream_id) {
             let key = stream_track_key(device, stream);
             if track_keys.contains(key.as_str()) {
-                out.push(interval_for_event(key, event));
+                out.push(interval_for_event(key, event, highlights));
             }
         }
     }
@@ -773,14 +1154,14 @@ fn build_intervals(
         out.extend(
             api_events
                 .iter()
-                .map(|event| interval_for_event("cuda-api".to_string(), event)),
+                .map(|event| interval_for_event("cuda-api".to_string(), event, highlights)),
         );
     }
     if track_keys.contains("nvtx|depth:1") {
         out.extend(
             nvtx_events
                 .iter()
-                .map(|event| interval_for_event("nvtx|depth:1".to_string(), event)),
+                .map(|event| interval_for_event("nvtx|depth:1".to_string(), event, highlights)),
         );
     }
     out.sort_by(|a, b| {
@@ -791,7 +1172,11 @@ fn build_intervals(
     out
 }
 
-fn interval_for_event(track_key: String, event: &TimelineEvent) -> VizInterval {
+fn interval_for_event(
+    track_key: String,
+    event: &TimelineEvent,
+    highlights: &HighlightAssignments,
+) -> VizInterval {
     VizInterval {
         track_key,
         start_ns: event.start_ns,
@@ -800,6 +1185,7 @@ fn interval_for_event(track_key: String, event: &TimelineEvent) -> VizInterval {
         row_id: Some(event.row_id.to_string()),
         class: Some(event.kind.as_str().to_string()),
         role: None,
+        highlight_key: highlights.for_event(event),
     }
 }
 
@@ -843,6 +1229,7 @@ fn gap_overlay_intervals(tracks: &[VizTrack], events: &[TimelineEvent]) -> Vec<V
                     row_id: None,
                     class: Some("gap".to_string()),
                     role: Some(VizRole::Overlay),
+                    highlight_key: None,
                 });
             }
             running_end = Some(running_end.map_or(event.end_ns, |end| end.max(event.end_ns)));
@@ -933,7 +1320,8 @@ fn interval_select(
         SELECT
             '{label}' AS kind,
             t.rowid AS row_id_num,
-            {name_expr} AS name,
+            {short_name_expr} AS name,
+            {full_name_expr} AS full_name,
             t.start AS start_ns,
             COALESCE(t."end", t.start) AS end_ns,
             {device_expr} AS device_id,
@@ -942,7 +1330,8 @@ fn interval_select(
         {where_clause}
         "#,
         label = sem.label(),
-        name_expr = sem.display_name_expr(),
+        short_name_expr = sem.short_name_expr(),
+        full_name_expr = sem.display_name_expr(),
         device_expr = sem.device_expr(),
         stream_expr = sem.stream_expr(),
         table = sem.table(),
@@ -960,6 +1349,7 @@ fn timeline_event_row(row: &duckdb::Row<'_>) -> NsysQueryResult<TimelineEvent> {
         row_id: RowId::new(kind, rowid),
         kind,
         name: row.get("name").map_err(viz_timeline_row_read)?,
+        full_name: row.get("full_name").map_err(viz_timeline_row_read)?,
         start_ns: row.get("start_ns").map_err(viz_timeline_row_read)?,
         end_ns: row.get("end_ns").map_err(viz_timeline_row_read)?,
         device_id: row.get("device_id").map_err(viz_timeline_row_read)?,
@@ -994,6 +1384,7 @@ fn request_fingerprint(
     start_ns: i64,
     end_ns: i64,
     tracks: &[String],
+    highlights: &[String],
     render_policy: &VizRenderPolicy,
     label_policy: &VizLabelPolicy,
 ) -> String {
@@ -1002,6 +1393,9 @@ fn request_fingerprint(
     hash.push(&end_ns.to_string());
     for track in tracks {
         hash.push(track);
+    }
+    for highlight in highlights {
+        hash.push(highlight);
     }
     hash.push(&render_policy.width_px.to_string());
     hash.push(&render_policy.max_tracks.to_string());
@@ -1079,9 +1473,121 @@ mod tests {
         let label = VizLabelPolicy::default();
         let tracks = default_track_specs();
         assert_eq!(
-            request_fingerprint(1, 2, &tracks, &render, &label),
-            request_fingerprint(1, 2, &tracks, &render, &label)
+            request_fingerprint(1, 2, &tracks, &[], &render, &label),
+            request_fingerprint(1, 2, &tracks, &[], &render, &label)
         );
+    }
+
+    #[test]
+    fn parses_kernel_highlight_specs() -> anyhow::Result<()> {
+        let spec = KernelHighlightSpec::parse("top=3")?;
+        assert_eq!(spec.top, 3);
+        assert_eq!(spec.scope, HighlightScope::Name);
+        assert_eq!(spec.metric, HighlightMetric::Duration);
+
+        let spec = KernelHighlightSpec::parse("top=2,scope=instance,by=max-duration")?;
+        assert_eq!(spec.top, 2);
+        assert_eq!(spec.scope, HighlightScope::Instance);
+        assert_eq!(spec.metric, HighlightMetric::MaxDuration);
+
+        let err = match KernelHighlightSpec::parse("scope=name") {
+            Ok(_) => anyhow::bail!("missing top should fail"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.code().as_str(),
+            "nsys.query.viz-timeline-highlight-top-required"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn name_highlights_rank_by_full_name_but_label_with_short_name() -> anyhow::Result<()> {
+        let tracks = vec![VizTrack {
+            key: gpu_summary_track_key(0),
+            label: "busy summary".to_string(),
+            kind: "gpu-summary".to_string(),
+            role: VizRole::Summary,
+            depth: 1,
+            axes: vec![axis("device", 0)],
+        }];
+        let events = vec![
+            event_named(1, 0, 7, 0, 100, "short", "void short<int>()"),
+            event_named(2, 0, 7, 100, 400, "short", "void short<double>()"),
+            event_named(3, 0, 7, 400, 450, "other", "void other()"),
+        ];
+        let spec = KernelHighlightSpec::parse("top=1,scope=name")?;
+        let resolved = resolve_kernel_highlights(&[spec], &tracks, &events);
+        let highlight = resolved
+            .response_highlights
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected one highlight"))?;
+
+        assert_eq!(highlight.label, "short");
+        assert_eq!(highlight.full_name, "void short<double>()");
+        assert_eq!(highlight.total_duration_ns, 300);
+        assert_eq!(highlight.instance_count, 1);
+        assert_eq!(
+            resolved.assignments.for_event(
+                events
+                    .get(1)
+                    .ok_or_else(|| anyhow::anyhow!("expected second event"))?
+            ),
+            Some(highlight.key.clone())
+        );
+        assert_eq!(
+            resolved.assignments.for_event(
+                events
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("expected first event"))?
+            ),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn instance_highlights_attach_row_id() -> anyhow::Result<()> {
+        let tracks = vec![VizTrack {
+            key: stream_track_key(0, 7),
+            label: "stream 7".to_string(),
+            kind: "cuda-stream".to_string(),
+            role: VizRole::Detail,
+            depth: 1,
+            axes: vec![axis("device", 0), axis("stream", 7)],
+        }];
+        let events = vec![
+            event_named(1, 0, 7, 0, 100, "fast", "void fast()"),
+            event_named(2, 0, 7, 100, 400, "slow", "void slow()"),
+            event_named(3, 0, 8, 400, 800, "other", "void other()"),
+        ];
+        let spec = KernelHighlightSpec::parse("top=1,scope=instance")?;
+        let resolved = resolve_kernel_highlights(&[spec], &tracks, &events);
+        let highlight = resolved
+            .response_highlights
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected one highlight"))?;
+
+        assert_eq!(highlight.label, "slow");
+        assert_eq!(highlight.full_name, "void slow()");
+        assert_eq!(highlight.row_id.as_deref(), Some("kernel:2"));
+        assert_eq!(
+            resolved.assignments.for_event(
+                events
+                    .get(1)
+                    .ok_or_else(|| anyhow::anyhow!("expected second event"))?
+            ),
+            Some(highlight.key.clone())
+        );
+        assert_eq!(
+            resolved.assignments.for_event(
+                events
+                    .get(2)
+                    .ok_or_else(|| anyhow::anyhow!("expected third event"))?
+            ),
+            None
+        );
+        Ok(())
     }
 
     #[test]
@@ -1120,10 +1626,31 @@ mod tests {
     }
 
     fn event(rowid: i64, device: i32, stream: i64, start_ns: i64, end_ns: i64) -> TimelineEvent {
+        event_named(
+            rowid,
+            device,
+            stream,
+            start_ns,
+            end_ns,
+            "kernel",
+            "void kernel()",
+        )
+    }
+
+    fn event_named(
+        rowid: i64,
+        device: i32,
+        stream: i64,
+        start_ns: i64,
+        end_ns: i64,
+        name: &str,
+        full_name: &str,
+    ) -> TimelineEvent {
         TimelineEvent {
             row_id: RowId::new(EventKind::Kernel, rowid),
             kind: EventKind::Kernel,
-            name: "kernel".to_string(),
+            name: name.to_string(),
+            full_name: full_name.to_string(),
             start_ns,
             end_ns,
             device_id: Some(device),

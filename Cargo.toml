@@ -4,6 +4,7 @@ members = [
     "crates/veloq-core",
     "crates/veloq-data",
     "crates/veloq-query",
+    "crates/veloq-vis",
     "crates/veloq",
     "crates/nsys/*",
     "crates/ncu/*",
@@ -32,6 +33,7 @@ homepage = "https://github.com/lucifer1004/veloq"
 veloq-core = { path = "crates/veloq-core", version = "0.2.2" }
 veloq-data = { path = "crates/veloq-data", version = "0.2.2" }
 veloq-query = { path = "crates/veloq-query", version = "0.2.2" }
+veloq-vis = { path = "crates/veloq-vis", version = "0.2.2" }
 veloq-nsys = { path = "crates/nsys/veloq-nsys", version = "0.2.2" }
 veloq-nsys-data = { path = "crates/nsys/veloq-nsys-data", version = "0.2.2" }
 veloq-nsys-query = { path = "crates/nsys/veloq-nsys-query", version = "0.2.2" }

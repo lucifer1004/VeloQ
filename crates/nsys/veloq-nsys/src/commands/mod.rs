@@ -26,10 +26,11 @@ mod scope;
 
 use std::path::Path;
 use veloq_core::time::{TimePoint, TimeWindow};
-use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, VizAggregation, VizLabelMode, guards};
+use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, guards};
 use veloq_nsys_query::search::SearchRequest;
 use veloq_nsys_query::stats::{ALLOWED_KINDS as STATS_ALLOWED_KINDS, GroupBy, StatsRequest};
 use veloq_nsys_query::{EventKind, RowId};
+use veloq_vis::{VizAggregation, VizLabelMode};
 
 use crate::cli::{Cmd, VizCmd};
 use crate::error::{NsysSourceError, NsysSourceResult};
@@ -632,6 +633,7 @@ pub fn run(
                     from,
                     to,
                     tracks,
+                    highlight_kernels,
                     width_px,
                     max_tracks,
                     max_items,
@@ -646,14 +648,15 @@ pub fn run(
                 veloq_nsys_query::viz_timeline::VizTimelineRequest {
                     time_window: viz_time_window(from.as_deref(), to.as_deref())?,
                     tracks,
-                    render_policy: veloq_core::VizRenderPolicy {
+                    highlight_kernels,
+                    render_policy: veloq_vis::VizRenderPolicy {
                         width_px,
                         max_tracks,
                         max_items,
                         min_interval_px,
                         aggregation: VizAggregation::ItemLimit,
                     },
-                    label_policy: veloq_core::VizLabelPolicy {
+                    label_policy: veloq_vis::VizLabelPolicy {
                         mode: VizLabelMode::Auto,
                         min_label_px,
                         max_chars: max_label_chars,

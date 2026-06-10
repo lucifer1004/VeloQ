@@ -448,6 +448,11 @@ pub enum VizCmd {
         #[arg(long = "track", value_name = "SPEC")]
         tracks: Vec<String>,
 
+        /// Highlight top kernels in the rendered SVG. Repeat for multiple policies.
+        /// Example: top=3,scope=name or top=5,scope=instance,by=max-duration.
+        #[arg(long = "highlight-kernels", value_name = "SPEC")]
+        highlight_kernels: Vec<String>,
+
         /// SVG width in pixels. The renderer clamps very small widths
         /// to its minimum usable canvas.
         #[arg(long = "width", default_value_t = 1200)]

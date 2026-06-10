@@ -1,0 +1,46 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-09-005"
+title = "Add top-kernel timeline highlights"
+status = "done"
+created = "2026-06-09"
+started = "2026-06-09"
+completed = "2026-06-09"
+refs = [
+    "RFC-0009",
+    "ADR-0001",
+]
+
+[content]
+description = "Add source-neutral highlight semantics and NSys top-kernel highlighting for static timeline figures. The work should let report authors color the top kernel groups in a selected window, expose full kernel names and aggregate metrics in the response and SVG metadata, and keep the base event-type legend separate from highlight legend semantics."
+
+[[content.acceptance_criteria]]
+text = "RFC-0009 defines timeline highlight selection, color, legend, and response metadata semantics"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "NSys viz timeline accepts top-kernel highlight options for name-aggregated and instance-scoped highlights"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Real-profile sample SVG demonstrates top-kernel highlights without hiding event-type semantics"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "JSON response reports resolved highlights with rank, color, full kernel name, scope, and aggregate metrics"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Renderer tests cover highlighted intervals and separate base/highlight legend behavior"
+status = "done"
+category = "chore"

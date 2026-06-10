@@ -197,6 +197,10 @@ veloq search path/to/trace.nsys-rep --type kernel --name-regex 'gemm' --sort dur
 # tracks carry roles such as group, summary, detail, and annotation.
 veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000
 
+# Highlight the top kernel names in that window while preserving the
+# base event-type legend; metadata lands in data.auxiliary.resolved_highlights.
+veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 --highlight-kernels top=3,scope=name
+
 # Discover canonical workflows (nvtx-breakdown, gpu-idle-audit,
 # timeline-figure-report, memcpy-asymmetry, cold-kernel-hotspot, ...)
 veloq recipes

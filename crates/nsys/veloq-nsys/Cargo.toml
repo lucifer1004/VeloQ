@@ -11,6 +11,7 @@ include = ["src/**/*.rs"]
 
 [dependencies]
 veloq-core.workspace = true
+veloq-vis.workspace = true
 veloq-nsys-data.workspace = true
 veloq-nsys-query.workspace = true
 clap.workspace = true
