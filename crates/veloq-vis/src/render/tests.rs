@@ -53,6 +53,26 @@ fn render_svg_escapes_labels_and_counts_items() -> anyhow::Result<()> {
 }
 
 #[test]
+fn render_svg_sanitizes_interval_class_tokens() -> anyhow::Result<()> {
+    let mut scene = scene();
+    let Some(interval) = scene.intervals.first_mut() else {
+        anyhow::bail!("test scene must contain an interval");
+    };
+    interval.class = Some("kernel\" onclick=\"alert(1)".to_string());
+
+    let rendered = render_svg(&scene)?;
+
+    assert!(rendered.svg.contains("interval-kernel-onclick-alert-1"));
+    assert!(
+        rendered
+            .svg
+            .contains("data-class=\"kernel&quot; onclick=&quot;alert(1)\"")
+    );
+    assert!(!rendered.svg.contains("data-class=\"kernel\" onclick="));
+    Ok(())
+}
+
+#[test]
 fn render_svg_reports_omitted_tracks_and_item_limit() -> anyhow::Result<()> {
     let mut scene = scene();
     scene.tracks.push(VizTrack {

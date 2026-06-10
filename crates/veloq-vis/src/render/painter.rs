@@ -301,7 +301,9 @@ pub(super) fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
     let color = rect.color;
     let opacity = rect.opacity;
     let role = rect.role.to_string();
-    let class_attr = rect.class.unwrap_or("unknown");
+    let raw_class = rect.class.unwrap_or("unknown");
+    let class_token = sanitize_css_token(raw_class);
+    let data_class = escape_xml(raw_class);
     let highlight_class = if rect.highlight_key.is_some() {
         " interval-highlighted"
     } else {
@@ -314,7 +316,7 @@ pub(super) fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
         )
     });
     svg.push_str(&format!(
-        r#"<rect class="interval interval-{class_attr} interval-role-{role}{highlight_class}" data-role="{role}" data-class="{class_attr}"{highlight_attr} x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="1.5" fill="{color}" fill-opacity="{opacity:.2}">"#
+        r#"<rect class="interval interval-{class_token} interval-role-{role}{highlight_class}" data-role="{role}" data-class="{data_class}"{highlight_attr} x="{x:.1}" y="{y:.1}" width="{width:.1}" height="{height:.1}" rx="1.5" fill="{color}" fill-opacity="{opacity:.2}">"#
     ));
     if let Some(title) = rect.title {
         svg.push_str("<title>");
@@ -322,6 +324,26 @@ pub(super) fn push_rect(svg: &mut String, rect: RectDraw<'_>) {
         svg.push_str("</title>");
     }
     svg.push_str("</rect>\n");
+}
+
+fn sanitize_css_token(raw: &str) -> String {
+    let mut out = String::new();
+    let mut last_was_separator = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+            last_was_separator = false;
+        } else if !last_was_separator {
+            out.push('-');
+            last_was_separator = true;
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 pub(super) fn push_tick(svg: &mut String, tick: TickDraw<'_>) {

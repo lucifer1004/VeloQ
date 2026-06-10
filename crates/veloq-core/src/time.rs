@@ -323,10 +323,15 @@ mod tests {
 
     #[test]
     fn duration_labels_are_compact() {
+        assert_eq!(format_duration_ns(0), "0 ns");
         assert_eq!(format_duration_ns(42), "42 ns");
         assert_eq!(format_duration_ns(1_500), "1.5 us");
         assert_eq!(format_duration_ns(12_345_678), "12.346 ms");
         assert_eq!(format_duration_ns(1_200_000_000), "1.2 s");
+        assert_eq!(format_duration_ns(-1_500), "-1.5 us");
+        assert_eq!(format_duration_ns(-12_345_678), "-12.346 ms");
+        assert_eq!(format_duration_ns(-1_200_000_000), "-1.2 s");
+        assert_eq!(format_duration_ns(i64::MIN), "-9223372036.855 s");
     }
 
     #[test]

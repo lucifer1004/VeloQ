@@ -30,6 +30,7 @@ pub(super) fn fit_interval_label(
     if raw_width < policy.min_label_px || policy.max_chars == 0 {
         return None;
     }
+    // 8px horizontal padding, ~6.4px average character width.
     let width_chars = ((raw_width - 8.0) / 6.4).floor();
     if width_chars < 4.0 {
         return None;
@@ -55,6 +56,7 @@ pub(super) fn truncate_label(label: &str, max_chars: usize) -> (String, bool) {
 }
 
 pub(super) fn estimate_text_width(label: &str, font_px: f64) -> f64 {
+    // ~0.58 average character-to-font-size width ratio.
     label.chars().count() as f64 * font_px * 0.58
 }
 

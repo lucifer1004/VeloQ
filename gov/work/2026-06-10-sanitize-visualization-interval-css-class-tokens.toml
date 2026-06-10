@@ -1,0 +1,23 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-10-002"
+title = "Sanitize visualization interval CSS class tokens"
+status = "done"
+created = "2026-06-10"
+started = "2026-06-10"
+completed = "2026-06-10"
+refs = ["RFC-0009"]
+
+[content]
+description = "Prevent interval class strings from being interpolated raw into SVG CSS class names or attributes by sanitizing CSS tokens and XML-escaping the raw data-class value."
+
+[[content.acceptance_criteria]]
+text = "SVG interval class values are sanitized for CSS tokens and escaped for data-class attributes"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Renderer regression test and relevant checks pass"
+status = "done"
+category = "chore"
