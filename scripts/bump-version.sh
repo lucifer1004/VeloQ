@@ -10,6 +10,7 @@
 #                                                     workspace version
 #   - .claude-plugin/plugin.json       .version
 #   - .claude-plugin/marketplace.json  .plugins[0].version
+#   - .codex-plugin/plugin.json        .version
 #
 # Also refreshes Cargo.lock so the bump commit is self-contained
 # (otherwise the next `cargo build` would dirty the working copy).
@@ -59,6 +60,7 @@ CURRENT="$(awk '
 ' Cargo.toml)"
 PLUGIN_CURRENT="$(jq -r '.version' .claude-plugin/plugin.json)"
 MARKETPLACE_CURRENT="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
+CODEX_PLUGIN_CURRENT="$(jq -r '.version' .codex-plugin/plugin.json)"
 
 if [ -z "$CURRENT" ]; then
   echo "error: could not locate [workspace.package].version in Cargo.toml" >&2
@@ -67,7 +69,8 @@ fi
 
 if [ "$CURRENT" = "$NEW_VERSION" ] &&
    [ "$PLUGIN_CURRENT" = "$NEW_VERSION" ] &&
-   [ "$MARKETPLACE_CURRENT" = "$NEW_VERSION" ]; then
+   [ "$MARKETPLACE_CURRENT" = "$NEW_VERSION" ] &&
+   [ "$CODEX_PLUGIN_CURRENT" = "$NEW_VERSION" ]; then
   echo "Already at $NEW_VERSION — nothing to bump."
   exit 0
 fi
@@ -80,6 +83,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  Cargo.toml: [workspace.dependencies] veloq-* version → $NEW_VERSION"
   echo "  .claude-plugin/plugin.json: .version → $NEW_VERSION"
   echo "  .claude-plugin/marketplace.json: .plugins[0].version → $NEW_VERSION"
+  echo "  .codex-plugin/plugin.json: .version → $NEW_VERSION"
   echo "  Cargo.lock: cargo update --workspace"
   exit 0
 fi
@@ -122,6 +126,7 @@ update_json() {
 }
 update_json .claude-plugin/plugin.json      '.version = $v'
 update_json .claude-plugin/marketplace.json '.plugins[0].version = $v'
+update_json .codex-plugin/plugin.json       '.version = $v'
 
 # 5. Cargo.lock — bump workspace-internal crate entries so the change
 #    is committable in one go. `--workspace` scopes to in-workspace
@@ -140,15 +145,18 @@ verify "Cargo.toml [workspace.package]"      "$(awk '/^\[workspace\.package\]/{b
 verify "Cargo.toml [workspace.dependencies]" "$(awk '/^\[workspace\.dependencies\]/{b=1;next} /^\[/{b=0} b && /^veloq-core *=/ && match($0,/version *= *"[^"]+"/){s=substr($0,RSTART,RLENGTH);sub(/^version *= *"/,"",s);sub(/"$/,"",s);print s;exit}' Cargo.toml)"
 verify ".claude-plugin/plugin.json"   "$(jq -r '.version' .claude-plugin/plugin.json)"
 verify "marketplace.json"             "$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
+verify ".codex-plugin/plugin.json"    "$(jq -r '.version' .codex-plugin/plugin.json)"
 
 echo "Done."
 echo
 echo "Next steps:"
-echo "  1. Review the diff:    git diff Cargo.toml Cargo.lock .claude-plugin/"
-echo "  2. Commit:             jj describe -m 'release: bump to v${NEW_VERSION}'"
-echo "  3. Push to main:       jj git push --bookmark main"
-echo "  4. Tag once main has the bump commit:"
+echo "  1. Review the diff:    git diff Cargo.toml Cargo.lock .claude-plugin/ .codex-plugin/"
+echo "  2. Preview release:    govctl release ${NEW_VERSION} --date $(date +%F) --dry-run"
+echo "  3. Cut gov release:    govctl release ${NEW_VERSION} --date $(date +%F)"
+echo "  4. Commit:             jj describe -m 'release: bump to v${NEW_VERSION}'"
+echo "  5. Push to main:       jj git push --bookmark main"
+echo "  6. Tag once main has the bump commit:"
 echo "                         git tag v${NEW_VERSION} && git push origin v${NEW_VERSION}"
-echo "  5. Publish the crates to crates.io (dependency-ordered):"
+echo "  7. Publish the crates to crates.io (dependency-ordered):"
 echo "                         just publish-dry   # rehearse, then:"
 echo "                         just publish"

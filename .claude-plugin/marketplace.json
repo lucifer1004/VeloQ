@@ -1,14 +1,14 @@
 {
   "name": "veloq",
-  "description": "VeloQ — agent-friendly profile-query CLI for Nsight Systems, Nsight Compute, and PyTorch/Kineto traces. Pure CLI in / JSON contract out; no GUI required.",
+  "description": "VeloQ is an agent-friendly profile-query CLI for Nsight Systems, Nsight Compute, and PyTorch/Kineto traces.",
   "owner": {
     "name": "Zihua Wu"
   },
   "plugins": [
     {
       "name": "veloq",
-      "description": "Agent Skills for profile analysis (nsys + ncu + pytorch) that require the VeloQ CLI for evidence extraction. Install the binary separately via scripts/install.sh or cargo binstall.",
-      "version": "0.2.2",
+      "description": "Agent Skills for NSys, NCU, and PyTorch profile analysis using the VeloQ CLI.",
+      "version": "0.3.0",
       "source": "./"
     }
   ]

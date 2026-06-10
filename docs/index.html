@@ -624,7 +624,7 @@
             <strong>Nsight Compute</strong> kernel reports plus
             <strong>PyTorch/Kineto</strong> Chrome traces — one binary, one
             versioned JSON envelope, one shot per call. Built so a coding agent
-            (or a shell script) can reason about GPU profiles without ever
+            (or a shell script) can reason about GPU profiles without
             opening a GUI.
           </p>
           <div class="cta-row">
@@ -657,9 +657,9 @@
             <p class="kicker">why VeloQ</p>
             <h2>Built for the way agents read profiles</h2>
             <p>
-              Not raw speed — VeloQ reads <code>nsys export</code> output, it
-              doesn't replace <code>nsys</code>/<code>ncu</code>. It wins on the
-              axes that matter to a program consuming the result.
+              VeloQ reads exported profiler evidence; it does not replace
+              <code>nsys</code> or <code>ncu</code>. It gives programs a stable,
+              compact contract for asking profile questions.
             </p>
           </div>
           <div class="grid">
@@ -736,7 +736,7 @@
             <p class="kicker">query → jq → answer</p>
             <h2>A query is one line</h2>
             <p>
-              Ask a question, get rows, reshape with jq. No session, no GUI, no
+              Ask a question, get rows, reshape with jq. No session state or
               scraping.
             </p>
           </div>
@@ -764,11 +764,11 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
         <div class="wrap">
           <div class="section-head">
             <p class="kicker">how it compares</p>
-            <h2>Versus the usual three options</h2>
+            <h2>Compared with common alternatives</h2>
             <p>
-              For a GPU-profile question an agent otherwise reaches for the
-              Nsight GUI, raw tool text pasted into context, or hand-rolled
-              SQLite + jq.
+              Agents often fall back to the Nsight GUI, raw tool text in
+              context, or hand-rolled SQLite + jq. VeloQ keeps the same work
+              scriptable and contract-shaped.
             </p>
           </div>
           <div class="table-scroll">
@@ -793,7 +793,7 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
                 <tr>
                   <td>Token-efficient for an agent</td>
                   <td class="meh">n/a</td>
-                  <td class="no">✗ dumps everything</td>
+                  <td class="no">✗ broad dumps</td>
                   <td class="meh">~</td>
                   <td class="col-veloq yes">✓ shaped rows</td>
                 </tr>
@@ -823,9 +823,9 @@ veloq stats trace.nsys-rep <span class="p">--type</span> kernel \
           </div>
           <p style="color: var(--muted); font-size: 14px; margin-top: 18px">
             <strong style="color: var(--text)">When not to use VeloQ:</strong>
-            interactive, human exploration of a timeline — the Nsight GUI is
-            genuinely better there. VeloQ is for programmatic, repeatable,
-            agent- or script-driven querying.
+            use the Nsight GUI for interactive timeline exploration or one-off
+            visual inspection. Use VeloQ for programmatic, repeatable, agent- or
+            script-driven querying.
           </p>
         </div>
       </section>
@@ -925,7 +925,7 @@ veloq self-update
 cargo build --release -p veloq   <span class="c"># → target/release/veloq</span></pre>
           <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
             Re-running the installer or <code>veloq self-update</code> refreshes
-            bundled Agent Skills and removes stale files from older Agent Skills installs.
+            bundled Agent Skills and removes stale skill files.
           </p>
           <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
             Codex plugin install from a VeloQ checkout:
@@ -935,7 +935,7 @@ cargo build --release -p veloq   <span class="c"># → target/release/veloq</spa
             for evidence extraction.
           </p>
           <p style="color: var(--muted); font-size: 14px; margin-top: 16px">
-            Prefer the Claude Code plugin manager?
+            Claude Code plugin metadata is also provided:
             <code
               >/plugin marketplace add
               https://github.com/lucifer1004/veloq.git</code

@@ -16,9 +16,8 @@ veloq pytorch slices T --aggregate --group-by step
 veloq pytorch collectives T
 ```
 
-This is not a standalone raw-Kineto runbook. The skill can be installed
-separately from the binary, but analysis requires the VeloQ CLI on
-`PATH`; if `veloq` is missing, install it before continuing.
+This skill requires the VeloQ CLI on `PATH`. If `veloq` is missing,
+install it before analysis.
 
 ## Tool Boundary
 
@@ -130,9 +129,8 @@ Common prefixes:
    `correlate` operate on explicit row ids and are not rank-scope gated.
    Device ids are rank-local and stream ids are device-local: filter a
    stream with `--rank <n> --device <id> --stream <id>`, or compare lanes
-   with `--group-by rank,device,stream`.
-   It does not compute cross-rank skew
-   in v0:
+   with `--group-by rank,device,stream`. VeloQ does not compute
+   cross-rank skew in PyTorch v0:
 
    ```bash
    veloq pytorch collectives T

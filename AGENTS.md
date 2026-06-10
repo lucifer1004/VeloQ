@@ -445,6 +445,11 @@ one line plus the source crate.
       `GUARD-CLI-IO-CONTRACT`, or
       `GUARD-ARTIFACT-CACHE-CONTRACT`.
 - [ ] Release/full-CI validation:
+      `scripts/bump-version.sh <version>`, update `CHANGELOG.md`, and
+      run `govctl release <version> --date <YYYY-MM-DD>` before the
+      release commit. If govctl release tracking is adopted after prior
+      manual releases, add an explicit baseline release so already
+      shipped work is not collected into the new version. Then run
       `govctl verify GUARD-WORKSPACE-CHECK`,
       `govctl verify GUARD-FULL-CI-CLIPPY`, and
       `govctl verify GUARD-FULL-CI-TEST`.

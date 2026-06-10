@@ -1,7 +1,7 @@
 {
   "name": "veloq",
-  "description": "Agent-friendly Nsight Systems, Nsight Compute, and PyTorch/Kineto Agent Skills that require the VeloQ CLI for evidence extraction.",
-  "version": "0.2.2",
+  "description": "Agent Skills for Nsight Systems, Nsight Compute, and PyTorch/Kineto analysis using the VeloQ CLI.",
+  "version": "0.3.0",
   "author": {
     "name": "Zihua Wu"
   }

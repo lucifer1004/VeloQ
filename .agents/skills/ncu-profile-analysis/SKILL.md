@@ -12,9 +12,8 @@ evidence extractor for report data, then decide whether the evidence
 points to occupancy, memory, scheduler, instruction, launch, or
 source-line work.
 
-This is not a standalone native-NCU runbook. The skill can be installed
-separately from the binary, but analysis requires the VeloQ CLI on
-`PATH`; if `veloq` is missing, install it before continuing.
+This skill requires the VeloQ CLI on `PATH`. If `veloq` is missing,
+install it before analysis.
 
 ## Tool Boundary
 

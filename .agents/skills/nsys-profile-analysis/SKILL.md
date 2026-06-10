@@ -8,12 +8,10 @@ description: "Analyze Nsight Systems `.nsys-rep` or `_pqtdir/` timeline traces u
 This skill guides Nsight Systems timeline investigations: what ran,
 when it ran, how CPU work caused GPU work, where idle gaps appear, and
 whether capture-time metric streams are trustworthy. Use `veloq` as
-the evidence extractor for exported NSys traces, not as the starting
-point for deciding what question to ask.
+the evidence extractor for exported NSys traces.
 
-This is not a standalone native-NSys runbook. The skill can be installed
-separately from the binary, but analysis requires the VeloQ CLI on
-`PATH`; if `veloq` is missing, install it before continuing.
+This skill requires the VeloQ CLI on `PATH`. If `veloq` is missing,
+install it before analysis.
 
 Use this skill only for Nsight Systems timeline traces. For Nsight
 Compute `.ncu-rep` kernel reports, use the separate
@@ -152,18 +150,14 @@ Run `veloq schema search` for the full per-kind payload schema.
 **Timeline figures for reports**: after you have a bounded window from
 `timeline`, `gaps`, `search`, or an NVTX slice, run
 `veloq viz timeline T --from <start> --to <end>` to export an SVG under
-the trace artifact root. Use the JSON response row's `path` for the
-artifact and read `data.auxiliary.resolved_tracks` plus each track's
-`role`. Treat `summary` tracks as rollups, `detail` tracks as concrete
-lanes such as CUDA streams, `annotation` tracks as context, and idle
-gaps as overlays rather than ordinary events. Also read the row counters
-(`aggregated`, `omitted_track_count`, `suppressed_label_count`,
-`truncated_label_count`) before embedding it. Mention those counters
-when they are non-zero; the figure is static evidence, not a GUI-style
-interactive timeline. Add `--highlight-kernels top=<n>,scope=name`
-when a report figure should call out dominant kernels; cite
-`data.auxiliary.resolved_highlights[]` for each highlight's rank, color,
-short `label`, `full_name`, and aggregate duration/count metrics.
+the trace artifact root. Use the JSON row's `path` for the artifact and
+read `data.auxiliary.resolved_tracks[].role`: `summary` tracks are
+rollups, `detail` tracks are concrete lanes, `annotation` tracks are
+context, and idle gaps are overlays. Before embedding the figure, check
+`aggregated`, `omitted_track_count`, `suppressed_label_count`, and
+`truncated_label_count`; mention non-zero counters. Use
+`--highlight-kernels top=<n>,scope=name` when the figure should call out
+dominant kernels, and cite `data.auxiliary.resolved_highlights[]`.
 
 **Name search on large traces**: prefer `--name-regex 'foo'` over the
 `--name '*foo*'` glob. Regex lets VeloQ resolve the matching names once

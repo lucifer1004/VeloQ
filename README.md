@@ -7,9 +7,9 @@
 <p align="center"><em>Pure CLI in / JSON contract out; no GUI required.</em></p>
 
 **Agent-friendly profile-query CLI family.** JSON by default, with
-CSV/table projections where they are useful. One shot per call.
-Designed so a coding agent (or a shell script) can reason about GPU
-profiles without ever opening a GUI.
+CSV/table projections where useful. One command answers one question.
+VeloQ is designed for coding agents and scripts that need GPU profile
+evidence without opening a GUI.
 
 VeloQ covers three profile sources today — **Nsight Systems** (timeline
 traces), **Nsight Compute** (kernel reports), and experimental
@@ -19,17 +19,21 @@ covers the Perfetto-style Chrome trace shape used by PyTorch profiler.
 
 ## Status
 
-17 NSys verbs (timeline analysis, static timeline figures, kernel overlap, NCU handoff, prep/cache helpers, and schema) +
-11 NCU verbs (`summary`, `launches`, `inspect`, `metrics`, `disasm`,
-`ranges`, `graphs`, `sources`, `source-metrics`, `warp-stalls`,
-plus `schema`) +
-10 experimental PyTorch verbs (`summary`, `search`, `inspect`, `stats`,
-`correlate`, `timeline`, `slices`, `collectives`, `prep`, `schema`) +
-five root meta verbs (`info`, `sources`, `clean`, `recipes`, `self-update`). JSON output returns the same
-v1 envelope on stdout — every list response uses canonical
-`data.rows[]` with a stable per-row `key`; NSys trace responses also
-carry top-level `trace_span` for per-second normalization. Errors come
-back through the same envelope shape with a non-zero exit code.
+- 17 NSys verbs, including timeline analysis, static SVG figures,
+  kernel overlap, NCU handoff, prep/cache helpers, and schema.
+- 11 NCU verbs: `summary`, `launches`, `inspect`, `metrics`, `disasm`,
+  `ranges`, `graphs`, `sources`, `source-metrics`, `warp-stalls`,
+  and `schema`.
+- 10 experimental PyTorch verbs: `summary`, `search`, `inspect`,
+  `stats`, `correlate`, `timeline`, `slices`, `collectives`, `prep`,
+  and `schema`.
+- Five root meta verbs: `info`, `sources`, `clean`, `recipes`, and
+  `self-update`.
+
+JSON output uses one `v1` envelope on stdout. List responses use
+canonical `data.rows[]` with a stable per-row `key`; NSys trace
+responses also carry top-level `trace_span` for per-second normalization.
+Errors use the same envelope shape and a non-zero exit code.
 
 ### NSys ingestion
 
@@ -41,23 +45,22 @@ required nsys version is 2024.6** (the release that introduced the
 
 ## How it compares
 
-For a GPU-profile question an agent otherwise reaches for one of three
-things. VeloQ is built to beat each on the axes that matter to an agent —
-a **stable typed contract**, **token economy**, and **scriptability** —
-not raw speed: VeloQ reads `nsys export -t parquetdir` output, it does not
-replace `nsys`/`ncu`.
+For a GPU-profile question an agent usually reaches for one of three
+interfaces. VeloQ focuses on the agent-facing axes: a **stable typed
+contract**, **token economy**, and **scriptability**. It does not replace
+`nsys` or `ncu`; it reads their exported evidence.
 
 |                              | Nsight GUI | Raw `nsys`/`ncu` text in context | Hand-rolled SQLite + jq |             **VeloQ**              |
 | ---------------------------- | :--------: | :------------------------------: | :---------------------: | :--------------------------------: |
 | Scriptable / one-shot        |     ✗      |             ~ ad hoc             |            ✓            |                 ✓                  |
-| Token-efficient for an agent |    n/a     |        ✗ dumps everything        |            ~            | ✓ shaped rows + truncation signals |
+| Token-efficient for an agent |    n/a     |          ✗ broad dumps           |            ~            | ✓ shaped rows + truncation signals |
 | Stable typed contract        |     ✗      |           ✗ free text            |    ✗ schema you own     |     ✓ versioned JSON envelope      |
 | Cross-capture diffable       |     ✗      |                ✗                 |            ~            |       ✓ stable per-row `key`       |
 | Zero setup per query         |     ✓      |                ✓                 |            ✗            |                 ✓                  |
 
-**When _not_ to use VeloQ:** interactive, human exploration of a timeline,
-or a one-off eyeball check — the Nsight GUI is genuinely better there.
-VeloQ is for programmatic, repeatable, agent- or script-driven querying.
+Use the Nsight GUI for interactive timeline exploration or one-off visual
+inspection. Use VeloQ for programmatic, repeatable, agent- or
+script-driven querying.
 
 ## Install
 
@@ -147,19 +150,14 @@ veloq self-update --no-binary                  # Agent Skills only; keep your bi
 veloq self-update --skills-dir .claude          # install skills to .claude/skills/
 ```
 
-`self-update` pulls the latest GitHub release: it replaces the running
-binary and re-installs the bundled Agent Skills, matching what
-`install.sh` does — so a self-updated binary never leaves stale skills
-behind. Skills go to `~/.agents/skills/` by default; `--skills-dir <path>`
-(or `VELOQ_SKILLS_DIR`) points them under a different root — a
-project-local `.agents`, a Claude-specific `.claude`, etc. By convention
-skills live in a `skills/` subdir, so `skills/` is appended automatically
-(pass the root or the full skills dir, either works); the skills
-themselves are portable `SKILL.md` files. `--check` only reports
-`update_available` without touching anything. All emit the standard
-envelope on stdout. Re-running `install.sh` (same `--skills-dir`) also
-works: it refreshes bundled Agent Skills and removes stale files from prior
-Agent Skills installs.
+`self-update` pulls the latest GitHub release. By default it replaces the
+running binary and refreshes the bundled Agent Skills, removing stale
+skill files from earlier installs. Skills go to `~/.agents/skills/` by
+default; `--skills-dir <path>` or `VELOQ_SKILLS_DIR` selects another
+root such as project-local `.agents` or `.claude`. Passing either the
+root or the final `skills/` directory works. `--check` reports
+`update_available` without changing files. All modes emit the standard
+envelope on stdout.
 
 If the binary was installed with `cargo-binstall` and you want
 `cargo-binstall` to remain the binary manager, use
