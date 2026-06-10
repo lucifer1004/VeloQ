@@ -435,11 +435,11 @@ pub enum VizCmd {
         trace_arg: TraceArg,
 
         /// Start of the timeline window. Required with --to.
-        #[arg(long, value_name = "TIME")]
+        #[arg(long, value_name = "TIME", requires = "to")]
         from: Option<String>,
 
         /// End of the timeline window. Required with --from.
-        #[arg(long, value_name = "TIME")]
+        #[arg(long, value_name = "TIME", requires = "from")]
         to: Option<String>,
 
         /// Timeline track spec. Repeat for multiple tracks. Defaults

@@ -168,7 +168,10 @@ pub fn viz_timeline_view(data: &VizTimelineResponse) -> TabularView {
             row.suppressed_label_count.to_string(),
             row.truncated_label_count.to_string(),
         ]);
-        v.push_meta("time_window_ns", format!("{:?}", row.time_window_ns));
+    }
+    if let Some(row) = data.rows.first() {
+        let [start, end] = row.time_window_ns;
+        v.push_meta("time_window_ns", format!("{start}-{end}"));
     }
     push_count_meta(&mut v, data.count, data.total_matched);
     v.push_meta(
@@ -180,4 +183,60 @@ pub fn viz_timeline_view(data: &VizTimelineResponse) -> TabularView {
         data.auxiliary.resolved_tracks.len().to_string(),
     );
     v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use veloq_nsys_query::viz_timeline::{
+        VizLabelPolicyEcho, VizRenderPolicyEcho, VizTimelineAuxiliary, VizTimelineFigureRow,
+    };
+    use veloq_vis::{VizLabelPolicy, VizRenderPolicy};
+
+    #[test]
+    fn viz_timeline_view_emits_time_window_meta_once() -> anyhow::Result<()> {
+        let data = VizTimelineResponse {
+            count: 2,
+            total_matched: 2,
+            rows: vec![figure_row("a.svg", [10, 20]), figure_row("b.svg", [10, 20])],
+            auxiliary: VizTimelineAuxiliary {
+                requested_tracks: Vec::new(),
+                resolved_tracks: Vec::new(),
+                requested_highlights: Vec::new(),
+                resolved_highlights: Vec::new(),
+                unresolved_highlights: Vec::new(),
+                render_policy: VizRenderPolicyEcho::from(&VizRenderPolicy::default()),
+                label_policy: VizLabelPolicyEcho::from(&VizLabelPolicy::default()),
+            },
+        };
+
+        let view = viz_timeline_view(&data);
+        let time_window_meta = view
+            .meta
+            .iter()
+            .filter(|(key, _)| key == "time_window_ns")
+            .collect::<Vec<_>>();
+        assert_eq!(time_window_meta.len(), 1);
+        let (_, value) = time_window_meta
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing time_window_ns meta"))?;
+        assert_eq!(value.as_str(), "10-20");
+        Ok(())
+    }
+
+    fn figure_row(path: &str, time_window_ns: [i64; 2]) -> VizTimelineFigureRow {
+        VizTimelineFigureRow {
+            key: format!("figure|{path}"),
+            path: path.to_string(),
+            format: "svg".to_string(),
+            time_window_ns,
+            track_count: 0,
+            rendered_item_count: 0,
+            total_item_count: 0,
+            aggregated: false,
+            omitted_track_count: 0,
+            suppressed_label_count: 0,
+            truncated_label_count: 0,
+        }
+    }
 }

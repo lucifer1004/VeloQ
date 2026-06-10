@@ -913,7 +913,7 @@ fn resolve_tracks(
                         &mut response_tracks,
                         &mut seen,
                         TrackDef::new(
-                            "nvtx|depth:1".to_string(),
+                            nvtx_track_key(depth),
                             "NVTX".to_string(),
                             "nvtx",
                             vec![axis("depth", depth)],
@@ -1157,11 +1157,16 @@ fn build_intervals(
                 .map(|event| interval_for_event("cuda-api".to_string(), event, highlights)),
         );
     }
-    if track_keys.contains("nvtx|depth:1") {
+    let nvtx_track_keys = tracks
+        .iter()
+        .filter(|track| track.kind == "nvtx")
+        .map(|track| track.key.clone())
+        .collect::<Vec<_>>();
+    for track_key in nvtx_track_keys {
         out.extend(
             nvtx_events
                 .iter()
-                .map(|event| interval_for_event("nvtx|depth:1".to_string(), event, highlights)),
+                .map(|event| interval_for_event(track_key.clone(), event, highlights)),
         );
     }
     out.sort_by(|a, b| {
@@ -1371,6 +1376,10 @@ fn device_group_track_key(device: i32) -> String {
 
 fn gpu_summary_track_key(device: i32) -> String {
     format!("gpu-summary|dev:{device}")
+}
+
+fn nvtx_track_key(depth: usize) -> String {
+    format!("nvtx|depth:{depth}")
 }
 
 fn axis(name: &str, value: impl ToString) -> VizAxis {
@@ -1622,6 +1631,40 @@ mod tests {
                 ("stream 4", "detail"),
             ]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn nvtx_depth_track_uses_dynamic_key_for_routing() -> anyhow::Result<()> {
+        let specs = vec![TrackSpec::parse("nvtx:depth=3")?];
+        let resolved = resolve_tracks(&specs, &[], false, true)?;
+        let track = resolved
+            .response_tracks
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected resolved NVTX track"))?;
+        assert_eq!(track.track_key, "nvtx|depth:3");
+
+        let intervals = build_intervals(
+            &resolved.tracks,
+            &specs,
+            &[],
+            &[],
+            &[TimelineEvent {
+                row_id: RowId::new(EventKind::Nvtx, 42),
+                kind: EventKind::Nvtx,
+                name: "range".to_string(),
+                full_name: "range".to_string(),
+                start_ns: 10,
+                end_ns: 20,
+                device_id: None,
+                stream_id: None,
+            }],
+            &HighlightAssignments::default(),
+        );
+        let interval = intervals
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("expected routed NVTX interval"))?;
+        assert_eq!(interval.track_key, "nvtx|depth:3");
         Ok(())
     }
 

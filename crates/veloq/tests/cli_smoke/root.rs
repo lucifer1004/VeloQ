@@ -43,6 +43,45 @@ fn nsys_viz_timeline_schema_endpoint_is_registered() -> Result<()> {
 }
 
 #[test]
+fn nsys_viz_timeline_requires_paired_window_bounds() -> Result<()> {
+    for (provided, missing) in [("--from", "--to"), ("--to", "--from")] {
+        let out = run_veloq(["viz", "timeline", "trace.nsys-rep", provided, "@100ms"])?;
+        assert!(
+            !out.status.success(),
+            "single-sided {provided} should fail during clap parsing"
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.is_empty(),
+            "JSON parse-error must keep stderr clean; got: {stderr}"
+        );
+        let v: Value =
+            serde_json::from_slice(&out.stdout).context("parse-error stdout must be valid JSON")?;
+        let message = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing error.message: {v}"))?;
+        assert!(
+            message.contains(missing),
+            "single-sided {provided} should require {missing}; got: {message}"
+        );
+        let chain_entry = v
+            .get("error")
+            .and_then(|e| e.get("chain"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("missing error.chain[0]: {v}"))?;
+        assert!(
+            chain_entry.contains("MissingRequiredArgument"),
+            "single-sided {provided} should be a clap missing-argument error; got: {chain_entry}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn nsys_viz_timeline_writes_svg_artifact() -> Result<()> {
     let (_trace_dir, trace) = build_minimal_trace()?;
     let trace_arg = trace.to_string_lossy();
