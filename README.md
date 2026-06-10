@@ -200,7 +200,15 @@ veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000
 # Highlight the top kernel names in that window while preserving the
 # base event-type legend; metadata lands in data.auxiliary.resolved_highlights.
 veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 --highlight-kernels top=3,scope=name
+```
 
+<p align="center">
+  <img src="docs/assets/examples/nsys-timeline.svg" alt="Example VeloQ NSys timeline SVG with GPU, stream, CUDA API, idle gaps, and highlighted kernels" width="900" />
+</p>
+
+<p align="center"><em>Example <code>viz timeline</code> SVG artifact with top-kernel highlights.</em></p>
+
+```bash
 # Discover canonical workflows (nvtx-breakdown, gpu-idle-audit,
 # timeline-figure-report, memcpy-asymmetry, cold-kernel-hotspot, ...)
 veloq recipes
