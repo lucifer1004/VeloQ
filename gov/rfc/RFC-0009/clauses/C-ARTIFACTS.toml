@@ -93,7 +93,49 @@ Each `data.auxiliary.resolved_tracks[]` object MUST carry `role`.
 
 The `role` field MUST identify the resolved track role using one of the stable role names defined by the track-tree contract.
 
-Each `data.auxiliary.resolved_tracks[]` object SHOULD carry source axes when source axes apply to that track.
+Each `data.auxiliary.resolved_tracks[]` object SHOULD carry `axes` as a compact axis list for existing agent display and filtering use.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `source_axes`.
+
+The `source_axes` field MUST be an array of axis objects.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `placement_axes`.
+
+The `placement_axes` field MUST be an array of axis objects.
+
+Every resolved-track axis object MUST carry `name`.
+
+Every resolved-track axis object MUST carry `value`.
+
+The `name` field MUST be a non-empty lowercase ASCII string.
+
+The `value` field MUST be a string.
+
+An empty `source_axes` array MUST mean the track has no source axis that needs to be reported at the track level.
+
+An empty `placement_axes` array MUST mean the track is not scoped to a more specific visual resource than the whole trace.
+
+Resolved-track axis arrays MUST use deterministic ordering for equivalent input evidence.
+
+Resolved-track axis arrays SHOULD NOT contain duplicate `(name, value)` pairs.
+
+When a finite concrete axis value is known, the command SHOULD report that concrete value rather than a sentinel.
+
+When an axis value is intentionally not finite, not selected, or not resolved, the command MAY use a stable source-defined string value such as `all`, `multiple`, or `unknown`.
+
+Each `data.auxiliary.resolved_tracks[]` object MUST carry `placement_source`.
+
+The `placement_source` field MUST use a stable lowercase string.
+
+The first stable `placement_source` values MUST include `native`, `correlation`, `nvtx_parent_sidecar`, and `fallback`.
+
+A track whose placement directly follows source evidence axes MUST report `placement_source` as `native`.
+
+A track whose placement is derived from general source correlation evidence MUST report `placement_source` as `correlation` unless a more specific stable value applies.
+
+A track whose placement is derived from the runtime-to-NVTX parent sidecar MUST report `placement_source` as `nvtx_parent_sidecar`.
+
+A track that preserves selected evidence without a more specific placement MUST report `placement_source` as `fallback`.
 
 The success payload `data.auxiliary` MUST carry the effective render policy.
 
@@ -119,6 +161,6 @@ The SVG artifact MUST NOT embed private absolute source paths, hostnames, or loc
 
 The SVG artifact MUST include non-private metadata for the VeloQ command, source kind, source version, resolved time window, resolved track keys, resolved track roles, render policy, and label policy used to create the figure.
 
-**Rationale:** The SVG is a generated artifact, while stdout remains the agent-readable response. The row shape lets agents attach the figure to a report, check whether the figure is complete or aggregated, and clean generated files through the existing artifact lifecycle.
+The SVG artifact SHOULD include non-private metadata for source axes, placement axes, and placement source when that metadata is present in the JSON response.
 
-*Since: v0.1.0*"""
+**Rationale:** The SVG is a generated artifact, while stdout remains the agent-readable response. The row shape lets agents attach the figure to a report, check whether the figure is complete or aggregated, distinguish native evidence from derived placement, and clean generated files through the existing artifact lifecycle."""

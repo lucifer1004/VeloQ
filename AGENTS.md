@@ -94,7 +94,7 @@ version).
    | `pytorch timeline`          | `bucket\|<start_ns>..<end_ns>`                                                                                                                                                                                |
    | `pytorch slices` instance   | `slice\|<name>\|@<start_ns>`                                                                                                                                                                                  |
    | `pytorch slices` aggregate  | `scope\|<name-or-step>`                                                                                                                                                                                       |
-   | `pytorch collectives`       | `collective\|<kind>\|rank:<n-or-none>\|step:<n-or-none>\|ordinal:<n>`                                                                                                                                          |
+   | `pytorch collectives`       | `collective\|<kind>\|rank:<n-or-none>\|step:<n-or-none>\|ordinal:<n>`                                                                                                                                         |
    | `pytorch prep`              | `sidecar\|<sidecar_name>`                                                                                                                                                                                     |
 
    Two traces of the same workload produce matching keys at

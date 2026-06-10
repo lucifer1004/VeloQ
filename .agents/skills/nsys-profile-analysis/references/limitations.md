@@ -192,15 +192,15 @@ they document cache behavior and cleanup only. They are not the
 agent-facing analysis API. Do not open generated `.veloq/` files with
 DuckDB, PyArrow, pandas, or ad hoc SQL during normal profile analysis.
 
-| File                                       | Built by                                                      | Cost                         |
-| ------------------------------------------ | ------------------------------------------------------------- | ---------------------------- |
-| `<trace>.veloq/parquetdir/<TABLE>.parquet` | First command on a `.nsys-rep`, or `veloq prep`               | hundreds of MB, multi-second |
-| `<trace>.veloq/correlation.bin`            | First `correlate` / `correlation-stats` call                  | KB-MB, sub-second            |
-| `<trace>.veloq/meta.bin`                   | First `summary` call, or `veloq prep`                         | few KB, ms                   |
-| `<trace>.veloq/gpu-work-events.parquet`    | `veloq prep`, or first full-trace `gaps` call                 | MB-scale, sub-second to seconds |
-| `<trace>.veloq/figures/nsys/timeline/*.svg` | `veloq viz timeline`                                         | KB-scale, sub-second to seconds after export |
-| `<trace>.veloq/nvtx-parent.parquet`        | First NVTX-parent grouped stats path that needs it            | KB-MB, sub-second to seconds |
-| `<trace>.veloq/nvtx-tree.parquet`          | First NVTX path grouping or `inspect nvtx:N` hierarchy lookup | KB-MB, sub-second to seconds |
+| File                                        | Built by                                                      | Cost                                         |
+| ------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `<trace>.veloq/parquetdir/<TABLE>.parquet`  | First command on a `.nsys-rep`, or `veloq prep`               | hundreds of MB, multi-second                 |
+| `<trace>.veloq/correlation.bin`             | First `correlate` / `correlation-stats` call                  | KB-MB, sub-second                            |
+| `<trace>.veloq/meta.bin`                    | First `summary` call, or `veloq prep`                         | few KB, ms                                   |
+| `<trace>.veloq/gpu-work-events.parquet`     | `veloq prep`, or first full-trace `gaps` call                 | MB-scale, sub-second to seconds              |
+| `<trace>.veloq/figures/nsys/timeline/*.svg` | `veloq viz timeline`                                          | KB-scale, sub-second to seconds after export |
+| `<trace>.veloq/nvtx-parent.parquet`         | First NVTX-parent grouped stats path that needs it            | KB-MB, sub-second to seconds                 |
+| `<trace>.veloq/nvtx-tree.parquet`           | First NVTX path grouping or `inspect nvtx:N` hierarchy lookup | KB-MB, sub-second to seconds                 |
 
 Use `veloq clean T` to remove the artifact root and force rebuild.
 For `.nsys-rep` inputs, the parquetdir freshness check follows ctime

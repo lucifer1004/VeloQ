@@ -391,7 +391,7 @@ without a JSON envelope.
 | `ncu-command`       | Generate a native `ncu` rerun command for one selected kernel event                                                                                                                     |
 | `gaps`              | GPU idle bubbles. Default `--scope device` is cross-stream (no phantom gaps from idle peer streams); `--scope stream` for per-stream starvation; `--scope trace` for multi-GPU rig idle |
 | `timeline`          | Time-bucketed GPU activity (busy ns + per-kind breakdown per bucket)                                                                                                                    |
-| `viz timeline`      | Export a bounded NSys timeline window as an SVG artifact with resolved track roles, render metadata, and label counters                                                                   |
+| `viz timeline`      | Export a bounded NSys timeline window as an SVG artifact with resolved track roles, placement provenance, render metadata, and label counters                                           |
 | `concurrency`       | Kernel/transfer overlap: per-device union vs sum busy time, peak concurrency, per-stream (incl. same-stream PDL) + compute/copy overlap. Extraction-only (ratios in jq)                 |
 | `graph-replays`     | CUDA Graph replay decomposition: per-replay GPU work keyed by `(device, context, correlationId)`, across both `--cuda-graph-trace=graph` and `=node` captures                           |
 | `slices`            | Per-NVTX-range CPU bounds + attributed GPU work                                                                                                                                         |
@@ -416,19 +416,19 @@ output mirrors the JSON `data.rows[]` one row per output line
 `counters` expand to one column per resolved counter name). `ncu
 schema` is JSON-only.
 
-| Command               | Formats            | Purpose                                                                                                                                                                                                                                    |
-| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ncu summary`         | json / csv / table | Slim overview: one launch-derived totals row + degraded session (NCU version only). `--format csv\|table` renders the totals + session as a `section,key,value` projection.                                                                |
-| `ncu launches`        | json / csv / table | List CUDA kernel launches as headline rows (`launch:<idx>`); filters: `--kernel '<glob>'`, `--nvtx-range '<glob>'`, `--grid WxHxD`, `--block WxHxD`, `--limit`                                                                             |
+| Command               | Formats            | Purpose                                                                                                                                                                                                                                                       |
+| --------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ncu summary`         | json / csv / table | Slim overview: one launch-derived totals row + degraded session (NCU version only). `--format csv\|table` renders the totals + session as a `section,key,value` projection.                                                                                   |
+| `ncu launches`        | json / csv / table | List CUDA kernel launches as headline rows (`launch:<idx>`); filters: `--kernel '<glob>'`, `--nvtx-range '<glob>'`, `--grid WxHxD`, `--block WxHxD`, `--limit`                                                                                                |
 | `ncu inspect`         | json / csv / table | Full per-launch payload (full metric list with placement-tagged instances + rules + recovered identity scalars) for one or more `--row-id launch:<idx>`; malformed, unsupported-kind, and out-of-range ids return `not_found` rows so partial batches survive |
-| `ncu metrics`         | json / csv / table | Cross-launch metric projection. Default long form (one row per `(launch, counter)`); `--per-launch` for wide form (BTreeMap counters expand to one column per name)                                                                        |
-| `ncu disasm`          | json / csv / table | SASS / PTX / source-index correlation for the cubin one launch ran out of (cubin extracted from the report, cached per-cubin under `<report>.veloq/disasm/`); tabular emits one row per SASS instruction with denormalised kernel identity |
-| `ncu source-metrics`  | json / csv / table | Per-source-line / per-SASS / per-file NCU counter attribution. Joins per-PC metric instances with DWARF source-line attribution; `--by line\|sass\|file`. See `veloq recipes source-line-hotspots` for the canonical invocation.           |
-| `ncu warp-stalls`     | json / csv / table | Per-source-line warp-stall-reason histogram from `timed_warp_samples` (the raw warp-state stream); `--by line\|sass\|reason`, `--file '<glob>'`. Raw sample counts + `not_issued`; jq for percentages.                                     |
-| `ncu ranges`          | json / csv / table | List range workloads (`--replay-mode range`)                                                                                                                                                                                               |
-| `ncu graphs`          | json / csv / table | List CUDA-graph workloads (`--graph-profiling graph`)                                                                                                                                                                                      |
-| `ncu sources`         | json / csv / table | Per-cubin source metadata (`cuda_sm_name`, `embedded_source_file_count`, `has_disasm`), one row per launch's cubin                                                                                                                         |
-| `ncu schema <target>` | json               | Strict JSON Schema for one NCU response. Targets are the response field inventory: `summary \| launches \| inspect \| metrics \| disasm \| ranges \| graphs \| sources \| source-metrics \| warp-stalls`                                  |
+| `ncu metrics`         | json / csv / table | Cross-launch metric projection. Default long form (one row per `(launch, counter)`); `--per-launch` for wide form (BTreeMap counters expand to one column per name)                                                                                           |
+| `ncu disasm`          | json / csv / table | SASS / PTX / source-index correlation for the cubin one launch ran out of (cubin extracted from the report, cached per-cubin under `<report>.veloq/disasm/`); tabular emits one row per SASS instruction with denormalised kernel identity                    |
+| `ncu source-metrics`  | json / csv / table | Per-source-line / per-SASS / per-file NCU counter attribution. Joins per-PC metric instances with DWARF source-line attribution; `--by line\|sass\|file`. See `veloq recipes source-line-hotspots` for the canonical invocation.                              |
+| `ncu warp-stalls`     | json / csv / table | Per-source-line warp-stall-reason histogram from `timed_warp_samples` (the raw warp-state stream); `--by line\|sass\|reason`, `--file '<glob>'`. Raw sample counts + `not_issued`; jq for percentages.                                                        |
+| `ncu ranges`          | json / csv / table | List range workloads (`--replay-mode range`)                                                                                                                                                                                                                  |
+| `ncu graphs`          | json / csv / table | List CUDA-graph workloads (`--graph-profiling graph`)                                                                                                                                                                                                         |
+| `ncu sources`         | json / csv / table | Per-cubin source metadata (`cuda_sm_name`, `embedded_source_file_count`, `has_disasm`), one row per launch's cubin                                                                                                                                            |
+| `ncu schema <target>` | json               | Strict JSON Schema for one NCU response. Targets are the response field inventory: `summary \| launches \| inspect \| metrics \| disasm \| ranges \| graphs \| sources \| source-metrics \| warp-stalls`                                                      |
 
 NCU drill verbs other than `inspect` may return handled diagnostic
 errors for malformed, unsupported-kind, or out-of-range launch row ids.
@@ -451,17 +451,17 @@ of adding parallel `steps`, `memory`, or `comm` commands; communication
 questions use `--type comm`, `--is-comm`, grouping axes, `slices`, and the
 source-specific `collectives` verb.
 
-| Command                   | Formats            | Purpose                                                                                                       |
-| ------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `pytorch summary`         | json / csv / table | Trace inventory, capabilities, active devices, rank/worker inference, versions, capture flags                 |
-| `pytorch search`          | json / csv / table | Typed event refs; filters include `--type`, name glob/regex, duration, time, rank, device, stream, step       |
+| Command                   | Formats            | Purpose                                                                                                        |
+| ------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `pytorch summary`         | json / csv / table | Trace inventory, capabilities, active devices, rank/worker inference, versions, capture flags                  |
+| `pytorch search`          | json / csv / table | Typed event refs; filters include `--type`, name glob/regex, duration, time, rank, device, stream, step        |
 | `pytorch inspect`         | json / csv / table | Raw args, typed args, parent/children, step/Python context, and correlation/flow links for one or more row ids |
-| `pytorch stats`           | json / csv / table | Duration/count aggregation by `name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path`  |
-| `pytorch correlate`       | json / csv / table | CPU op / annotation / runtime / driver / GPU activity causal chain for one or more row ids                    |
-| `pytorch timeline`        | json / csv / table | Time buckets with CPU, GPU, communication, and per-type time                                                  |
-| `pytorch slices`          | json / csv / table | ProfilerStep and user annotation range instances or aggregates                                                |
-| `pytorch collectives`     | json / csv / table | Single-trace communication groups with CPU/NCCL evidence row ids and link/ordinal confidence                  |
-| `pytorch prep`            | json / csv / table | Build or inspect PyTorch sidecars under `<input>.veloq/pytorch/`                                              |
+| `pytorch stats`           | json / csv / table | Duration/count aggregation by `name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path`   |
+| `pytorch correlate`       | json / csv / table | CPU op / annotation / runtime / driver / GPU activity causal chain for one or more row ids                     |
+| `pytorch timeline`        | json / csv / table | Time buckets with CPU, GPU, communication, and per-type time                                                   |
+| `pytorch slices`          | json / csv / table | ProfilerStep and user annotation range instances or aggregates                                                 |
+| `pytorch collectives`     | json / csv / table | Single-trace communication groups with CPU/NCCL evidence row ids and link/ordinal confidence                   |
+| `pytorch prep`            | json / csv / table | Build or inspect PyTorch sidecars under `<input>.veloq/pytorch/`                                               |
 | `pytorch schema <target>` | json               | Strict JSON Schema for one PyTorch response; schema targets are the response field inventory                   |
 
 ### Meta verbs (root, owned by the binary)
@@ -472,7 +472,7 @@ source-specific `collectives` verb.
 | `recipes [<id>]` | List or show registered workflow recipes (run `veloq recipes` for the catalog, `veloq recipes <id>` for one).                                                                                                                                                                                                                     |
 | `sources`        | Registered sources and their wire-format versions                                                                                                                                                                                                                                                                                 |
 | `clean <trace>`  | Remove the `<trace>.veloq/` artifact root generated by VeloQ                                                                                                                                                                                                                                                                      |
-| `self-update`    | Update the binary and bundled Agent Skills from the latest GitHub release (`--check` / `--no-skills` / `--no-binary` / `--skills-dir`)                                                                                                                                                                                           |
+| `self-update`    | Update the binary and bundled Agent Skills from the latest GitHub release (`--check` / `--no-skills` / `--no-binary` / `--skills-dir`)                                                                                                                                                                                            |
 
 Per-verb flag detail, response shape, sort keys, and examples live
 in `veloq <verb> --help` (which is projected from the same

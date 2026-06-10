@@ -1,7 +1,12 @@
 # typos (crate-ci/typos) configuration.
 #
-# typos respects .gitignore, so target/ and committed goldens are already
-# skipped. Its default dictionary accepts all NSys/NCU/CUDA jargon
+# typos respects .gitignore, so target/ is already skipped. Committed SVG
+# examples are generated report artifacts and may contain raw kernel template
+# tokens, so skip them at the file level rather than growing the word list.
+[files]
+extend-exclude = ["docs/assets/**/*.svg"]
+
+# Its default dictionary accepts all NSys/NCU/CUDA jargon
 # (nvtx, cubin, sass, ptx, parquetdir, ncu, nsys, memcpy, memset, ...), so the
 # allowlist below is intentionally tiny: only the short-token, compound-word,
 # and deliberate-spelling false positives actually flagged on this repo.
