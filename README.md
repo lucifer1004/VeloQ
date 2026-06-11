@@ -193,6 +193,7 @@ veloq search path/to/trace.nsys-rep --type kernel --name-regex 'gemm' --sort dur
 # Export a bounded timeline window as a report-ready SVG artifact.
 # The JSON row returns the SVG path relative to <trace>.veloq/; resolved
 # tracks carry roles such as group, summary, detail, and annotation.
+# Dense events are aggregated into per-track density bins by default.
 veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000
 
 # Highlight the top kernel names in that window while preserving the
@@ -205,6 +206,11 @@ veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 --hi
 </p>
 
 <p align="center"><em>Example <code>viz timeline</code> SVG artifact with top-kernel highlights.</em></p>
+
+See the [examples index](examples/README.md) and the
+[NSys timeline visualization report](examples/reports/nsys-timeline-vis/report.md)
+for an agent-written Markdown report with embedded SVG figures and scrubbed
+evidence metadata.
 
 ```bash
 # Discover canonical workflows (nvtx-breakdown, gpu-idle-audit,
@@ -297,7 +303,7 @@ Every successful JSON call returns the source-qualified v1 envelope:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v2" },
+  "source": { "kind": "nsys", "version": "v3" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },
@@ -315,11 +321,12 @@ Every successful JSON call returns the source-qualified v1 envelope:
   (`"nsys"`, `"ncu"`, `"pytorch"`, or `"veloq"` for meta verbs).
 - `source.version` — per-source wire-format version. Bumps
   independently from the envelope when the source's payload shapes
-  change. Currently NSys reports `v2` (`v1` introduced the NVTX domain
+  change. Currently NSys reports `v3` (`v1` introduced the NVTX domain
   dimension on `stats --group-by nvtx-path` rows; `v2` makes `prep` and
   `prep --status` canonical list responses where `data.rows[]` carries
-  registered sidecar readiness keyed as `sidecar|<sidecar-id>`) and NCU
-  reports `v1` (the
+  registered sidecar readiness keyed as `sidecar|<sidecar-id>`; `v3`
+  removes the `viz timeline` label character-cap option and response
+  echo) and NCU reports `v1` (the
   `ncu_report`-native wire — `inspect` carries no section catalog and
   `summary.auxiliary.session` keeps only the NCU version; each
   `ncu inspect` metric's
@@ -359,7 +366,7 @@ Errors share the same shape, with `data` replaced by `error`:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v2" },
+  "source": { "kind": "nsys", "version": "v3" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "error": {

@@ -54,6 +54,12 @@ clauses = [
 ]
 
 [[changelog]]
+version = "0.4.0"
+date = "2026-06-11"
+notes = "Bump NSys wire to v3 for timeline label-policy cleanup"
+changed = ["NSys source.version advances to v3 because nsys.viz.timeline no longer exposes character-count label caps in the command surface or response payload"]
+
+[[changelog]]
 version = "0.2.1"
 date = "2026-06-08"
 notes = "Attach artifacts clause to the NSys v2 amendment"

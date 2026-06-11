@@ -1,5 +1,10 @@
 use crate::VizRole;
 
+pub(super) const INTERVAL_LABEL_FONT_PX: f64 = 9.0;
+pub(super) const INTERVAL_LABEL_PADDING_X: f64 = 1.0;
+pub(super) const INTERVAL_LABEL_BASELINE_OFFSET_PX: f64 = 10.8;
+pub(super) const INTERVAL_LABEL_MIN_WIDTH_PX: f64 = 18.0;
+
 pub(super) struct ItemStyle {
     pub(super) height: f64,
     pub(super) y_offset: f64,
@@ -52,4 +57,12 @@ pub(super) fn item_opacity(class: Option<&str>) -> f64 {
         Some("nvtx") => 0.88,
         _ => 1.0,
     }
+}
+
+pub(super) fn density_opacity(total_duration_ns: i64, bin_span_ns: i64) -> f64 {
+    if total_duration_ns <= 0 || bin_span_ns <= 0 {
+        return 0.18;
+    }
+    let density = (total_duration_ns as f64 / bin_span_ns as f64).clamp(0.0, 1.0);
+    0.18 + density.sqrt() * 0.50
 }

@@ -114,13 +114,15 @@ version).
 
 3. **Per-source version (`SourceRef.version`)**: bumps independently
    from `ENVELOPE_VERSION` on any breaking shape change to that
-   source's payloads. Today NSys is `v2`: `v1` introduced the NVTX
+   source's payloads. Today NSys is `v3`: `v1` introduced the NVTX
    domain dimension on `stats --group-by nvtx-path` rows
    (domain-qualified key plus resolved
    `domain_id`/`domain_pid`/`domain_name`), and `v2` changes
    `prep` / `prep --status` to the canonical sidecar-readiness list
    response (`data.rows[]` with `sidecar|<sidecar-id>` keys,
-   plus command-level context under `data.auxiliary`). NCU is `v1` — the
+   plus command-level context under `data.auxiliary`); `v3` removes
+   the `viz timeline` label character-cap option and response echo.
+   NCU is `v1` — the
    `ncu_report`-native wire (`inspect` drops the
    section catalog and cpu/python stacks, `summary.auxiliary.session`
    keeps only the NCU version), with the wire reporting each `ncu inspect` metric's `metric_type` /
@@ -423,6 +425,7 @@ Registration:
 let sources: Vec<Box<dyn ProfileSource>> = vec![
     Box::new(NsysSource),
     Box::new(NcuSource),
+    Box::new(PytorchSource),
     Box::new(MyNewSource),   // ← add here
 ];
 ```

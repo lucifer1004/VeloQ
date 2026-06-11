@@ -27,8 +27,9 @@ you are developing VeloQ itself.
 
 `veloq prep T` only warms caches. After prep, continue with VeloQ verbs:
 `summary`, `stats`, `search`, `inspect`, `correlate`, `timeline`,
-`viz timeline`, `slices`, `gaps`, `metrics`, `hardware`, or a
-`veloq recipes <id>` workflow.
+`viz timeline`, `slices`, `gaps`, `concurrency`, `graph-replays`,
+`metrics`, `hardware`, `ncu-command`, or a `veloq recipes <id>`
+workflow.
 
 If no VeloQ verb can answer the question, first report the VeloQ
 coverage gap and the closest command or recipe you tried. Use raw-table
@@ -99,7 +100,7 @@ cargo build --release -p veloq
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v2" },
+  "source": { "kind": "nsys", "version": "v3" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "..." },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },
@@ -155,7 +156,8 @@ read `data.auxiliary.resolved_tracks[].role`: `summary` tracks are
 rollups, `detail` tracks are concrete lanes, `annotation` tracks are
 context, and idle gaps are overlays. Before embedding the figure, check
 `aggregated`, `omitted_track_count`, `suppressed_label_count`, and
-`truncated_label_count`; mention non-zero counters. Use
+`truncated_label_count`; mention non-zero counters. Density aggregation
+is per-track visual compaction for dense windows, not evidence loss. Use
 `source_axes`, `placement_axes`, and `placement_source` when explaining
 track placement; NVTX ranges grouped under a GPU are derived attribution,
 not native GPU events. Use

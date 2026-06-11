@@ -479,8 +479,10 @@ fn long_about_timeline() -> String {
 const VIZ_TIMELINE_BLURB: &str = "Export a bounded NSys timeline window as a report-ready SVG artifact. \
      The JSON response stays in the VeloQ envelope and points at a generated SVG under the trace artifact root. \
      Resolved tracks carry roles so GPU summary rollups, stream details, annotations, and overlays can be interpreted separately. \
-     Intervals below --min-interval-px render as ticks, not stretched bars; label suppression, truncation, \
-     aggregation, and omitted-track counts are reported in the response.";
+     Dense intervals are aggregated into per-track density bins by default, \
+     not stretched bars; --max-items may raise the density threshold, and --no-density uses tick-only rendering. \
+     Label suppression, truncation, \
+     density aggregation, and omitted counts are reported in the response.";
 const VIZ_TIMELINE_EXAMPLES: &[&str] = &[
     "veloq viz timeline T --from @100000000 --to @110000000",
     "veloq viz timeline T --from 1s --to 1.1s --track gpu:device=0 --track cuda-streams:device=0,top=6",
@@ -623,7 +625,7 @@ pub fn long_about_schema() -> String {
     out.push('.');
     out.push_str("\n\nResponse envelope:\n  ");
     out.push_str(
-        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v2\" }, \
+        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v3\" }, \
          command: \"nsys.schema\", data: { target: <string>, schema: <JSON Schema document> } }",
     );
     out.push_str("\n\nExamples:\n");

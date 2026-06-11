@@ -37,7 +37,7 @@ pub use types::{
 pub const DEFAULT_TOP_STREAMS: usize = 8;
 const VIZ_TIMELINE_COMMAND: &str = "nsys.viz.timeline";
 const NSYS_SOURCE_KIND: &str = "nsys";
-const NSYS_SOURCE_VERSION: &str = "v2";
+const NSYS_SOURCE_VERSION: &str = "v3";
 
 pub fn default_track_specs() -> Vec<String> {
     vec![
@@ -178,6 +178,10 @@ fn figure_row(
         track_count: summary.track_count,
         rendered_item_count: summary.rendered_item_count,
         total_item_count: summary.total_item_count,
+        density_item_count: summary.density_item_count,
+        density_bin_count: summary.density_bin_count,
+        density_duration_ns: summary.density_duration_ns,
+        omitted_explicit_item_count: summary.omitted_explicit_item_count,
         aggregated: summary.aggregated,
         omitted_track_count: summary.omitted_track_count,
         suppressed_label_count: summary.suppressed_label_count,

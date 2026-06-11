@@ -1,0 +1,191 @@
+{
+  "source": "scrubbed NSys timeline example",
+  "generated_by": "veloq viz timeline",
+  "figures": [
+    {
+      "key": "figure|timeline|8765000000..10615000000|req:6d6ebc59a1bae1a7",
+      "path": "figures/hybrid-prefill-pipeline.svg",
+      "time_window_ns": [8765000000, 10615000000],
+      "track_count": 13,
+      "rendered_item_count": 717,
+      "total_item_count": 18044,
+      "density_item_count": 16625,
+      "density_bin_count": 68,
+      "density_duration_ns": 3762806012,
+      "omitted_explicit_item_count": 770,
+      "aggregated": true,
+      "omitted_track_count": 0,
+      "suppressed_label_count": 633,
+      "truncated_label_count": 16,
+      "render_policy": {
+        "width_px": 1200,
+        "max_tracks": 64,
+        "max_items": 800,
+        "min_interval_px": 1.0,
+        "density_bin_px": 48.0,
+        "aggregation": "density_bins"
+      },
+      "requested_tracks": ["cuda-streams:device=all,top=4", "nvtx:depth=1"],
+      "requested_highlights": ["top=4,scope=name"],
+      "resolved_highlights": [
+        {
+          "rank": 1,
+          "label": "ncclDevKernel_AllReduce_Sum_bf16_RING_LL",
+          "metric": "total_duration_ns",
+          "score": 1300777490,
+          "score_total": 5423438011
+        },
+        {
+          "rank": 2,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 950725264,
+          "score_total": 5423438011
+        },
+        {
+          "rank": 3,
+          "label": "sparse_mla_prefill_mg_dual_kernel",
+          "metric": "total_duration_ns",
+          "score": 497504352,
+          "score_total": 5423438011
+        },
+        {
+          "rank": 4,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 493726667,
+          "score_total": 5423438011
+        }
+      ],
+      "id": "hybrid-prefill-pipeline"
+    },
+    {
+      "key": "figure|timeline|145500000..190500000|req:b582916dc3ac7515",
+      "path": "figures/hybrid-decode-overlap.svg",
+      "time_window_ns": [145500000, 190500000],
+      "track_count": 13,
+      "rendered_item_count": 134,
+      "total_item_count": 1708,
+      "density_item_count": 1566,
+      "density_bin_count": 40,
+      "density_duration_ns": 7898957,
+      "omitted_explicit_item_count": 48,
+      "aggregated": true,
+      "omitted_track_count": 0,
+      "suppressed_label_count": 82,
+      "truncated_label_count": 8,
+      "render_policy": {
+        "width_px": 1200,
+        "max_tracks": 64,
+        "max_items": 800,
+        "min_interval_px": 1.0,
+        "density_bin_px": 48.0,
+        "aggregation": "density_bins"
+      },
+      "requested_tracks": ["cuda-streams:device=all,top=4", "nvtx:depth=1"],
+      "requested_highlights": ["top=5,scope=name"],
+      "resolved_highlights": [
+        {
+          "rank": 1,
+          "label": "ncclDevKernel_Broadcast_RING_LL",
+          "metric": "total_duration_ns",
+          "score": 70805663,
+          "score_total": 111295497
+        },
+        {
+          "rank": 2,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 21427300,
+          "score_total": 111295497
+        },
+        {
+          "rank": 3,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 10780213,
+          "score_total": 111295497
+        },
+        {
+          "rank": 4,
+          "label": "cross_device_reduce_1stage",
+          "metric": "total_duration_ns",
+          "score": 1175108,
+          "score_total": 111295497
+        },
+        {
+          "rank": 5,
+          "label": "sparse_mla_decode_dsv4_kernel",
+          "metric": "total_duration_ns",
+          "score": 794601,
+          "score_total": 111295497
+        }
+      ],
+      "id": "hybrid-decode-overlap"
+    },
+    {
+      "key": "figure|timeline|237000000..272000000|req:a478e068509816dd",
+      "path": "figures/tp-decode-contrast.svg",
+      "time_window_ns": [237000000, 272000000],
+      "track_count": 8,
+      "rendered_item_count": 319,
+      "total_item_count": 3528,
+      "density_item_count": 3277,
+      "density_bin_count": 68,
+      "density_duration_ns": 12787373,
+      "omitted_explicit_item_count": 0,
+      "aggregated": true,
+      "omitted_track_count": 0,
+      "suppressed_label_count": 251,
+      "truncated_label_count": 0,
+      "render_policy": {
+        "width_px": 1200,
+        "max_tracks": 64,
+        "max_items": 800,
+        "min_interval_px": 1.0,
+        "density_bin_px": 48.0,
+        "aggregation": "density_bins"
+      },
+      "requested_tracks": ["cuda-streams:device=all,top=4"],
+      "requested_highlights": ["top=5,scope=name"],
+      "resolved_highlights": [
+        {
+          "rank": 1,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 24240594,
+          "score_total": 51635415
+        },
+        {
+          "rank": 2,
+          "label": "sm120_fp8_fp4_gemm_1d1d_impl",
+          "metric": "total_duration_ns",
+          "score": 11451080,
+          "score_total": 51635415
+        },
+        {
+          "rank": 3,
+          "label": "ncclDevKernel_AllReduce_Sum_bf16_RING_LL",
+          "metric": "total_duration_ns",
+          "score": 3336560,
+          "score_total": 51635415
+        },
+        {
+          "rank": 4,
+          "label": "sparse_mla_decode_dsv4_kernel",
+          "metric": "total_duration_ns",
+          "score": 2153452,
+          "score_total": 51635415
+        },
+        {
+          "rank": 5,
+          "label": "sm120_fp8_paged_mqa_logits",
+          "metric": "total_duration_ns",
+          "score": 1043914,
+          "score_total": 51635415
+        }
+      ],
+      "id": "tp-decode-contrast"
+    }
+  ]
+}

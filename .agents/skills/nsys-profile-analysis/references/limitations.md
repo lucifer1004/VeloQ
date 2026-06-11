@@ -173,14 +173,14 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   round-tripping through `inspect` / `correlate` verbatim.
 - **`schema`** bumps on removal or rename of envelope-shape
   fields; additive evolution stays on the same string. Current
-  value is `"v2"`. Every list response uses the canonical
+  value is `"v1"`. Every list response uses the canonical
   `data.rows[]` shape with a per-row `key`, search and event
   results share the `EventRef` form, and the envelope carries
   `trace_span`.
 - **`source.version`** is per-source and bumps independently on
   any breaking shape change to that source's payloads. Currently
-  `"v2"` for NSys and `"v1"` for NCU; source versions are
-  independent.
+  `"v3"` for NSys, `"v1"` for NCU, and `"v0"` for PyTorch;
+  source versions are independent.
 - **Agents should ignore unknown JSON keys**. VeloQ adds fields
   forward-compatibly between schema bumps; consumers that
   hard-fail on unknown break on the next minor release.

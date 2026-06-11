@@ -21,10 +21,10 @@ pub(super) fn request_fingerprint(
     hash.push(&render_policy.max_tracks.to_string());
     hash.push(&render_policy.max_items.to_string());
     hash.push(&render_policy.min_interval_px.to_string());
+    hash.push(&render_policy.density_bin_px.to_string());
     hash.push(&render_policy.aggregation.to_string());
     hash.push(&label_policy.mode.to_string());
     hash.push(&label_policy.min_label_px.to_string());
-    hash.push(&label_policy.max_chars.to_string());
     format!("{:016x}", hash.finish())
 }
 

@@ -4,7 +4,7 @@
 # examples are generated report artifacts and may contain raw kernel template
 # tokens, so skip them at the file level rather than growing the word list.
 [files]
-extend-exclude = ["docs/assets/**/*.svg"]
+extend-exclude = ["docs/assets/**/*.svg", "examples/reports/**/*.svg"]
 
 # Its default dictionary accepts all NSys/NCU/CUDA jargon
 # (nvtx, cubin, sass, ptx, parquetdir, ncu, nsys, memcpy, memset, ...), so the

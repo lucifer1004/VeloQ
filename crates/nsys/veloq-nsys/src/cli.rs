@@ -470,13 +470,17 @@ pub enum VizCmd {
         #[arg(long = "min-interval-px", default_value_t = 1.0)]
         min_interval_px: f64,
 
+        /// Pixel width for density bins that aggregate same-track sub-threshold intervals.
+        #[arg(long = "density-bin-px", default_value_t = 2.0)]
+        density_bin_px: f64,
+
+        /// Disable density bins and render sub-threshold intervals as ticks subject to --max-items.
+        #[arg(long = "no-density")]
+        no_density: bool,
+
         /// Minimum bar width required before drawing an interval label.
         #[arg(long = "min-label-px", default_value_t = 48.0)]
         min_label_px: f64,
-
-        /// Maximum characters to render inside one interval label.
-        #[arg(long = "max-label-chars", default_value_t = 32)]
-        max_label_chars: usize,
     },
 }
 

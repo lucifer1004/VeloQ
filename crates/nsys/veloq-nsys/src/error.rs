@@ -59,6 +59,9 @@ pub enum NsysSourceError {
         source: veloq_core::time::TimeParseError,
     },
 
+    #[error("{flag} must be positive and finite (got {value})")]
+    InvalidRenderOption { flag: &'static str, value: String },
+
     #[error("invalid row_id `{row_id}`")]
     InvalidRowId {
         row_id: String,
@@ -332,6 +335,9 @@ impl VeloqDiagnostic for NsysSourceError {
             Self::EmptyEventKindList => ErrorCode::new("nsys.command.empty-event-kind-list"),
             Self::InvalidSort { .. } => ErrorCode::new("nsys.command.invalid-sort"),
             Self::InvalidDuration { .. } => ErrorCode::new("nsys.command.invalid-duration"),
+            Self::InvalidRenderOption { .. } => {
+                ErrorCode::new("nsys.command.invalid-render-option")
+            }
             Self::InvalidRowId { .. } => ErrorCode::new("nsys.command.invalid-row-id"),
             Self::UnstableFeatureDisabled { .. } => {
                 ErrorCode::new("nsys.command.unstable-feature-disabled")

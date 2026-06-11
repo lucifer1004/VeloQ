@@ -36,7 +36,7 @@ impl NsysSource {
     /// (`domain_id`, `domain_pid`) plus its `domain_name` when
     /// registered. Same-name/same-parent ranges in distinct
     /// `(pid, domainId)` domains stay distinct.
-    pub const VERSION: &'static str = "v2";
+    pub const VERSION: &'static str = "v3";
 }
 
 impl ProfileSource for NsysSource {

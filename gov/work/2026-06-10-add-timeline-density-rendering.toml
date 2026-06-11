@@ -1,0 +1,33 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-10-003"
+title = "Add timeline density rendering"
+status = "done"
+created = "2026-06-10"
+started = "2026-06-10"
+completed = "2026-06-10"
+refs = ["RFC-0009"]
+
+[content]
+description = "Implement default-on source-neutral timeline density rendering so dense NSys SVG figures preserve full-window activity without misleading item-limit truncation."
+
+[[content.acceptance_criteria]]
+text = "subpixel timeline intervals are aggregated into same-track density bins by visual class"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "highlighted/top-k intervals remain explicit visual items and do not disappear into density bins"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "render summary and NSys response report density counts and omitted explicit items"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "targeted veloq-vis and nsys checks pass"
+status = "done"
+category = "chore"

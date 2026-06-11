@@ -51,7 +51,10 @@ veloq viz timeline T --from @100000000 --to @120000000 \
       tracks: $row.track_count,
       rendered: $row.rendered_item_count,
       total: $row.total_item_count,
+      density_items: $row.density_item_count,
+      density_bins: $row.density_bin_count,
       aggregated: $row.aggregated,
+      omitted_explicit_items: $row.omitted_explicit_item_count,
       omitted_tracks: $row.omitted_track_count,
       suppressed_labels: $row.suppressed_label_count,
       truncated_labels: $row.truncated_label_count,
@@ -60,10 +63,12 @@ veloq viz timeline T --from @100000000 --to @120000000 \
     }'
 ```
 
-The returned `path` is relative to `<trace>.veloq/`. If aggregation,
-omitted tracks, suppressed labels, or truncated labels are non-zero,
-say so in the report. Very narrow events render as ticks instead of
-being stretched into fake-width bars.
+The returned `path` is relative to `<trace>.veloq/`. Dense windows are
+compacted into per-track density bins instead of stretched into fake-width
+bars; `--max-items` may raise the density threshold. If aggregation, omitted
+tracks, suppressed labels, or truncated labels are non-zero, say so in
+the report; density means the figure stayed visually compact, not that
+the underlying query ignored those events.
 
 `--highlight-kernels top=<n>,scope=name` colors the top kernel names in
 the selected window without changing base event classes. Use

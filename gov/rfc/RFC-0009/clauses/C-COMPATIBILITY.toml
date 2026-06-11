@@ -23,6 +23,8 @@ Changing stable event-placement semantics after the command is stabilized MUST b
 
 Removing a required field from the figure row after the command is stabilized MUST be treated as a breaking source payload change.
 
+Removing a stable field from `data.auxiliary.label_policy` after the command is stabilized MUST be treated as a breaking source payload change.
+
 Changing the type or meaning of a required figure row field after the command is stabilized MUST be treated as a breaking source payload change.
 
 Changing the type or meaning of required resolved-track placement metadata after the command is stabilized MUST be treated as a breaking source payload change.
