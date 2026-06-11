@@ -202,10 +202,10 @@ veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 --hi
 ```
 
 <p align="center">
-  <img src="docs/assets/examples/nsys-timeline.svg" alt="Example VeloQ NSys timeline SVG with GPU, stream, CUDA API, idle gaps, and highlighted kernels" width="900" />
+  <img src="docs/assets/examples/nsys-timeline.svg" alt="Example VeloQ NSys timeline SVG with multi-GPU streams, NVTX lanes, density bins, and highlighted kernels" width="900" />
 </p>
 
-<p align="center"><em>Example <code>viz timeline</code> SVG artifact with top-kernel highlights.</em></p>
+<p align="center"><em>Example <code>viz timeline</code> SVG artifact with per-device NVTX lanes, density bins, and top-kernel highlights.</em></p>
 
 See the [examples index](examples/README.md) and the
 [NSys timeline visualization report](examples/reports/nsys-timeline-vis/report.md)
