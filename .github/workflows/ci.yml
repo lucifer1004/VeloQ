@@ -28,6 +28,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+      - name: Check agent plugin package
+        run: scripts/check-agent-plugin-package.sh
       - name: Install build deps
         run: |
           apt-get update

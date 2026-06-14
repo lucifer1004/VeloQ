@@ -1,0 +1,16 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC specifies VeloQ's source-neutral agent integration command surface. It defines how VeloQ may install, update, uninstall, and diagnose VeloQ Agent Skills for supported agent runtimes while preserving the CLI I/O contract from [[RFC-0002]] and the agent-friendly product center from [[RFC-0001]].
+
+**Scope:** This RFC covers the root `veloq agent` meta command, supported agent identifiers, local-checkout plugin installation, native agent-CLI orchestration, and JSON response/error behavior. It does not specify profile-source query behavior, the internal format of third-party agent configuration files, or release packaging mechanics beyond the externally selected plugin package source.
+
+**Rationale:** VeloQ's Agent Skills are part of the product experience, but installing them should not require users to memorize product-specific plugin manager commands. A narrow VeloQ command can make the integration discoverable while keeping each agent runtime in control of its own plugin state."""

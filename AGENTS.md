@@ -9,6 +9,9 @@ should read the skills under `.agents/skills/`:
 - `.agents/skills/ncu-profile-analysis/` — Nsight Compute kernel reports
 - `.agents/skills/pytorch-profile-analysis/` — PyTorch/Kineto traces
 
+The canonical repo-local Agent Skills source is `plugins/veloq/skills/`.
+The `.agents/skills/` path is a compatibility alias for agent discovery.
+
 VeloQ (velo-query) is a profile-query CLI family. Pure CLI in /
 JSON contract out by default, CSV/table projections for row-shaped
 views, no GUI, no MCP server in v1. Today it covers Nsight Systems
@@ -73,6 +76,7 @@ version).
    | `metrics` cpu-sampling      | bare `<symbol>` / `<module-basename>` / `<tid>` / `<cpu>` per `--group-by`                                                                                                                                    |
    | `metrics` cpu-sched         | `tid:<id>` / `cpu:<id>` / `state:<name>` per `--group-by`                                                                                                                                                     |
    | `prep`                      | `sidecar\|<sidecar-id>`                                                                                                                                                                                       |
+   | `agent`                     | `agent\|<agent-id>`                                                                                                                                                                                           |
    | `ncu summary`               | `totals` (single-row summary)                                                                                                                                                                                 |
    | `ncu launches`              | `launch:<idx>`                                                                                                                                                                                                |
    | `ncu inspect`               | `launch:<idx>`                                                                                                                                                                                                |
@@ -184,7 +188,8 @@ veloq/
     │                             render policy, SVG renderer, and figure
     │                             artifact writer
     ├── veloq/                  # The `veloq` binary — thin registry+dispatch
-    │                             shell; meta verbs (`info`, `sources`, `clean`)
+    │                             shell; meta verbs (`info`, `sources`,
+    │                             `clean`, `agent`)
     ├── nsys/
     │   ├── veloq-nsys-data/    # Trace open + Parquet cache + CorrelationIndex
     │   ├── veloq-nsys-query/   # One module per NSys verb
@@ -203,6 +208,11 @@ veloq/
         └── veloq-pytorch/      # Pytorch clap surface + dispatch + CSV/table
                                   views; impls `PytorchSource: ProfileSource`
 ```
+
+The `veloq agent` command depends on the external
+`agent-plugin-installer` crate for source-neutral Codex/Claude native
+CLI orchestration. VeloQ owns only its package validation, command
+surface, and JSON envelope projection.
 
 Each profile source lives under its own subdirectory
 (`crates/<source>/`) so the workspace glob picks them up
@@ -244,7 +254,7 @@ namespaced under `pytorch`; experimental source version `v0`):
 
 Meta verbs (root, owned by the binary):
 
-- [x] `info <trace>` / `sources` / `clean <trace>` / `recipes` / `self-update`
+- [x] `info <trace>` / `sources` / `clean <trace>` / `recipes` / `agent` / `self-update`
 
 Not shipped yet:
 
@@ -464,6 +474,6 @@ one line plus the source crate.
       release clippy guard runs `--all-targets` to actually enforce
       them on integration tests too. Use `ok_or_else` + `?` instead.
 - [ ] New subcommand → updated this file's roadmap + README
-      example + matching `.agents/skills/*` profile-analysis skill
+      example + matching `plugins/veloq/skills/*` profile-analysis skill
       (the skill is the user-facing contract description; this
       file is the maintainer-side invariant).

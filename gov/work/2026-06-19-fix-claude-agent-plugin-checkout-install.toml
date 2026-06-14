@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-19-001"
+title = "Fix Claude agent plugin checkout install"
+status = "done"
+created = "2026-06-19"
+started = "2026-06-19"
+completed = "2026-06-19"
+refs = [
+    "RFC-0010:C-PACKAGE-SOURCE",
+    "RFC-0010:C-NATIVE-CLI-ORCHESTRATION",
+]
+
+[content]
+description = "Fix the checkout-based Claude agent plugin install path discovered by local E2E: Claude must install from the lightweight VeloQ plugin mirror rather than the full repository root, while Codex continues to use the same mirror."
+
+[[content.acceptance_criteria]]
+text = "Claude agent install uses a lightweight plugin mirror source"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Claude install passes the canonicalized checkout path to claude plugin marketplace add"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Plugin mirror sync and CI checks cover Claude metadata"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "README and [[RFC-0010]] package-source text match the shared plugin mirror layout"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"

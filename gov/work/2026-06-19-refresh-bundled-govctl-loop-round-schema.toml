@@ -1,0 +1,22 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-19-003"
+title = "Refresh bundled govctl loop round schema"
+status = "done"
+created = "2026-06-19"
+started = "2026-06-19"
+completed = "2026-06-19"
+
+[content]
+description = "Refresh the bundled govctl loop-round schema after `govctl migrate` synced the project schema file, keeping governance validation clean and separate from agent plugin package layout changes."
+
+[[content.acceptance_criteria]]
+text = "`gov/schema/loop-round.schema.json` matches the current govctl bundled schema"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "`govctl check` passes"
+status = "done"
+category = "chore"

@@ -110,8 +110,8 @@ jobs:
           # Reproducible: fixed owner/mtime so sha256s match for identical input.
           staged="$(mktemp -d)"
           mkdir -p "$staged/.agents" "$staged/.claude"
-          cp -R .agents/skills "$staged/.agents/skills"
-          cp -R .agents/skills "$staged/.claude/skills"
+          cp -R plugins/veloq/skills "$staged/.agents/skills"
+          cp -R plugins/veloq/skills "$staged/.claude/skills"
           tar -czf veloq-skills.tar.gz \
             --owner=root --group=root \
             --mtime='2026-01-01 00:00:00 UTC' \

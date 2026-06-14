@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-NATIVE-CLI-ORCHESTRATION"
+title = "Native CLI orchestration"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+When an `agent` operation modifies an agent runtime's plugin state, VeloQ MUST invoke that runtime's native CLI command.
+
+VeloQ MUST NOT directly edit private agent-runtime configuration files or plugin cache directories for install, update, or uninstall operations.
+
+If the selected agent runtime's CLI is not available on `PATH`, VeloQ MUST fail with a handled structured diagnostic error.
+
+If the selected agent runtime's native CLI exits unsuccessfully, VeloQ MUST fail with a handled structured diagnostic error that identifies the failed phase.
+
+Child-process stdout MUST NOT be forwarded to VeloQ stdout in JSON mode.
+
+Child-process stderr MAY be captured and summarized in diagnostics.
+
+**Rationale:** The agent runtime owns its plugin registry, cache layout, and compatibility behavior. VeloQ should orchestrate the public CLI entrypoints instead of depending on private file layouts, and it must preserve VeloQ's stdout contract while doing so."""
