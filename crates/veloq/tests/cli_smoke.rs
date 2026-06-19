@@ -169,6 +169,27 @@ where
     cmd.output().context("spawn veloq binary")
 }
 
+fn run_veloq_with_env_and_cwd<I, S, E, K, V>(
+    args: I,
+    envs: E,
+    cwd: impl AsRef<std::path::Path>,
+) -> Result<Output>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<std::ffi::OsStr>,
+    V: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Command::new(veloq_bin());
+    cmd.args(args);
+    cmd.current_dir(cwd);
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().context("spawn veloq binary")
+}
+
 fn run_veloq_without_unstable<I, S>(args: I) -> Result<Output>
 where
     I: IntoIterator<Item = S>,

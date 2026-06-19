@@ -7,6 +7,7 @@
 //! registered source's identity. Meta verbs stay JSON-only — the
 //! responses are tiny and CSV / table flatteners would buy nothing.
 
+pub mod agent;
 pub mod clean;
 pub mod error;
 pub mod info;
@@ -35,7 +36,7 @@ pub const META_SOURCE: SourceRef = SourceRef {
 pub fn is_meta(verb: &str) -> bool {
     matches!(
         verb,
-        "info" | "sources" | "clean" | "recipes" | "self-update"
+        "agent" | "info" | "sources" | "clean" | "recipes" | "self-update"
     )
 }
 
@@ -43,6 +44,7 @@ pub fn is_meta(verb: &str) -> bool {
 /// onto its top-level `Command`.
 pub fn cli() -> Vec<Command> {
     vec![
+        agent::cli(),
         info::cli(),
         sources::cli(),
         clean::cli(),
@@ -63,6 +65,7 @@ pub fn run(
     fmt: OutputFormat,
 ) -> MetaResult<i32> {
     match verb {
+        "agent" => agent::run(matches, fmt),
         "clean" => clean::run(matches, sources, fmt),
         "info" => info::run(matches, sources, fmt),
         "sources" => sources::run(matches, sources, fmt),

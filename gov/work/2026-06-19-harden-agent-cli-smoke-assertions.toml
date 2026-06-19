@@ -1,0 +1,27 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-19-004"
+title = "Harden agent CLI smoke assertions"
+status = "done"
+created = "2026-06-19"
+started = "2026-06-19"
+completed = "2026-06-19"
+
+[content]
+description = "Address review feedback for agent CLI smoke tests by ensuring child stderr does not leak and preflight logs cannot pass vacuously when empty."
+
+[[content.acceptance_criteria]]
+text = "Agent CLI smoke tests assert child stderr isolation"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Agent all-install preflight log assertion rejects empty logs"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "`govctl check` passes"
+status = "done"
+category = "chore"

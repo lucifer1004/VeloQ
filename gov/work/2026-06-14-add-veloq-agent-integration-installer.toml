@@ -1,0 +1,48 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-14-001"
+title = "Add VeloQ agent integration installer"
+status = "done"
+created = "2026-06-14"
+started = "2026-06-14"
+completed = "2026-06-14"
+refs = ["RFC-0010"]
+
+[content]
+description = "Add a VeloQ-owned agent integration surface that installs, updates, uninstalls, and diagnoses VeloQ Agent Skills for supported agent CLIs by orchestrating their native plugin commands. The work also makes the repo-local Codex plugin package installable without symlink-dependent package contents."
+
+[[content.acceptance_criteria]]
+text = "Add a veloq agent command surface for supported agent integrations"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Implement local-checkout install and doctor behavior for Codex and Claude agent plugins through their native CLIs"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Make the Codex plugin package installable without symlink-dependent package contents"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Document the agent install/update/doctor workflow and plugin package maintenance rule"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "govctl check passes"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Implement agent uninstall for Codex and Claude through their native plugin CLIs"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Document the agent uninstall workflow"
+status = "done"
+category = "chore"

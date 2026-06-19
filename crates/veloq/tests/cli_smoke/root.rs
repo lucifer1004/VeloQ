@@ -1,9 +1,10 @@
 use super::{
     assert_error_code, assert_schema_envelope, build_graph_replay_trace, build_minimal_trace,
-    run_veloq,
+    run_veloq, run_veloq_with_env, run_veloq_with_env_and_cwd,
 };
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn help_exits_zero() -> Result<()> {
@@ -78,6 +79,452 @@ fn nsys_viz_timeline_requires_paired_window_bounds() -> Result<()> {
             "single-sided {provided} should be a clap missing-argument error; got: {chain_entry}"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn agent_doctor_reports_canonical_rows() -> Result<()> {
+    let out = run_veloq(["agent", "doctor"])?;
+    assert!(
+        out.status.success(),
+        "agent doctor failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value =
+        serde_json::from_slice(&out.stdout).context("agent doctor stdout must be JSON")?;
+    assert_eq!(v.get("command").and_then(Value::as_str), Some("agent"));
+    assert_eq!(
+        v.pointer("/source/kind").and_then(Value::as_str),
+        Some("veloq")
+    );
+    assert_eq!(v.pointer("/data/count").and_then(Value::as_u64), Some(2));
+    let rows = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("agent doctor rows missing: {v}"))?;
+    for agent in ["codex", "claude"] {
+        let row = rows
+            .iter()
+            .find(|row| row.get("agent").and_then(Value::as_str) == Some(agent))
+            .ok_or_else(|| anyhow!("missing agent row {agent}: {v}"))?;
+        let expected_key = format!("agent|{agent}");
+        assert_eq!(
+            row.get("key").and_then(Value::as_str),
+            Some(expected_key.as_str())
+        );
+        assert_eq!(row.get("operation").and_then(Value::as_str), Some("doctor"));
+        assert!(
+            matches!(
+                row.get("status").and_then(Value::as_str),
+                Some("ready" | "missing" | "failed")
+            ),
+            "unexpected agent doctor status: {row}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn agent_install_missing_checkout_errors_before_cli() -> Result<()> {
+    let out = run_veloq([
+        "agent",
+        "install",
+        "codex",
+        "--from-checkout",
+        "/no/such/veloq-checkout",
+    ])?;
+    let v = assert_error_code(&out, "meta.agent.package-missing")?;
+    assert_eq!(v.get("command").and_then(Value::as_str), Some("agent"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "JSON mode should keep stderr quiet"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_codex_uses_native_cli_without_leaking_child_stdout() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+printf '%s\n' "child stdout must stay captured"
+printf '%s\n' "child stderr must stay captured" >&2
+exit 0
+"#,
+    )?;
+    let repo = repo_root()?;
+    let out = run_veloq_with_env(
+        [
+            "agent",
+            "install",
+            "codex",
+            "--from-checkout",
+            repo.to_string_lossy().as_ref(),
+        ],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent install codex failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("child stdout must stay captured"),
+        "child stdout leaked into VeloQ stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing install row: {v}"))?;
+    assert_eq!(row.get("agent").and_then(Value::as_str), Some("codex"));
+    assert_eq!(row.get("status").and_then(Value::as_str), Some("installed"));
+    assert_eq!(
+        row.get("operation").and_then(Value::as_str),
+        Some("install")
+    );
+    let commands = row
+        .get("commands")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing commands: {row}"))?;
+    assert_eq!(commands.len(), 2);
+
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        log.contains("plugin marketplace add"),
+        "marketplace add command not invoked: {log}"
+    );
+    assert!(
+        log.contains("plugin add veloq@veloq"),
+        "plugin add command not invoked: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_claude_uses_canonical_checkout_and_mirror() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("claude.log");
+    let fake_claude = bin_dir.join("claude");
+    write_executable(
+        &fake_claude,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CLAUDE_LOG"
+printf '%s\n' "child stdout must stay captured"
+printf '%s\n' "child stderr must stay captured" >&2
+exit 0
+"#,
+    )?;
+    let repo = repo_root()?;
+    let marketplace: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo.join(".claude-plugin/marketplace.json"))
+            .context("read Claude marketplace manifest")?,
+    )
+    .context("parse Claude marketplace manifest")?;
+    assert_eq!(
+        marketplace
+            .pointer("/plugins/0/source")
+            .and_then(Value::as_str),
+        Some("./plugins/veloq")
+    );
+    assert_symlink_target(
+        &repo.join(".agents/skills"),
+        Path::new("../plugins/veloq/skills"),
+    )?;
+    assert_symlink_target(
+        &repo.join(".codex-plugin/plugin.json"),
+        Path::new("../plugins/veloq/.codex-plugin/plugin.json"),
+    )?;
+    assert_symlink_target(
+        &repo.join(".claude-plugin/plugin.json"),
+        Path::new("../plugins/veloq/.claude-plugin/plugin.json"),
+    )?;
+    let canonical_repo = repo
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", repo.display()))?;
+    let out = run_veloq_with_env_and_cwd(
+        ["agent", "install", "claude", "--from-checkout", "."],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CLAUDE_LOG", log.to_string_lossy().to_string()),
+        ],
+        &repo,
+    )?;
+    assert!(
+        out.status.success(),
+        "agent install claude failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("child stdout must stay captured"),
+        "child stdout leaked into VeloQ stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing install row: {v}"))?;
+    assert_eq!(row.get("agent").and_then(Value::as_str), Some("claude"));
+    assert_eq!(row.get("status").and_then(Value::as_str), Some("installed"));
+
+    let log = std::fs::read_to_string(&log).context("read fake claude log")?;
+    assert!(
+        log.contains("plugin marketplace add --help"),
+        "marketplace add preflight command not invoked: {log}"
+    );
+    assert!(
+        log.contains("plugin install --help"),
+        "plugin install preflight command not invoked: {log}"
+    );
+    let expected_marketplace = format!("plugin marketplace add {}", canonical_repo.display());
+    assert!(
+        log.contains(&expected_marketplace),
+        "claude marketplace add should receive canonical checkout path; expected {expected_marketplace}; got: {log}"
+    );
+    assert!(
+        log.contains("plugin install veloq@veloq"),
+        "plugin install command not invoked: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_all_preflights_before_side_effects() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+exit 0
+"#,
+    )?;
+    let repo = repo_root()?;
+    let out = run_veloq_with_env(
+        [
+            "agent",
+            "install",
+            "all",
+            "--from-checkout",
+            repo.to_string_lossy().as_ref(),
+        ],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    let _ = assert_error_code(&out, "meta.agent.cli-missing")?;
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    let has_log_line = log.lines().next().is_some();
+    assert!(
+        has_log_line
+            && log
+                .lines()
+                .all(|line| line.ends_with("--help") || line == "plugin --help"),
+        "preflight should run only help commands before failing; got: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == "plugin add veloq@veloq"),
+        "codex install side effect ran before claude preflight failed: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_uninstall_codex_uses_native_cli_without_leaking_child_stdout() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent uninstall tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+printf '%s\n' "child stdout must stay captured"
+printf '%s\n' "child stderr must stay captured" >&2
+exit 0
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "uninstall", "codex"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent uninstall codex failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("child stdout must stay captured"),
+        "child stdout leaked into VeloQ stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent uninstall stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing uninstall row: {v}"))?;
+    assert_eq!(row.get("agent").and_then(Value::as_str), Some("codex"));
+    assert_eq!(
+        row.get("status").and_then(Value::as_str),
+        Some("uninstalled")
+    );
+    assert_eq!(
+        row.get("operation").and_then(Value::as_str),
+        Some("uninstall")
+    );
+    let commands = row
+        .get("commands")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing commands: {row}"))?;
+    assert_eq!(commands.len(), 1);
+
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        log.contains("plugin remove --help"),
+        "uninstall preflight command not invoked: {log}"
+    );
+    assert!(
+        log.contains("plugin remove veloq@veloq"),
+        "plugin remove command not invoked: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_uninstall_all_preflights_before_side_effects() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent uninstall tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+exit 0
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "uninstall", "all"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    let _ = assert_error_code(&out, "meta.agent.cli-missing")?;
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert_eq!(
+        log.trim(),
+        "plugin remove --help",
+        "uninstall preflight should run only the operation-specific help command before failing; got: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == "plugin remove veloq@veloq"),
+        "codex uninstall side effect ran before claude preflight failed: {log}"
+    );
+    Ok(())
+}
+
+fn repo_root() -> Result<PathBuf> {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("failed to resolve repo root from {}", manifest.display()))
+}
+
+#[cfg(unix)]
+fn assert_symlink_target(path: &Path, expected: &Path) -> Result<()> {
+    let metadata =
+        std::fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
+    assert!(
+        metadata.file_type().is_symlink(),
+        "expected symlink at {}",
+        path.display()
+    );
+    let actual =
+        std::fs::read_link(path).with_context(|| format!("readlink {}", path.display()))?;
+    assert_eq!(
+        actual,
+        expected,
+        "unexpected symlink target for {}",
+        path.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, body).with_context(|| format!("write {}", path.display()))?;
+    let mut permissions = std::fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions)
+        .with_context(|| format!("chmod {}", path.display()))?;
     Ok(())
 }
 

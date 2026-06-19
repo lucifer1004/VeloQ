@@ -141,6 +141,35 @@ pub enum MetaError {
         value: String,
         source: semver::Error,
     },
+
+    #[error("{agent} agent CLI `{cli}` is not available on PATH")]
+    AgentCliMissing {
+        agent: &'static str,
+        cli: &'static str,
+    },
+
+    #[error("{agent} agent {phase} failed while running `{command}`")]
+    AgentCliFailed {
+        agent: &'static str,
+        phase: &'static str,
+        command: String,
+        status: Option<i32>,
+        stderr: String,
+    },
+
+    #[error("{agent} agent package metadata is missing under {checkout}: {missing}")]
+    AgentPackageMissing {
+        agent: &'static str,
+        checkout: String,
+        missing: String,
+    },
+
+    #[error("{agent} agent option `{option}` is not supported: {reason}")]
+    AgentUnsupportedOption {
+        agent: &'static str,
+        option: &'static str,
+        reason: &'static str,
+    },
 }
 
 impl MetaError {
@@ -386,6 +415,10 @@ impl VeloqDiagnostic for MetaError {
             }
             Self::SelfUpdateHomeMissing => ErrorCode::new("meta.self-update.home-missing"),
             Self::SelfUpdateVersionParse { .. } => ErrorCode::new("meta.self-update.version-parse"),
+            Self::AgentCliMissing { .. } => ErrorCode::new("meta.agent.cli-missing"),
+            Self::AgentCliFailed { .. } => ErrorCode::new("meta.agent.cli-failed"),
+            Self::AgentPackageMissing { .. } => ErrorCode::new("meta.agent.package-missing"),
+            Self::AgentUnsupportedOption { .. } => ErrorCode::new("meta.agent.unsupported-option"),
         }
     }
 
@@ -396,6 +429,12 @@ impl VeloqDiagnostic for MetaError {
             }
             Self::MissingArgument { argument } => Some(Cow::Owned(format!(
                 "pass the required `<{argument}>` positional argument"
+            ))),
+            Self::AgentCliMissing { cli, .. } => {
+                Some(Cow::Owned(format!("install `{cli}` and retry")))
+            }
+            Self::AgentPackageMissing { agent, .. } => Some(Cow::Owned(format!(
+                "pass `--from-checkout` pointing at a VeloQ checkout with {agent} plugin metadata"
             ))),
             _ => None,
         }

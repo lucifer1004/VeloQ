@@ -1,0 +1,58 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0010"
+title = "Agent integration command contract"
+version = "0.2.2"
+status = "normative"
+phase = "impl"
+owners = ["@Zihua Wu"]
+created = "2026-06-14"
+updated = "2026-06-19"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+]
+signature = "64fd8bc4f0771e551b62cd1b9bf312baf4915178f20c694b2d0c7c6ee80696c6"
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-COMMAND-SURFACE.toml",
+    "clauses/C-SUPPORTED-AGENTS.toml",
+    "clauses/C-NATIVE-CLI-ORCHESTRATION.toml",
+    "clauses/C-PACKAGE-SOURCE.toml",
+    "clauses/C-JSON-RESPONSE.toml",
+]
+
+[[changelog]]
+version = "0.2.2"
+date = "2026-06-19"
+notes = "Clarify package-first agent plugin layout"
+added = ["Specify plugins/veloq as the canonical VeloQ agent plugin package root"]
+
+[[changelog]]
+version = "0.2.1"
+date = "2026-06-19"
+notes = "Clarify shared plugin mirror package source"
+changed = ["Specify Claude checkout installs use the lightweight plugins/veloq mirror"]
+
+[[changelog]]
+version = "0.2.0"
+date = "2026-06-14"
+notes = "Add agent uninstall semantics"
+changed = [
+    "Specify agent uninstall as an explicit modifying operation",
+    "Add uninstalled as an agent result status",
+    "Require all-agent modifying operations to fail before side effects when any selected runtime is not ready",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-06-14"
+notes = "Initial draft"

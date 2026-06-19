@@ -1,0 +1,32 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-JSON-RESPONSE"
+title = "JSON response"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+A successful JSON response from `veloq agent` MUST follow the envelope rules in RFC-0002:C-SUCCESS-RESPONSE.
+
+A successful JSON response from `veloq agent` MUST use the canonical list response shape defined by RFC-0003 when reporting one or more agent results.
+
+Each primary result row MUST carry a stable `key` of the form `agent|<agent-id>`.
+
+Each primary result row MUST report the selected `agent` identifier.
+
+Each primary result row MUST report exactly one `status` value.
+
+The `status` value MUST be one of `ready`, `installed`, `updated`, `uninstalled`, `missing`, or `failed`.
+
+A successful `install` row MUST use the `installed` status.
+
+A successful `update` row MUST use the `updated` status.
+
+A successful `uninstall` row MUST use the `uninstalled` status.
+
+A handled error response from `veloq agent` MUST follow the envelope rules in RFC-0002:C-ERROR-RESPONSE.
+
+**Rationale:** Agent installation is not profile evidence, but it is still an agent-facing VeloQ command. Keeping the same envelope and list conventions lets scripts inspect integration state without scraping human plugin-manager output. A closed status vocabulary keeps jq filters and tests stable. Mapping modifying-operation success to operation-specific statuses avoids ambiguous successful rows when a native plugin command changes user tool state."""

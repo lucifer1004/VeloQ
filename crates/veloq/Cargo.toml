@@ -17,6 +17,7 @@ name = "veloq"
 path = "src/main.rs"
 
 [dependencies]
+agent-plugin-installer.workspace = true
 veloq-core.workspace = true
 veloq-ncu.workspace = true
 veloq-nsys.workspace = true

@@ -1,0 +1,36 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-PACKAGE-SOURCE"
+title = "Plugin package source"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The `agent install` operation MUST support installing from an explicit local checkout path.
+
+A local checkout path MUST be a filesystem directory.
+
+A local checkout path MUST be accepted for a selected agent only when that directory contains the package metadata required by that agent runtime.
+
+The local checkout MUST expose `plugins/veloq` as the canonical VeloQ agent plugin package root.
+
+The canonical package root MUST contain VeloQ Agent Skills under `plugins/veloq/skills`.
+
+For Codex installation, the checkout package metadata MUST include `.agents/plugins/marketplace.json` and `plugins/veloq/.codex-plugin/plugin.json`.
+
+For Claude installation, the checkout package metadata MUST include `.claude-plugin/marketplace.json` and `plugins/veloq/.claude-plugin/plugin.json`.
+
+Root marketplace metadata MUST select the `plugins/veloq` package root as the plugin source for each supported runtime.
+
+Repo-local compatibility paths for agent skill discovery, including `.agents/skills` and `.claude/skills`, MAY alias the canonical package root.
+
+Repo-local compatibility paths MUST NOT be treated as an additional source of truth for the VeloQ Agent Skills.
+
+If the selected checkout does not contain the required package metadata, VeloQ MUST fail with a handled structured diagnostic error.
+
+VeloQ MAY later support release-based or URL-based package sources without changing the local-checkout contract.
+
+**Rationale:** Local checkout installation is the safest first integration path for development and prerelease validation. Requiring explicit package metadata catches broken packages before a user sees an apparently successful but unusable install. Keeping both supported agent runtimes on the lightweight `plugins/veloq` package root avoids scanning or copying unrelated checkout artifacts during native plugin installation. Making that package root canonical removes repo-local skill duplication while preserving root marketplace files as discoverable registry entrypoints."""

@@ -4,13 +4,14 @@
 #   - Cargo.toml  [workspace.package].version        (flows into every
 #                                                     member crate via
 #                                                     version.workspace = true)
-#   - Cargo.toml  [workspace.dependencies] veloq-*   the path+version reqs
+#   - Cargo.toml  [workspace.dependencies] path deps  the path+version reqs
 #                                                     `cargo publish` needs;
 #                                                     kept equal to the
 #                                                     workspace version
-#   - .claude-plugin/plugin.json       .version
+#   - plugins/veloq/.claude-plugin/plugin.json .version
 #   - .claude-plugin/marketplace.json  .plugins[0].version
-#   - .codex-plugin/plugin.json        .version
+#   - plugins/veloq/.codex-plugin/plugin.json  .version
+#   - plugins/veloq/                   canonical agent plugin package root
 #
 # Also refreshes Cargo.lock so the bump commit is self-contained
 # (otherwise the next `cargo build` would dirty the working copy).
@@ -58,9 +59,9 @@ CURRENT="$(awk '
     print; exit
   }
 ' Cargo.toml)"
-PLUGIN_CURRENT="$(jq -r '.version' .claude-plugin/plugin.json)"
+PLUGIN_CURRENT="$(jq -r '.version' plugins/veloq/.claude-plugin/plugin.json)"
 MARKETPLACE_CURRENT="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
-CODEX_PLUGIN_CURRENT="$(jq -r '.version' .codex-plugin/plugin.json)"
+CODEX_PLUGIN_CURRENT="$(jq -r '.version' plugins/veloq/.codex-plugin/plugin.json)"
 
 if [ -z "$CURRENT" ]; then
   echo "error: could not locate [workspace.package].version in Cargo.toml" >&2
@@ -80,10 +81,11 @@ echo "Bumping $CURRENT → $NEW_VERSION"
 if [ "$DRY_RUN" = "1" ]; then
   echo "[dry-run] would edit:"
   echo "  Cargo.toml: [workspace.package].version → $NEW_VERSION"
-  echo "  Cargo.toml: [workspace.dependencies] veloq-* version → $NEW_VERSION"
-  echo "  .claude-plugin/plugin.json: .version → $NEW_VERSION"
+  echo "  Cargo.toml: [workspace.dependencies] path dependency versions → $NEW_VERSION"
+  echo "  plugins/veloq/.claude-plugin/plugin.json: .version → $NEW_VERSION"
   echo "  .claude-plugin/marketplace.json: .plugins[0].version → $NEW_VERSION"
-  echo "  .codex-plugin/plugin.json: .version → $NEW_VERSION"
+  echo "  plugins/veloq/.codex-plugin/plugin.json: .version → $NEW_VERSION"
+  echo "  plugins/veloq/: validate canonical agent plugin package root"
   echo "  Cargo.lock: cargo update --workspace"
   exit 0
 fi
@@ -102,7 +104,7 @@ awk -v new="$NEW_VERSION" '
 mv "$tmp" Cargo.toml
 
 # 2. Cargo.toml [workspace.dependencies] — bump the version req on the
-#    in-workspace veloq-* crates so it tracks the package version.
+#    in-workspace path dependencies so they track the package version.
 #    Targets only path+version entries (third-party deps have no
 #    `path =`, so they're left alone).
 tmp="$(mktemp)"
@@ -124,9 +126,13 @@ update_json() {
   jq --indent 2 --arg v "$NEW_VERSION" "$expr" "$file" > "$tmp"
   mv "$tmp" "$file"
 }
-update_json .claude-plugin/plugin.json      '.version = $v'
-update_json .claude-plugin/marketplace.json '.plugins[0].version = $v'
-update_json .codex-plugin/plugin.json       '.version = $v'
+update_json plugins/veloq/.claude-plugin/plugin.json '.version = $v'
+update_json .claude-plugin/marketplace.json          '.plugins[0].version = $v'
+update_json plugins/veloq/.codex-plugin/plugin.json  '.version = $v'
+
+# Root compatibility manifest paths are symlinks into the canonical package
+# root. Validate instead of writing through those paths so the symlinks survive.
+scripts/check-agent-plugin-package.sh
 
 # 5. Cargo.lock — bump workspace-internal crate entries so the change
 #    is committable in one go. `--workspace` scopes to in-workspace
@@ -146,6 +152,9 @@ verify "Cargo.toml [workspace.dependencies]" "$(awk '/^\[workspace\.dependencies
 verify ".claude-plugin/plugin.json"   "$(jq -r '.version' .claude-plugin/plugin.json)"
 verify "marketplace.json"             "$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
 verify ".codex-plugin/plugin.json"    "$(jq -r '.version' .codex-plugin/plugin.json)"
+verify "plugins/veloq/.codex-plugin/plugin.json" "$(jq -r '.version' plugins/veloq/.codex-plugin/plugin.json)"
+verify "plugins/veloq/.claude-plugin/plugin.json" "$(jq -r '.version' plugins/veloq/.claude-plugin/plugin.json)"
+scripts/check-agent-plugin-package.sh
 
 echo "Done."
 echo

@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUPPORTED-AGENTS"
+title = "Supported agents"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The initial supported agent identifiers MUST include `codex` and `claude`.
+
+The `codex` and `claude` supported agent identifiers MUST support the `doctor`, `install`, `update`, and `uninstall` operations.
+
+A VeloQ release MAY add another agent identifier only when that agent exposes a documented or discoverable non-interactive installation path for VeloQ Agent Skills or plugins.
+
+An unsupported agent selector MUST fail with a structured diagnostic error.
+
+The `all` selector, when supported, MUST expand only to agent identifiers supported by that VeloQ release.
+
+**Rationale:** Stable agent identifiers make scripts and documentation reliable. Requiring a non-interactive installation path prevents VeloQ from automating fragile terminal UI flows. Naming the operation set for the initial agents keeps the shipped command surface predictable for users and scripts."""

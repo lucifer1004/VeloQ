@@ -30,6 +30,7 @@ __pycache__/
 /scripts/*
 !/scripts/install.sh
 !/scripts/bump-version.sh
+!/scripts/check-agent-plugin-package.sh
 
 # Local-only Claude handoff snapshots
 .claude/handoffs/

@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-19
+
+### Added
+
+- **Agent integration command** — add `veloq agent doctor/install/update/uninstall`
+  for Codex and Claude VeloQ Agent Skills integrations, orchestrated through
+  each runtime's native plugin CLI and backed by the reusable
+  `agent-plugin-installer` crate.
+
+### Changed
+
+- **Agent plugin package layout** — make `plugins/veloq` the canonical package
+  root for VeloQ Agent Skills and plugin manifests. Repo-local skill and
+  manifest paths remain compatibility aliases, while CI, release packaging, and
+  version bump tooling now validate the package-first layout directly.
+
+### Fixed
+
+- **Plugin checkout installs** — Codex installs now use materialized package
+  contents, and Claude checkout installs target the lightweight
+  `plugins/veloq` package root with normalized local paths instead of scanning
+  the repository root.
+
 ## [0.4.0] - 2026-06-11
 
 ### Added
@@ -174,6 +197,8 @@ Initial public release.
   `nsys-profile-analysis` and `ncu-profile-analysis` Agent Skills; a
   one-plugin marketplace listing ships under `.claude-plugin/`.
 
+[Unreleased]: https://github.com/lucifer1004/veloq/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lucifer1004/veloq/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lucifer1004/veloq/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lucifer1004/veloq/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/lucifer1004/veloq/compare/v0.2.1...v0.2.2

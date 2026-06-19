@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-06-19-002"
+title = "Make VeloQ agent plugin package the canonical skill source"
+status = "done"
+created = "2026-06-19"
+started = "2026-06-19"
+completed = "2026-06-19"
+refs = [
+    "RFC-0010:C-PACKAGE-SOURCE",
+    "RFC-0010:C-NATIVE-CLI-ORCHESTRATION",
+]
+
+[content]
+description = "Make the installable VeloQ agent plugin package under `plugins/veloq` the canonical source for Agent Skills and plugin manifests, keeping root marketplace files as registries and replacing duplicate repo-local skill copies with compatibility aliases."
+
+[[content.acceptance_criteria]]
+text = "Agent Skills are edited from `plugins/veloq/skills` as the canonical package source"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Root agent skill paths remain compatibility aliases rather than duplicate tracked copies"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Mirror sync script and CI mirror check are replaced by `scripts/check-agent-plugin-package.sh`"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "`README`, [[RFC-0010]], and release tooling describe the package-first layout"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "`govctl check`, `scripts/check-agent-plugin-package.sh`, and `cargo test --profile ci -p veloq --test cli_smoke agent_` pass"
+status = "done"
+category = "chore"

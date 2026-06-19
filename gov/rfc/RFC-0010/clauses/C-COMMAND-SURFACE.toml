@@ -1,0 +1,44 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-COMMAND-SURFACE"
+title = "Agent command surface"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST expose agent integration management through a root `agent` meta command.
+
+The `agent` command MUST NOT require a profile trace argument.
+
+The `agent` command MUST provide a `doctor` operation that reports integration readiness for supported agents.
+
+The `doctor` operation MUST accept either an explicit agent selector, an explicit `all` selector, or no selector.
+
+A `doctor` operation without a selector MUST behave as `all`.
+
+The `agent` command MUST provide an `install` operation that installs VeloQ Agent Skills into a selected supported agent runtime.
+
+The `agent` command SHOULD provide an `update` operation when the selected supported agent runtime exposes a native non-interactive plugin update command.
+
+The `agent` command SHOULD provide an `uninstall` operation when the selected supported agent runtime exposes a native non-interactive plugin uninstall command.
+
+The `install`, `update`, and `uninstall` operations MUST require an explicit agent selector or an explicit `all` selector.
+
+For a modifying operation, a runtime is ready for that operation when the runtime CLI is discoverable on `PATH` and exposes the non-interactive native subcommand or subcommands required by that operation.
+
+Operation-specific readiness MUST NOT require native subcommands used only by another modifying operation.
+
+Install readiness MUST also require the selected local checkout package metadata required by the selected runtime.
+
+For an `all` selector on an `install`, `update`, or `uninstall` operation, VeloQ MUST fail before invoking any mutating native CLI command if any selected runtime is not ready for that operation.
+
+The `uninstall` operation MUST target only VeloQ's canonical agent plugin identity for the selected runtime.
+
+An unsuccessful native uninstall, including an uninstall of an absent VeloQ plugin when the native CLI reports that as unsuccessful, MUST use the handled diagnostic error semantics from RFC-0010:C-NATIVE-CLI-ORCHESTRATION.
+
+The `agent` command MUST NOT run as part of default `self-update` behavior.
+
+**Rationale:** Agent integrations modify user tool state, so install, update, and uninstall must be explicit and discoverable. Doctor is read-only, so a default all-agent readiness check is useful without creating hidden side effects. Operation-specific preflight avoids half-applied `all` operations without blocking one operation merely because a different operation is unavailable. Restricting uninstall to VeloQ's canonical plugin identity prevents the VeloQ CLI from becoming a general-purpose plugin remover for unrelated agent state. Keeping the command trace-less and outside default self-update avoids surprising users who only intended to update the VeloQ binary or standalone skills."""
