@@ -11,24 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Agent integration installer** — add `veloq agent doctor/install/update/uninstall`
-  for VeloQ Agent Skills integrations through supported native agent CLIs,
-  backed by a reusable `agent-plugin-installer` crate.
+- **Agent integration command** — add `veloq agent doctor/install/update/uninstall`
+  for Codex and Claude VeloQ Agent Skills integrations, orchestrated through
+  each runtime's native plugin CLI and backed by the reusable
+  `agent-plugin-installer` crate.
 
 ### Changed
 
-- **Agent plugin package layout** — make `plugins/veloq` the canonical
-  Agent Skills and plugin manifest source; repo-local `.agents/skills` and
-  root plugin manifest paths are compatibility aliases.
+- **Agent plugin package layout** — make `plugins/veloq` the canonical package
+  root for VeloQ Agent Skills and plugin manifests. Repo-local skill and
+  manifest paths remain compatibility aliases, while CI, release packaging, and
+  version bump tooling now validate the package-first layout directly.
 
 ### Fixed
 
-- **Codex plugin package** — materialize `plugins/veloq` so marketplace
-  installs include the VeloQ Agent Skills instead of relying on symlinked
-  package contents.
-- **Claude plugin checkout install** — point Claude at the lightweight
-  `plugins/veloq` package root and normalize local checkout paths before
-  invoking the native plugin CLI.
+- **Plugin checkout installs** — Codex installs now use materialized package
+  contents, and Claude checkout installs target the lightweight
+  `plugins/veloq` package root with normalized local paths instead of scanning
+  the repository root.
 
 ## [0.4.0] - 2026-06-11
 

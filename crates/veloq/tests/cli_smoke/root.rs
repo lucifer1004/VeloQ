@@ -187,6 +187,11 @@ exit 0
         !stdout.contains("child stdout must stay captured"),
         "child stdout leaked into VeloQ stdout: {stdout}"
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
+    );
     let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
     let row = v
         .pointer("/data/rows")
@@ -279,6 +284,11 @@ exit 0
         !stdout.contains("child stdout must stay captured"),
         "child stdout leaked into VeloQ stdout: {stdout}"
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
+    );
     let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
     let row = v
         .pointer("/data/rows")
@@ -344,9 +354,12 @@ exit 0
     )?;
     let _ = assert_error_code(&out, "meta.agent.cli-missing")?;
     let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    let has_log_line = log.lines().next().is_some();
     assert!(
-        log.lines()
-            .all(|line| line.ends_with("--help") || line == "plugin --help"),
+        has_log_line
+            && log
+                .lines()
+                .all(|line| line.ends_with("--help") || line == "plugin --help"),
         "preflight should run only help commands before failing; got: {log}"
     );
     assert!(
@@ -393,6 +406,11 @@ exit 0
     assert!(
         !stdout.contains("child stdout must stay captured"),
         "child stdout leaked into VeloQ stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("child stderr must stay captured"),
+        "child stderr leaked into VeloQ stderr: {stderr}"
     );
     let v: Value = serde_json::from_slice(&out.stdout).context("agent uninstall stdout JSON")?;
     let row = v
