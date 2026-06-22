@@ -477,3 +477,42 @@ one line plus the source crate.
       example + matching `plugins/veloq/skills/*` profile-analysis skill
       (the skill is the user-facing contract description; this
       file is the maintainer-side invariant).
+
+## Cursor Cloud specific instructions
+
+Durable, non-obvious notes for agents working in the Cursor Cloud VM.
+Standard commands live in `Justfile` and `.github/workflows/ci.yml`;
+don't duplicate them here.
+
+- **The default `c++`/`cc` must be GCC, not Clang.** The bundled
+  DuckDB C++ build (`libduckdb-sys`, compiled by `cc-rs`) shells out
+  to `c++`. On this image Clang is the alternatives default and cannot
+  find libstdc++ headers (`fatal error: 'memory' file not found`),
+  which breaks `cargo build`/`test`/`clippy`. This is fixed once via
+  `update-alternatives` pointing `cc`→`gcc` and `c++`→`g++` (persisted
+  in the VM snapshot). If a fresh image regresses, re-run:
+  `sudo update-alternatives --set cc /usr/bin/gcc` and
+  `sudo update-alternatives --set c++ /usr/bin/g++`, or build with
+  `CC=gcc CXX=g++`.
+- **First build is slow (~5–6 min).** It compiles bundled DuckDB from
+  C++ source. Subsequent builds are incremental. The update script
+  only runs `cargo fetch` (deps), so the first `cargo build`/`test`
+  after a fresh VM pays this cost.
+- **Lint/test/build:** use the CI gate `just ci-checks` (fmt + clippy
+  `--profile ci` + test `--profile ci`), mirroring
+  `.github/workflows/ci.yml`. Build the binary with
+  `cargo build -p veloq` (dev) — `veloq` is the only binary.
+- **No GPU/NVIDIA tooling needed for the test suite.** `nsys`,
+  `ncu`/`ncu_report`, `nvdisasm`, `cuobjdump` are NOT installed and
+  are NOT required: tests and goldens run off committed, content-hashed
+  sidecars under `crates/**/tests/fixtures/*.veloq/`. Those vendor
+  tools are only needed to *ingest a brand-new* raw `.nsys-rep` /
+  `.ncu-rep`; the PyTorch/Kineto source needs no external tools at all.
+- **Quick end-to-end smoke without GPU tools:**
+  `veloq ncu summary crates/ncu/veloq-ncu/tests/fixtures/vector_add_basic.ncu-rep`
+  reads a real `.ncu-rep` via its committed sidecar; PyTorch verbs run
+  against any `*.pt.trace.json` Kineto file (see the inline fixture in
+  `crates/pytorch/veloq-pytorch-data/tests/ingest_smoke.rs`).
+- **`govctl` is not installed** (CI fetches it from a GitHub release).
+  The `govctl verify …` pre-commit guards can't run in this VM unless
+  you install it; rely on `just ci-checks` for local validation.
