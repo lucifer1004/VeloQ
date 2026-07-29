@@ -411,7 +411,7 @@ fn gpu_dev_ctx_reader_accepts_unsigned_nsys_integer_columns() -> Result<()> {
     }
 
     let mut ctx_for_pid = HashMap::new();
-    ctx_for_pid.insert((0, 123), 4242);
+    ctx_for_pid.insert((0, 123), vec![4242]);
     let out = read_gpu_dev_ctx_parquet(&path, &ctx_for_pid)?;
     assert_eq!(out.get(&(4242, 77)), Some(&DevCtxValue::Single((0, 123))));
     assert!(
@@ -851,10 +851,10 @@ fn none_correlation_is_absent_from_by_correlation_map() -> Result<()> {
     assert!(idx.get_by_runtime(1).is_some());
     assert!(idx.get_by_runtime(2).is_some());
     // Correlation lookup works for the correlated row via the
-    // full disambiguator trio (device, context, correlation).
-    assert!(idx.get_by_correlation(0, 1, 100).is_some());
+    // full disambiguator tuple (process, device, context, correlation).
+    assert!(idx.get_by_correlation(42, 0, 1, 100).is_some());
     // The None-correlation row leaves no ghost entry.
-    assert!(idx.get_by_correlation(0, 1, 0).is_none());
+    assert!(idx.get_by_correlation(42, 0, 1, 0).is_none());
     Ok(())
 }
 
@@ -924,7 +924,7 @@ fn merge_dev_ctx_single_candidate_mutates_in_place() -> Result<()> {
 
 /// Schema invariant: multi-context within a single process with the
 /// same `correlationId` reused across contexts disambiguates
-/// through the `(device, context, correlation)` key.
+/// through the `(process, device, context, correlation)` key.
 #[test]
 fn multi_context_same_correlation_disambiguates_by_device_context() -> Result<()> {
     let records = vec![
@@ -953,10 +953,10 @@ fn multi_context_same_correlation_disambiguates_by_device_context() -> Result<()
     ];
     let idx = RuntimeNvtxParent::from_records(records);
     let e1 = idx
-        .get_by_correlation(0, 1, 42)
+        .get_by_correlation(1000, 0, 1, 42)
         .ok_or_else(|| anyhow::anyhow!("missing (0,1,42)"))?;
     let e2 = idx
-        .get_by_correlation(0, 2, 42)
+        .get_by_correlation(1000, 0, 2, 42)
         .ok_or_else(|| anyhow::anyhow!("missing (0,2,42)"))?;
     assert_eq!(
         e1.innermost().map(|e| e.nvtx_name.as_str()),

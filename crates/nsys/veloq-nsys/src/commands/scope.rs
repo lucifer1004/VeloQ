@@ -43,6 +43,7 @@ pub(super) fn resolve_or_refuse(
 /// pulled out of its `Cmd::*` variant. Keeps per-verb arms terse.
 pub(super) fn scope_request_from(location: &GpuLocationFilters) -> ScopeRequest {
     ScopeRequest {
+        process: location.process,
         device: location.device,
         stream: location.stream,
         all_devices: location.all_devices,
@@ -52,6 +53,7 @@ pub(super) fn scope_request_from(location: &GpuLocationFilters) -> ScopeRequest 
 
 pub(super) fn scope_request_from_device(location: &DeviceLocationFilters) -> ScopeRequest {
     ScopeRequest {
+        process: location.process,
         device: location.device,
         stream: None,
         all_devices: location.all_devices,
@@ -63,6 +65,7 @@ pub(super) fn scope_request_from_device_with_implicit_all(
     location: &DeviceLocationFilters,
 ) -> ScopeRequest {
     ScopeRequest {
+        process: location.process,
         device: location.device,
         stream: None,
         all_devices: location.all_devices,

@@ -10,6 +10,7 @@ owners = ["@Zihua Wu"]
 created = "2026-06-08"
 updated = "2026-06-08"
 refs = ["RFC-0001"]
+signature = "cdbc11d502694fcbc556f990db6c82d46c6d68a48b443feccdc53c0800a74e88"
 
 [[sections]]
 title = "Summary"

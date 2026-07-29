@@ -21,6 +21,7 @@ use duckdb::types::Value;
 /// here from silently misaligning every kind's bind slots across the
 /// surrounding UNION ALL.
 pub(super) fn per_kind_subquery(
+    trace: &veloq_nsys_data::Trace,
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
@@ -30,6 +31,8 @@ pub(super) fn per_kind_subquery(
     include_nvtx_path: bool,
 ) -> NsysQueryResult<(String, Vec<Value>)> {
     let scan = stats_event_scan(kind, abs_window, nvtx_scope, collapse_versioned)?;
+    let process =
+        veloq_nsys_data::process_sql_projection(trace, scan.table, "t", "event_proc", "t.start");
 
     // Mangled-name projection: real value for kernels (StringIds
     // probe degrades to NULL on schemas missing the column), display
@@ -58,7 +61,7 @@ pub(super) fn per_kind_subquery(
         domain_pid_expr,
         parent_join,
     ) = match nvtx_parent_sidecar {
-        Some(path) => crate::nvtx_parent::join_clause(kind, path, include_nvtx_path),
+        Some(path) => crate::nvtx_parent::join_clause(trace, kind, path, include_nvtx_path),
         None => (
             "CAST(NULL AS BIGINT)".to_string(),
             "CAST(NULL AS VARCHAR)".to_string(),
@@ -98,6 +101,7 @@ pub(super) fn per_kind_subquery(
                 {short_expr}   AS short_name, \
                 {mangled_expr} AS mangled_name, \
                 '{label}'      AS kind, \
+                {process_expr} AS process_id, \
                 {duration_expr} AS duration, \
                 {dev}        AS device_id, \
                 {ctx}        AS context_id, \
@@ -117,10 +121,12 @@ pub(super) fn per_kind_subquery(
                 {block_x_e}                        AS block_x, \
                 {block_y_e}                        AS block_y, \
                 {block_z_e}                        AS block_z \
-         FROM nsight.{table} t {join_clause} {mangled_join} {parent_join} {where_clause}",
+         FROM nsight.{table} t {join_clause} {mangled_join} {process_join} {parent_join} {where_clause}",
         display_expr = scan.display_expr.as_str(),
         short_expr = scan.short_expr.as_str(),
         label = scan.label,
+        process_expr = process.expr,
+        process_join = process.join,
         duration_expr = scan.duration_expr.as_str(),
         dev = scan.device_expr,
         ctx = scan.context_expr,

@@ -35,8 +35,8 @@
 //! build time, so the forward CTE shrinks to a
 //! `read_parquet(...) UNNEST WHERE LIKE` instead of a per-call
 //! containment join against `NVTX_EVENTS × CUPTI_ACTIVITY_KIND_RUNTIME`.
-//! Downstream `attributed_<kind>_rowids` CTEs (which join
-//! `attributed_runtime × ctx_for_pid × <cupti-kind>`) are unchanged.
+//! Downstream `attributed_<kind>_rowids` CTEs join on the full
+//! `(native_pid, device, context, correlation)` identity.
 
 use crate::{EventKind, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
@@ -166,9 +166,8 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> NsysQueryResu
     // `matched_runtime` narrows the UNNESTed sidecar to runtime rows
     // whose chain contains a name matching the pattern — outer
     // scopes included. Downstream GPU-side CTEs JOIN it directly on
-    // the documented disambiguator `(device, context, correlationId)`;
-    // no `ctx_for_pid` bridge at query time (the sidecar carries
-    // `device_id` / `context_id` per entry).
+    // the documented disambiguator
+    // `(native_pid, device, context, correlationId)`.
     let prefix = format!(
         r#"
         {attributed_runtime_cte},
@@ -189,45 +188,14 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> NsysQueryResu
     // CTEs, duplicating this parameterized subquery through multiple
     // references and risking corrupted parameter slots. Materialising
     // forces single evaluation + cached referencing.
-    let kernel_cte = r#",
-        attributed_kernel_rowids AS MATERIALIZED (
-            SELECT DISTINCT k.rowid AS rowid
-            FROM matched_runtime mr
-            JOIN nsight.CUPTI_ACTIVITY_KIND_KERNEL k
-              ON k.correlationId              = mr.correlationId
-             AND CAST(k.deviceId  AS INTEGER) = mr.device_id
-             AND CAST(k.contextId AS BIGINT)  = mr.context_id
-        )"#;
-    let memcpy_cte = r#",
-        attributed_memcpy_rowids AS MATERIALIZED (
-            SELECT DISTINCT t.rowid AS rowid
-            FROM matched_runtime mr
-            JOIN nsight.CUPTI_ACTIVITY_KIND_MEMCPY t
-              ON t.correlationId              = mr.correlationId
-             AND CAST(t.deviceId  AS INTEGER) = mr.device_id
-             AND CAST(t.contextId AS BIGINT)  = mr.context_id
-        )"#;
-    let memset_cte = r#",
-        attributed_memset_rowids AS MATERIALIZED (
-            SELECT DISTINCT t.rowid AS rowid
-            FROM matched_runtime mr
-            JOIN nsight.CUPTI_ACTIVITY_KIND_MEMSET t
-              ON t.correlationId              = mr.correlationId
-             AND CAST(t.deviceId  AS INTEGER) = mr.device_id
-             AND CAST(t.contextId AS BIGINT)  = mr.context_id
-        )"#;
-    // Sync attribution joins on the same trio as the other GPU
-    // kinds — sync rows carry deviceId/contextId from CUPTI
-    // alongside correlationId.
-    let sync_cte = r#",
-        attributed_sync_rowids AS MATERIALIZED (
-            SELECT DISTINCT t.rowid AS rowid
-            FROM matched_runtime mr
-            JOIN nsight.CUPTI_ACTIVITY_KIND_SYNCHRONIZATION t
-              ON t.correlationId              = mr.correlationId
-             AND CAST(t.deviceId  AS INTEGER) = mr.device_id
-             AND CAST(t.contextId AS BIGINT)  = mr.context_id
-        )"#;
+    let kernel_cte =
+        gpu_attributed_rowids_cte(trace, KERNEL_VIEW, "CUPTI_ACTIVITY_KIND_KERNEL", "k");
+    let memcpy_cte =
+        gpu_attributed_rowids_cte(trace, MEMCPY_VIEW, "CUPTI_ACTIVITY_KIND_MEMCPY", "t");
+    let memset_cte =
+        gpu_attributed_rowids_cte(trace, MEMSET_VIEW, "CUPTI_ACTIVITY_KIND_MEMSET", "t");
+    let sync_cte =
+        gpu_attributed_rowids_cte(trace, SYNC_VIEW, "CUPTI_ACTIVITY_KIND_SYNCHRONIZATION", "t");
     // Runtime attribution is the simplest of the five: matched_runtime
     // already carries the runtime row id; just project it. DISTINCT
     // collapses duplicates produced by the UNNEST (same runtime row
@@ -239,22 +207,45 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> NsysQueryResu
 
     let mut body = prefix;
     if want_kernel {
-        body.push_str(kernel_cte);
+        body.push_str(&kernel_cte);
     }
     if want_memcpy {
-        body.push_str(memcpy_cte);
+        body.push_str(&memcpy_cte);
     }
     if want_memset {
-        body.push_str(memset_cte);
+        body.push_str(&memset_cte);
     }
     if want_sync {
-        body.push_str(sync_cte);
+        body.push_str(&sync_cte);
     }
     if want_runtime {
         body.push_str(runtime_cte);
     }
 
     Ok(AttributionCte { body, params })
+}
+
+fn gpu_attributed_rowids_cte(trace: &Trace, view: &str, table: &str, alias: &str) -> String {
+    let process_join = veloq_nsys_data::process_lateral_join_sql(
+        trace,
+        table,
+        alias,
+        "proc",
+        &format!("{alias}.start"),
+    );
+    format!(
+        r#",
+        {view} AS MATERIALIZED (
+            SELECT DISTINCT {alias}.rowid AS rowid
+            FROM matched_runtime mr
+            JOIN nsight.{table} {alias}
+              ON {alias}.correlationId              = mr.correlationId
+             AND CAST({alias}.deviceId  AS INTEGER) = mr.device_id
+             AND CAST({alias}.contextId AS BIGINT)  = mr.context_id
+            {process_join}
+            WHERE proc.process_id = mr.native_pid
+        )"#
+    )
 }
 
 /// Filter clause that restricts a kernel/memcpy/memset subquery to
@@ -265,8 +256,8 @@ pub fn filter_clause(view_name: &str, alias: &str) -> String {
 
 /// True iff `kind` carries a path to NVTX attribution. Kernel /
 /// Memcpy / Memset / Sync attribute via the
-/// `(correlationId, device_id, context_id)` join through
-/// `attributed_runtime` + `ctx_for_pid`; Runtime attributes via
+/// `(native_pid, correlationId, device_id, context_id)` join through
+/// `attributed_runtime`; Runtime attributes via
 /// full-interval containment on `globalTid` directly. All other
 /// kinds — Osrt (no correlationId), Nvtx (the source, not the
 /// target), Graph / GraphNode / GraphEvent / CudaEvent / Overhead /

@@ -20,7 +20,7 @@
 //!
 //! `<trace>.veloq/nvtx-parent.parquet` — one or more rows per
 //! attributed runtime call (multi-context fan-out emits one row per
-//! `(device, context)` candidate). SNAPPY-compressed, single row
+//! `(process, device, context)` candidate). SNAPPY-compressed, single row
 //! group. Schema:
 //!
 //! | column           | type             | notes                                |
@@ -80,15 +80,12 @@ use veloq_core::SourceFingerprint;
 ///     `--type runtime --group-by nvtx-parent`. Those rows are kept and
 ///     attribute via the `rt_rowid` map.
 ///   * Nullable `device_id` / `context_id` columns. Per the repo's
-///     correlation model ([`crate::correlation`]) the
-///     disambiguator for raw `correlationId` is
-///     `(device_id, context_id, correlation_id)`, not
-///     `(correlation_id, native_pid)`. Storing the device/context at
-///     build time both matches that model and lets every query-time SQL
-///     path drop the `ctx_for_pid` bridge through
-///     `TARGET_INFO_CUDA_CONTEXT_INFO` — the GPU row's
-///     `(deviceId, contextId, correlationId)` joins the sidecar directly.
-pub const RUNTIME_NVTX_PARENT_VERSION: u32 = 1;
+///     correlation model ([`crate::correlation`]) the disambiguator for
+///     raw `correlationId` is
+///     `(native_pid, device_id, context_id, correlation_id)`.
+///     Process-private CUDA ordinals and context ids may collide across
+///     ranks, so `native_pid` is part of every GPU-side lookup.
+pub const RUNTIME_NVTX_PARENT_VERSION: u32 = 2;
 
 /// One enclosing NVTX range on the path from outermost to innermost
 /// for a given runtime row. Owned `String` because the index outlives
@@ -119,8 +116,8 @@ pub struct EnclosingNvtx {
 ///   bridge between `(device, context)` and `native_pid` couldn't run).
 ///
 /// The [`RuntimeNvtxParent::by_correlation`] map only contains entries
-/// where all three of `(device_id, context_id, correlation_id)` are
-/// `Some` — that trio is the documented unique key per
+/// where all three nullable CUDA fields are `Some`; `native_pid` is
+/// always present. The resulting four-axis tuple is the documented key per
 /// [`crate::correlation`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeParentEntry {
@@ -156,16 +153,14 @@ impl RuntimeParentEntry {
 ///   `inspect runtime:N`, `correlate runtime:N`).
 /// - `by_correlation` — used when the caller has a GPU-side row
 ///   (kernel/memcpy/memset/sync); keyed by the documented
-///   disambiguator `(device_id, context_id, correlation_id)` so a
-///   GPU row brings all three directly (no `ctx_for_pid` bridge
-///   needed at lookup time).
+///   disambiguator `(native_pid, device_id, context_id, correlation_id)`.
 ///
 /// Both maps share owned data via `Arc<RuntimeParentEntry>` so the
 /// memory footprint is ~1× the underlying records regardless of how
 /// many lookup paths surface.
 pub struct RuntimeNvtxParent {
     by_rt_rowid: HashMap<i64, Arc<RuntimeParentEntry>>,
-    by_correlation: HashMap<(i32, i64, i64), Arc<RuntimeParentEntry>>,
+    by_correlation: HashMap<(i64, i32, i64, i64), Arc<RuntimeParentEntry>>,
 }
 
 impl RuntimeNvtxParent {
@@ -190,31 +185,28 @@ impl RuntimeNvtxParent {
     }
 
     /// Parent chain of any GPU-side event keyed by the disambiguating
-    /// trio `(device_id, context_id, correlation_id)`. Per the
-    /// repo's correlation model raw `correlationId` is only unique
-    /// within `(device, context)`, so the GPU row's
-    /// `(deviceId, contextId, correlationId)` is the natural lookup
-    /// key — no `ctx_for_pid` bridge needed.
+    /// tuple `(native_pid, device_id, context_id, correlation_id)`.
     pub fn get_by_correlation(
         &self,
+        native_pid: i64,
         device_id: i32,
         context_id: i64,
         correlation_id: i64,
     ) -> Option<&RuntimeParentEntry> {
         self.by_correlation
-            .get(&(device_id, context_id, correlation_id))
+            .get(&(native_pid, device_id, context_id, correlation_id))
             .map(|a| a.as_ref())
     }
 
     fn from_records(records: Vec<RuntimeParentEntry>) -> Self {
         let mut by_rt_rowid: HashMap<i64, Arc<RuntimeParentEntry>> =
             HashMap::with_capacity(records.len());
-        // GPU-side reverse lookup needs the full disambiguator trio.
-        // Only entries with all three of `(device_id, context_id,
-        // correlation_id)` Some populate it. Runtime-side lookups go
+        // GPU-side reverse lookup needs the full process-aware
+        // disambiguator. Only entries with all nullable CUDA axes
+        // present populate it. Runtime-side lookups go
         // through `by_rt_rowid` which holds every attributed runtime
         // regardless of whether it has GPU activity.
-        let mut by_correlation: HashMap<(i32, i64, i64), Arc<RuntimeParentEntry>> =
+        let mut by_correlation: HashMap<(i64, i32, i64, i64), Arc<RuntimeParentEntry>> =
             HashMap::with_capacity(records.len());
         for r in records {
             let arc = Arc::new(r);
@@ -222,7 +214,7 @@ impl RuntimeNvtxParent {
             if let (Some(dev), Some(ctx), Some(corr)) =
                 (arc.device_id, arc.context_id, arc.correlation_id)
             {
-                by_correlation.insert((dev, ctx, corr), arc);
+                by_correlation.insert((arc.native_pid, dev, ctx, corr), arc);
             }
         }
         Self {

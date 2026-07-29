@@ -28,6 +28,7 @@ use veloq_nsys_data::Trace;
 /// stringify presence flags itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LocationFilter {
+    pub process_id: Option<i64>,
     pub device: Option<i32>,
     pub stream: Option<i64>,
 }
@@ -44,6 +45,10 @@ impl LocationFilter {
     /// `IS NOT NULL` guard is needed. Single source for the predicate
     /// text + `Value` typing shared across the verbs.
     pub fn push_where(self, parts: &mut Vec<String>, params: &mut Vec<Value>) {
+        if let Some(pid) = self.process_id {
+            parts.push("process_id = ?".to_string());
+            params.push(Value::BigInt(pid));
+        }
         if let Some(d) = self.device {
             parts.push("device_id = ?".to_string());
             params.push(Value::Int(d));
@@ -195,20 +200,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_where_emits_canonical_predicates_in_device_then_stream_order() {
+    fn push_where_emits_canonical_predicates_in_process_device_stream_order() {
         let mut parts = Vec::new();
         let mut params = Vec::new();
         LocationFilter {
+            process_id: Some(42),
             device: Some(3),
             stream: Some(7),
         }
         .push_where(&mut parts, &mut params);
         assert_eq!(
             parts.iter().map(String::as_str).collect::<Vec<_>>(),
-            ["device_id = ?", "stream_id = ?"]
+            ["process_id = ?", "device_id = ?", "stream_id = ?"]
         );
-        assert!(matches!(params.first(), Some(Value::Int(3))));
-        assert!(matches!(params.get(1), Some(Value::BigInt(7))));
+        assert!(matches!(params.first(), Some(Value::BigInt(42))));
+        assert!(matches!(params.get(1), Some(Value::Int(3))));
+        assert!(matches!(params.get(2), Some(Value::BigInt(7))));
     }
 
     #[test]
@@ -216,6 +223,7 @@ mod tests {
         let mut parts = Vec::new();
         let mut params = Vec::new();
         LocationFilter {
+            process_id: None,
             device: Some(0),
             stream: None,
         }
@@ -237,6 +245,7 @@ mod tests {
         let mut sql = String::new();
         let mut params = Vec::new();
         LocationFilter {
+            process_id: None,
             device: Some(1),
             stream: Some(2),
         }

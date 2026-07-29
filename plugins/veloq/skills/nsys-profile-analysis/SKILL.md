@@ -100,7 +100,7 @@ cargo build --release -p veloq
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v3" },
+  "source": { "kind": "nsys", "version": "v4" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "..." },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },
@@ -119,8 +119,9 @@ else is unchanged.
 
 Every list-shaped verb returns canonical `data.rows[]` with a
 stable per-row `key` — `"kernel:1234"`, `"bucket|0..1000000"`,
-`"gap|dev:0|@123"` (default device-scope; `--scope stream` adds
-`|stream:N`, `--scope trace` drops both axes), `"slice|step_42|@123"`,
+`"gap|pid:12345|dev:0|@123"` (default device-scope;
+`--scope stream` adds `|stream:N`, `--scope trace` drops all location
+axes), `"slice|pid:12345|step_42|@123"`,
 etc. Diff two captures by `INDEX(.data.rows; .key)` in jq — same
 recipe across every verb. Non-primary data lands under
 `data.auxiliary`.
@@ -163,6 +164,9 @@ track placement; NVTX ranges grouped under a GPU are derived attribution,
 not native GPU events. Use
 `--highlight-kernels top=<n>,scope=name` when the figure should call out
 dominant kernels, and cite `data.auxiliary.resolved_highlights[]`.
+For a process-private logical device, use a track selector such as
+`--track gpu:process=<native-pid>,device=0`; `device=0` without
+`process=<native-pid>` is refused when more than one process exposes it.
 
 **Name search on large traces**: prefer `--name-regex 'foo'` over the
 `--name '*foo*'` glob. Regex lets VeloQ resolve the matching names once
@@ -236,7 +240,7 @@ Start by classifying the symptom, then gather the minimum evidence:
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | "What dominates wall time?"                | `summary` → `stats --limit 20` → `stats --group-by demangled`                                                                                                                                                                                                                                                                             |
 | GPU idle bubbles                           | `gaps --min-duration ...` → `correlate <next.row_id>` → inspect launch/runtime context                                                                                                                                                                                                                                                    |
-| Poor overlap / "are my streams concurrent" | `concurrency` → per-device `overlap_ns` / `max_concurrency`, per-stream overlap (same-stream PDL), and `compute_vs_copy` (is copy hidden behind compute). Extraction-only; compute ratios in jq                                                                                                                                           |
+| Poor overlap / "are my streams concurrent" | `concurrency` → per-process/device `overlap_ns` / `max_concurrency`, per-stream overlap (same-stream PDL), and `compute_vs_copy` (is copy hidden behind compute). Extraction-only; compute ratios in jq                                                                                                                                    |
 | Report-ready visual timeline               | First identify a narrow window with `timeline` / `gaps` / `search` / `slices`, then `viz timeline --from ... --to ...`; cite both the textual evidence and the SVG row metadata                                                                                                                                                           |
 | CPU blocked on GPU                         | `stats --type sync` → `search --type sync --sort duration:desc` → `correlate sync:N`                                                                                                                                                                                                                                                      |
 | Iteration-to-iteration regression          | Require NVTX. `slices --name ...` → compare root ranges → scoped `stats --nvtx ...`. For nested same-name ranges use `stats --group-by nvtx-path` or `slices --aggregate --group-by path`. For per-kernel attribution: `inspect kernel:N` (default-on `nvtx_context.iter_index`) or `search --type kernel --with-nvtx` for a batched view |

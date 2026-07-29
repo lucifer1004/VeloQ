@@ -1,0 +1,66 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-28-001"
+title = "Make NSys CUDA identities process-aware"
+status = "done"
+created = "2026-07-28"
+started = "2026-07-28"
+completed = "2026-07-28"
+refs = [
+    "RFC-0006:C-CUDA-IDENTITY",
+    "RFC-0006:C-ROW-KEYS",
+    "RFC-0006:C-EVENT-REF",
+    "RFC-0005:C-FRESHNESS",
+]
+
+[content]
+description = "Correct NSys analysis for multi-process traces whose CUDA-visible device, context, stream, graph, and correlation identifiers overlap, covering causal correlation, NVTX attribution, location scoping, device-local aggregation, trace introspection, caches, and the v4 wire contract."
+
+[[content.acceptance_criteria]]
+text = "Graph replay, correlate, and GPU-to-NVTX results keep identical process-local CUDA tuples from distinct native PIDs separate"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "NSys CUDA location filters accept a native process selector and refuse logical-device selections that remain cross-process ambiguous"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Device-, context-, graph-, and stream-local stats, gaps, concurrency, slices, and timeline visualization partition process-local axes by native PID"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "NSys trace introspection preserves physical GPU inventory separately from process-local logical CUDA scopes"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "NSys v4 responses expose process identity and use process-qualified row and graph replay identities"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Correlation, runtime-NVTX-parent, and GPU-work-event caches invalidate and rebuild with process-aware schemas"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Synthetic regression traces cover two processes reusing the same device, context, stream, and correlation values"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Maintainer and NSys analysis documentation describe source v4 process-aware scope and key semantics"
+status = "done"
+category = "changed"
+
+[verification]
+required_guards = [
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-ROW-WIRE-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+]

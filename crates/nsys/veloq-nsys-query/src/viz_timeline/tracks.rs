@@ -6,7 +6,8 @@ use crate::{NsysQueryError, NsysQueryResult};
 
 use super::events::TimelineEvent;
 use super::keys::{
-    axis, axis_i32, device_group_track_key, gpu_summary_track_key, nvtx_track_key, stream_track_key,
+    axis, axis_i32, axis_i64, cuda_api_track_key, device_group_track_key, gpu_summary_track_key,
+    nvtx_track_key, stream_track_key,
 };
 use super::spec::{DeviceSelector, TrackKind, TrackSpec};
 use super::types::VizResolvedTrack;
@@ -21,8 +22,9 @@ pub(super) struct ResolvedTracks {
 pub(super) fn resolve_tracks(
     specs: &[TrackSpec],
     gpu_events: &[TimelineEvent],
-    has_api_events: bool,
+    api_events: &[TimelineEvent],
     nvtx_events: &[TimelineEvent],
+    trace_cuda_scopes: &BTreeSet<(i64, i32)>,
 ) -> NsysQueryResult<ResolvedTracks> {
     let mut tracks = Vec::new();
     let mut response_tracks = Vec::new();
@@ -30,17 +32,23 @@ pub(super) fn resolve_tracks(
     for spec in specs {
         match spec.kind {
             TrackKind::Gpu => {
-                for device in devices_for(spec.device.as_ref(), gpu_events) {
-                    push_device_group(&mut tracks, &mut response_tracks, &mut seen, device);
+                for (process, device) in scopes_for(spec, gpu_events, trace_cuda_scopes)? {
+                    push_device_group(
+                        &mut tracks,
+                        &mut response_tracks,
+                        &mut seen,
+                        process,
+                        device,
+                    );
                     push_track(
                         &mut tracks,
                         &mut response_tracks,
                         &mut seen,
                         TrackDef::new(
-                            gpu_summary_track_key(device),
+                            gpu_summary_track_key(process, device),
                             "busy summary".to_string(),
                             "gpu-summary",
-                            vec![axis("device", device)],
+                            vec![axis("process", process), axis("device", device)],
                         )
                         .depth(1)
                         .role(VizRole::Summary),
@@ -48,17 +56,29 @@ pub(super) fn resolve_tracks(
                 }
             }
             TrackKind::CudaStreams => {
-                for (device, stream) in top_streams_for(spec, gpu_events) {
-                    push_device_group(&mut tracks, &mut response_tracks, &mut seen, device);
+                for (process, device, stream) in
+                    top_streams_for(spec, gpu_events, trace_cuda_scopes)?
+                {
+                    push_device_group(
+                        &mut tracks,
+                        &mut response_tracks,
+                        &mut seen,
+                        process,
+                        device,
+                    );
                     push_track(
                         &mut tracks,
                         &mut response_tracks,
                         &mut seen,
                         TrackDef::new(
-                            stream_track_key(device, stream),
+                            stream_track_key(process, device, stream),
                             format!("stream {stream}"),
                             "cuda-stream",
-                            vec![axis("device", device), axis("stream", stream)],
+                            vec![
+                                axis("process", process),
+                                axis("device", device),
+                                axis("stream", stream),
+                            ],
                         )
                         .depth(1)
                         .role(VizRole::Detail),
@@ -72,32 +92,51 @@ pub(super) fn resolve_tracks(
                 let Some(stream) = spec.stream else {
                     return Err(NsysQueryError::VizTimelineCudaStreamStreamRequired);
                 };
-                push_device_group(&mut tracks, &mut response_tracks, &mut seen, device);
+                let scopes = scopes_for(spec, gpu_events, trace_cuda_scopes)?;
+                let Some(&(process, _)) = scopes.first() else {
+                    continue;
+                };
+                push_device_group(
+                    &mut tracks,
+                    &mut response_tracks,
+                    &mut seen,
+                    process,
+                    device,
+                );
                 push_track(
                     &mut tracks,
                     &mut response_tracks,
                     &mut seen,
                     TrackDef::new(
-                        stream_track_key(device, stream),
+                        stream_track_key(process, device, stream),
                         format!("stream {stream}"),
                         "cuda-stream",
-                        vec![axis("device", device), axis("stream", stream)],
+                        vec![
+                            axis("process", process),
+                            axis("device", device),
+                            axis("stream", stream),
+                        ],
                     )
                     .depth(1)
                     .role(VizRole::Detail),
                 );
             }
             TrackKind::CudaApi => {
-                if has_api_events {
+                for process in api_events
+                    .iter()
+                    .filter_map(|event| event.process_id)
+                    .filter(|process| spec.process.is_none_or(|wanted| wanted == *process))
+                    .collect::<BTreeSet<_>>()
+                {
                     push_track(
                         &mut tracks,
                         &mut response_tracks,
                         &mut seen,
                         TrackDef::new(
-                            "cuda-api".to_string(),
-                            "CUDA API".to_string(),
+                            cuda_api_track_key(process),
+                            format!("PID {process} / CUDA API"),
                             "cuda-api",
-                            vec![],
+                            vec![axis("process", process)],
                         )
                         .placement_source("fallback")
                         .role(VizRole::Annotation),
@@ -111,35 +150,51 @@ pub(super) fn resolve_tracks(
                         .iter()
                         .filter(|event| event.nvtx_depth == Some(depth))
                         .collect::<Vec<_>>();
-                    for device in devices_for_nvtx(&depth_events) {
-                        push_device_group(&mut tracks, &mut response_tracks, &mut seen, device);
+                    for (process, device) in scopes_for_nvtx(spec, &depth_events) {
+                        push_device_group(
+                            &mut tracks,
+                            &mut response_tracks,
+                            &mut seen,
+                            process,
+                            device,
+                        );
                         push_track(
                             &mut tracks,
                             &mut response_tracks,
                             &mut seen,
                             TrackDef::new(
-                                nvtx_track_key(depth, Some(device)),
+                                nvtx_track_key(depth, process, Some(device)),
                                 "NVTX".to_string(),
                                 "nvtx",
-                                vec![axis("device", device), axis("depth", depth)],
+                                vec![
+                                    axis("process", process),
+                                    axis("device", device),
+                                    axis("depth", depth),
+                                ],
                             )
-                            .source_axes(vec![axis("depth", depth)])
-                            .placement_axes(vec![axis("device", device)])
+                            .source_axes(vec![axis("process", process), axis("depth", depth)])
+                            .placement_axes(vec![axis("process", process), axis("device", device)])
                             .placement_source("nvtx_parent_sidecar")
                             .depth(1)
                             .role(VizRole::Annotation),
                         );
                     }
-                    if depth_events.iter().any(|event| event.device_id.is_none()) {
+                    for process in depth_events
+                        .iter()
+                        .filter(|event| event.device_id.is_none())
+                        .filter_map(|event| event.process_id)
+                        .filter(|process| spec.process.is_none_or(|wanted| wanted == *process))
+                        .collect::<BTreeSet<_>>()
+                    {
                         push_track(
                             &mut tracks,
                             &mut response_tracks,
                             &mut seen,
                             TrackDef::new(
-                                nvtx_track_key(depth, None),
+                                nvtx_track_key(depth, process, None),
                                 "NVTX".to_string(),
                                 "nvtx",
-                                vec![axis("depth", depth)],
+                                vec![axis("process", process), axis("depth", depth)],
                             )
                             .placement_axes(vec![])
                             .placement_source("fallback")
@@ -148,7 +203,12 @@ pub(super) fn resolve_tracks(
                     }
                 }
             }
-            TrackKind::GapsOverlay => {}
+            TrackKind::GapsOverlay => {
+                // Overlays do not create tracks, but their selectors are
+                // still scope-bearing and must receive the same trace-wide
+                // logical-device ambiguity validation as GPU tracks.
+                scopes_for(spec, gpu_events, trace_cuda_scopes)?;
+            }
         }
     }
     sort_resolved_tracks(&mut tracks, &mut response_tracks);
@@ -217,6 +277,7 @@ fn push_device_group(
     tracks: &mut Vec<VizTrack>,
     response_tracks: &mut Vec<VizResolvedTrack>,
     seen: &mut BTreeSet<String>,
+    process: i64,
     device: i32,
 ) {
     push_track(
@@ -224,10 +285,10 @@ fn push_device_group(
         response_tracks,
         seen,
         TrackDef::new(
-            device_group_track_key(device),
-            format!("GPU {device}"),
+            device_group_track_key(process, device),
+            format!("PID {process} / GPU {device}"),
             "gpu-device",
-            vec![axis("device", device)],
+            vec![axis("process", process), axis("device", device)],
         )
         .role(VizRole::Group),
     );
@@ -290,7 +351,7 @@ fn sort_resolved_tracks(tracks: &mut [VizTrack], response_tracks: &mut [VizResol
 fn response_track_order_key(
     track: &VizResolvedTrack,
     insertion: &BTreeMap<String, usize>,
-) -> (u8, i32, u8, usize) {
+) -> (u8, i64, i32, u8, usize) {
     let role = match track.role.as_str() {
         "group" => VizRole::Group,
         "summary" => VizRole::Summary,
@@ -309,7 +370,8 @@ fn response_track_order_key(
     )
 }
 
-fn track_order_key(role: VizRole, axes: &[VizAxis], insertion: usize) -> (u8, i32, u8, usize) {
+fn track_order_key(role: VizRole, axes: &[VizAxis], insertion: usize) -> (u8, i64, i32, u8, usize) {
+    let process = axis_i64(axes, "process").unwrap_or(0);
     let device = axis_i32(axes, "device");
     if let Some(device) = device
         && matches!(
@@ -317,9 +379,9 @@ fn track_order_key(role: VizRole, axes: &[VizAxis], insertion: usize) -> (u8, i3
             VizRole::Group | VizRole::Summary | VizRole::Detail | VizRole::Annotation
         )
     {
-        return (0, device, visual_role_rank(role), insertion);
+        return (0, process, device, visual_role_rank(role), insertion);
     }
-    (1, 0, visual_role_rank(role), insertion)
+    (1, process, 0, visual_role_rank(role), insertion)
 }
 
 fn visual_role_rank(role: VizRole) -> u8 {
@@ -332,22 +394,45 @@ fn visual_role_rank(role: VizRole) -> u8 {
     }
 }
 
-fn devices_for(selector: Option<&DeviceSelector>, events: &[TimelineEvent]) -> Vec<i32> {
-    match selector {
-        Some(DeviceSelector::One(device)) => vec![*device],
-        Some(DeviceSelector::All) | None => events
-            .iter()
-            .filter_map(|event| event.device_id)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
+fn scopes_for(
+    spec: &TrackSpec,
+    events: &[TimelineEvent],
+    trace_cuda_scopes: &BTreeSet<(i64, i32)>,
+) -> NsysQueryResult<Vec<(i64, i32)>> {
+    if let (Some(process), Some(DeviceSelector::One(device))) = (spec.process, &spec.device) {
+        return Ok(vec![(process, *device)]);
     }
+    if spec.process.is_none()
+        && let Some(DeviceSelector::One(device)) = spec.device
+        && trace_cuda_scopes
+            .iter()
+            .filter(|(_, candidate_device)| *candidate_device == device)
+            .map(|(pid, _)| *pid)
+            .collect::<BTreeSet<_>>()
+            .len()
+            > 1
+    {
+        return Err(NsysQueryError::VizTimelineProcessRequired);
+    }
+    let scopes = events
+        .iter()
+        .filter_map(|event| Some((event.process_id?, event.device_id?)))
+        .filter(|(process, device)| {
+            spec.process.is_none_or(|wanted| wanted == *process)
+                && match spec.device {
+                    Some(DeviceSelector::One(wanted)) => wanted == *device,
+                    Some(DeviceSelector::All) | None => true,
+                }
+        })
+        .collect::<BTreeSet<_>>();
+    Ok(scopes.into_iter().collect())
 }
 
-fn devices_for_nvtx(events: &[&TimelineEvent]) -> Vec<i32> {
+fn scopes_for_nvtx(spec: &TrackSpec, events: &[&TimelineEvent]) -> Vec<(i64, i32)> {
     events
         .iter()
-        .filter_map(|event| event.device_id)
+        .filter_map(|event| Some((event.process_id?, event.device_id?)))
+        .filter(|(process, _)| spec.process.is_none_or(|wanted| wanted == *process))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -375,30 +460,32 @@ fn track_metadata(track: &VizResolvedTrack) -> VizTrackMetadata {
     }
 }
 
-fn top_streams_for(spec: &TrackSpec, events: &[TimelineEvent]) -> Vec<(i32, i64)> {
+fn top_streams_for(
+    spec: &TrackSpec,
+    events: &[TimelineEvent],
+    trace_cuda_scopes: &BTreeSet<(i64, i32)>,
+) -> NsysQueryResult<Vec<(i64, i32, i64)>> {
     let top = spec.top.unwrap_or(DEFAULT_TOP_STREAMS);
-    let devices: Option<BTreeSet<i32>> = match spec.device.as_ref() {
-        Some(DeviceSelector::One(device)) => Some(BTreeSet::from([*device])),
-        Some(DeviceSelector::All) | None => None,
-    };
-    let mut busy: BTreeMap<(i32, i64), i64> = BTreeMap::new();
+    let scopes = scopes_for(spec, events, trace_cuda_scopes)?;
+    let scope_set = scopes.into_iter().collect::<BTreeSet<_>>();
+    let mut busy: BTreeMap<(i64, i32, i64), i64> = BTreeMap::new();
     for event in events {
-        let (Some(device), Some(stream)) = (event.device_id, event.stream_id) else {
+        let (Some(process), Some(device), Some(stream)) =
+            (event.process_id, event.device_id, event.stream_id)
+        else {
             continue;
         };
-        if let Some(devices) = &devices
-            && !devices.contains(&device)
-        {
+        if !scope_set.contains(&(process, device)) {
             continue;
         }
         let duration = event.end_ns.saturating_sub(event.start_ns);
-        *busy.entry((device, stream)).or_insert(0) += duration;
+        *busy.entry((process, device, stream)).or_insert(0) += duration;
     }
-    let mut streams: Vec<((i32, i64), i64)> = busy.into_iter().collect();
+    let mut streams: Vec<((i64, i32, i64), i64)> = busy.into_iter().collect();
     streams.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    streams
+    Ok(streams
         .into_iter()
         .take(top)
-        .map(|((device, stream), _)| (device, stream))
-        .collect()
+        .map(|((process, device, stream), _)| (process, device, stream))
+        .collect())
 }

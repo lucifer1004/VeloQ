@@ -21,7 +21,7 @@ The stable role set MUST include `group`, `summary`, `detail`, `annotation`, and
 
 A `group` role row MUST represent hierarchy or ownership context rather than source intervals.
 
-A `summary` role row MUST represent rollup evidence for a parent resource, such as GPU busy activity for one device.
+A `summary` role row MUST represent rollup evidence for a parent resource, such as GPU busy activity for one process-local device.
 
 A `detail` role row MUST represent concrete source intervals on a specific execution lane, such as a CUDA stream.
 
@@ -33,9 +33,11 @@ Each rendered track row SHOULD carry axis metadata that identifies either the se
 
 Axis metadata and event placement semantics MUST follow [[RFC-0009:C-TRACK-PLACEMENT]].
 
-GPU-related track rows SHOULD be grouped under their owning device in the resolved track tree when the row's placement is device-scoped.
+GPU-related track rows MUST include native process identity in their stable track keys and source axes whenever device, context, stream, or correlation identity is process-local.
 
-CUDA stream track rows SHOULD be grouped under their owning CUDA device.
+GPU-related track rows SHOULD be grouped under their owning process and device when the row's placement is device-scoped.
+
+CUDA stream track rows SHOULD be grouped under their owning process-local CUDA device.
 
 CUDA context groupings MAY be present.
 
@@ -43,7 +45,7 @@ CPU API track rows SHOULD be grouped by process and thread when the selected evi
 
 NVTX track rows SHOULD carry the rendered depth for each displayed range row when a depth selector applies.
 
-NVTX track rows MAY be grouped under GPU device rows when the command derives device placement from source attribution evidence.
+NVTX track rows MAY be grouped under GPU device rows when the command derives process-aware device placement from source attribution evidence.
 
 NVTX track rows MUST retain a fallback grouping for selected NVTX ranges whose device placement cannot be derived.
 
@@ -51,9 +53,9 @@ NVTX track row labels SHOULD include the nearest visible parent path when the re
 
 Expansion track kinds MUST have deterministic ordering.
 
-Top-N stream expansion SHOULD select streams by descending busy duration in the requested time window, then by device id, then by stream id.
+Top-N stream expansion SHOULD select streams by descending busy duration in the requested time window, then by process id, then by device id, then by stream id.
 
-The rendered track tree SHOULD display selected CUDA stream rows under their owning device group; within one device group, stream rows SHOULD preserve the selected stream order.
+The rendered track tree SHOULD display selected CUDA stream rows under their owning process/device group; within one process/device group, stream rows SHOULD preserve the selected stream order.
 
 The response MUST report the number of requested track specifications.
 
@@ -69,4 +71,4 @@ Summary rows SHOULD be visually weaker than detail rows when both show the same 
 
 Summary rows SHOULD avoid default visible item labels that make rollup evidence look like a second concrete execution lane.
 
-**Rationale:** Agents need the exported figure to explain why rows appear and how they relate. Nsight Systems presents rollup rows and detailed rows together, but the GUI has selection and correlation affordances that clarify duplicate appearances. A static VeloQ SVG needs explicit row roles, axis metadata, placement provenance, and role-specific rendering so rollups, details, annotations, and overlays remain readable without interaction."""
+**Rationale:** Agents need the exported figure to explain why rows appear and how they relate. Process-aware hierarchy prevents two ranks' logical device 0 and stream 0 from becoming one visual lane, while explicit row roles and placement provenance keep rollups, details, annotations, and overlays readable without interaction."""

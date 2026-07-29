@@ -41,7 +41,7 @@ fn auxiliary_streams_carries_busy_ratio() -> Result<()> {
     assert_eq!(streams.len(), 1, "got: {streams:?}");
     assert_eq!(s.device_id, 0);
     assert_eq!(s.stream_id, 7);
-    assert_eq!(s.key, "stream|dev:0|stream:7");
+    assert_eq!(s.key, "stream|pid:12345|dev:0|stream:7");
     assert!(
         s.span_ns > 0,
         "span_ns must be positive for a non-degenerate trace"
@@ -160,7 +160,7 @@ fn device_scope_emits_unified_keys() -> Result<()> {
         .first()
         .ok_or_else(|| anyhow::anyhow!("expected at least one device-scoped gap"))?;
     assert!(
-        g.key.starts_with("gap|dev:") && !g.key.contains("stream:"),
+        g.key.starts_with("gap|pid:12345|dev:") && !g.key.contains("stream:"),
         "device-scope key omits stream axis; got: {}",
         g.key
     );
@@ -230,7 +230,7 @@ fn stream_time_window_preserves_cross_window_gap() -> Result<()> {
         .rows
         .first()
         .ok_or_else(|| anyhow::anyhow!("stream scope returned no gap rows"))?;
-    assert_eq!(gap.key, "gap|dev:0|stream:7|@104500000");
+    assert_eq!(gap.key, "gap|pid:12345|dev:0|stream:7|@104500000");
     assert_eq!(gap.device_id, Some(0));
     assert_eq!(gap.stream_id, Some(7));
     assert_eq!(gap.start_ns, 104_500_000);

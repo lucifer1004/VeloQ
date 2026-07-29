@@ -164,6 +164,8 @@ impl SortKey {
 
 #[derive(Debug, Clone)]
 pub struct StatsBySizeRequest {
+    /// Restrict to one native process owning the CUDA namespace.
+    pub process_id: Option<i64>,
     /// Which kinds to aggregate. `KindFilter::All` resolves to
     /// memcpy + memset; explicit kinds outside [`ALLOWED_KINDS`]
     /// error in [`run`].
@@ -179,6 +181,7 @@ pub struct StatsBySizeRequest {
 impl Default for StatsBySizeRequest {
     fn default() -> Self {
         Self {
+            process_id: None,
             kinds: KindFilter::All,
             group_by: crate::stats::GroupBy::default(),
             time_window: None,
@@ -219,6 +222,8 @@ pub struct StatBySizeRow {
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -300,7 +305,7 @@ pub fn run<P: AsRef<Path>>(
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
-        let fragment = per_kind_size_subquery(*kind, abs_window)?;
+        let fragment = per_kind_size_subquery(&trace, *kind, abs_window)?;
         subqueries.push(fragment.sql);
         per_kind_params.extend(fragment.params);
     }
@@ -327,6 +332,11 @@ pub fn run<P: AsRef<Path>>(
     } else {
         "CAST(NULL AS INTEGER) AS device_id"
     };
+    let process_select = if req.group_by.device || req.group_by.context || req.group_by.stream {
+        "process_id"
+    } else {
+        "CAST(NULL AS BIGINT) AS process_id"
+    };
     let context_select = if req.group_by.context {
         "context_id"
     } else {
@@ -348,6 +358,7 @@ pub fn run<P: AsRef<Path>>(
     let mut location_where = String::new();
     let mut location_params: Vec<Value> = Vec::new();
     crate::kind_policy::LocationFilter {
+        process_id: req.process_id,
         device: req.device,
         stream: req.stream,
     }
@@ -361,6 +372,7 @@ pub fn run<P: AsRef<Path>>(
                 {name_select},
                 {short_name_select},
                 kind,
+                {process_select},
                 {device_select},
                 {context_select},
                 {stream_select},
@@ -377,7 +389,7 @@ pub fn run<P: AsRef<Path>>(
             GROUP BY {group_keys_sql}
         )
         SELECT
-            name, short_name, kind,
+            name, short_name, kind, process_id,
             device_id, context_id, stream_id,
             count,
             total_bytes, avg_bytes, min_bytes, max_bytes,
@@ -450,6 +462,7 @@ struct StatsBySizeSqlRow {
     name: Option<String>,
     short_name: Option<String>,
     kind: String,
+    process_id: Option<i64>,
     device_id: Option<i32>,
     context_id: Option<i64>,
     stream_id: Option<i64>,
@@ -481,6 +494,7 @@ fn stats_by_size_sql_row(row: &duckdb::Row<'_>) -> Result<StatsBySizeSqlRow, duc
         name: row.get("name")?,
         short_name: row.get("short_name")?,
         kind: row.get("kind")?,
+        process_id: row.get("process_id")?,
         device_id: row.get("device_id")?,
         context_id: row.get("context_id")?,
         stream_id: row.get("stream_id")?,
@@ -511,6 +525,9 @@ fn stat_by_size_row(row: StatsBySizeSqlRow) -> StatBySizeRow {
     if let Some(n) = row.name.as_deref() {
         key_parts.push(n.to_string());
     }
+    if let Some(pid) = row.process_id {
+        key_parts.push(format!("pid:{pid}"));
+    }
     if let Some(d) = row.device_id {
         key_parts.push(format!("dev:{d}"));
     }
@@ -525,6 +542,7 @@ fn stat_by_size_row(row: StatsBySizeSqlRow) -> StatBySizeRow {
         name: row.name,
         kind: kind_static,
         short_name,
+        process_id: row.process_id,
         device_id: row.device_id,
         context_id: row.context_id,
         stream_id: row.stream_id,
@@ -548,6 +566,9 @@ fn build_group_keys(g: &crate::stats::GroupBy) -> Vec<&'static str> {
         | crate::stats::NameAxis::Mangled => keys.push("short_name"),
         crate::stats::NameAxis::None => {}
     }
+    if g.device || g.context || g.stream {
+        keys.push("process_id");
+    }
     if g.device {
         keys.push("device_id");
     }
@@ -570,6 +591,7 @@ fn sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
 }
 
 fn per_kind_size_subquery(
+    trace: &Trace,
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
 ) -> NsysQueryResult<SqlFragment> {
@@ -593,19 +615,24 @@ fn per_kind_size_subquery(
     )?;
     let where_clause = filter.where_clause();
     let params = filter.into_params();
+    let process =
+        veloq_nsys_data::process_sql_projection(trace, sem.table(), "t", "event_proc", "t.start");
 
     let sql = format!(
         "SELECT {display_expr} AS display_name, \
                 {short_expr}   AS short_name, \
                 '{label}'      AS kind, \
+                {process_expr} AS process_id, \
                 {bytes_expr}   AS bytes, \
                 {dev}          AS device_id, \
                 {ctx}          AS context_id, \
                 {stm}          AS stream_id \
-         FROM nsight.{table} t {join_clause} {where_clause}",
+         FROM nsight.{table} t {join_clause} {process_join} {where_clause}",
         display_expr = sem.display_name_expr(),
         short_expr = sem.short_name_expr(),
         label = sem.label(),
+        process_expr = process.expr,
+        process_join = process.join,
         dev = sem.device_expr(),
         ctx = sem.context_expr(),
         stm = sem.stream_expr(),

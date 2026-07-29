@@ -34,6 +34,9 @@ pub struct EventRefBase {
     pub name: String,
     pub start_ns: i64,
     pub duration_ns: i64,
+    /// Native process owning this event's CUDA or host-thread namespace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<i64>,
     /// GPU events: device id. CPU events / NVTX: `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<i32>,
@@ -278,6 +281,7 @@ mod tests {
             name: name.to_string(),
             start_ns: 100,
             duration_ns: 25,
+            process_id: None,
             device_id: None,
             stream_id: None,
             global_tid: None,

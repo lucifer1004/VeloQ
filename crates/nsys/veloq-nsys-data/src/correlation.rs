@@ -1,9 +1,8 @@
 //! Correlation index — `correlation_id ↔ (kernels, memcpys, runtimes)`.
 //!
-//! NSys's `correlationId` is **not globally unique** — different processes
-//! can reuse the same value. To disambiguate, we pack the correlation id
-//! together with `(device_id, context_id)` into a *synthetic correlation
-//! id* and key the index on that.
+//! NSys's CUDA identifiers are process-local. To disambiguate rank-private
+//! namespaces, the index keys every group by
+//! `(native_pid, device_id, context_id, correlation_id)`.
 //!
 //! For runtime API events (`CUPTI_ACTIVITY_KIND_RUNTIME`) the source row
 //! has `globalTid` but not `(device_id, context_id)`. We close that gap
@@ -26,11 +25,12 @@
 //! mismatch), and SidecarCache itself handles the source-fingerprint
 //! invalidation, bincode wrapping, and atomic-rename write.
 
+use crate::cuda_identity::{CudaProcessResolver, native_pid_from_global_tid};
 use crate::{NsysDataResult, Trace};
 use duckdb::Connection;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use veloq_core::SidecarCache;
 
@@ -40,7 +40,7 @@ use veloq_core::SidecarCache;
 // rows share `correlationId` with the launching `cudaGraphLaunch` runtime
 // call (so `correlate kernel:N` on a graph launch surfaces the graph row
 // alongside cpu/gpu events).
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 
 /// Group of correlated table row ids for one synthetic correlation id.
 /// Stored per-kind; lookups return all four lists.
@@ -73,15 +73,15 @@ impl CorrelatedRowIds {
 /// against the index are O(1) on the synthetic id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CorrelationIndex {
-    /// (device_id, context_id) → process_id, from `TARGET_INFO_CUDA_CONTEXT_INFO`.
-    context_to_process: HashMap<(u64, u64), u64>,
+    /// Distinct `(process_id, device_id, context_id)` mappings.
+    contexts: HashSet<(u64, u64, u64)>,
     /// process_id → all (device_id, context_id) pairs that process owns.
     /// Multi-GPU runs (or any process with secondary contexts) put more
     /// than one entry here; runtime API rows must consider every candidate
     /// because the row itself doesn't carry (device, context).
     process_to_contexts: HashMap<u64, Vec<(u64, u64)>>,
     /// synthetic_id → all events with that correlation.
-    groups: HashMap<u64, CorrelatedRowIds>,
+    groups: HashMap<SyntheticId, CorrelatedRowIds>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -97,61 +97,64 @@ pub struct CorrelationIndexStats {
     pub graph_rows: usize,
 }
 
-/// Packed `(device, context, raw_correlation_id)` triple in a single
-/// u64. Layout: `| device(8) | context(16) | raw(40) |`.
-///
-/// Newtype rather than raw u64 so callers can't accidentally feed a
-/// bare correlation_id where a synthetic id is wanted; the wire-format
-/// hex `Display` impl + `pack` constructor live in one place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct SyntheticId(u64);
+/// Process-aware CUDA correlation identity.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
+)]
+pub struct SyntheticId {
+    process: u64,
+    device: u64,
+    context: u64,
+    raw_corr: u64,
+}
 
 impl SyntheticId {
-    /// Pack a `(device, context, raw_corr)` triple into the canonical
-    /// layout. The bit-fields are masked at their assigned widths, so
-    /// out-of-range device/context bits silently drop.
+    /// Construct the canonical `(process, device, context, raw_corr)`
+    /// identity. The name stays `pack` for source compatibility with
+    /// existing internal callers; no lossy bit-packing is performed.
     #[inline]
-    pub const fn pack(device: u64, context: u64, raw_corr: u64) -> Self {
-        Self(((device & 0xFF) << 56) | ((context & 0xFFFF) << 40) | (raw_corr & 0xFF_FFFF_FFFF))
+    pub const fn pack(process: u64, device: u64, context: u64, raw_corr: u64) -> Self {
+        Self {
+            process,
+            device,
+            context,
+            raw_corr,
+        }
     }
 
-    /// The raw u64 representation. Used as the `HashMap` key inside
-    /// `CorrelationIndex` and for `bincode` serialisation.
     #[inline]
-    pub const fn raw(self) -> u64 {
-        self.0
+    pub const fn process(self) -> u64 {
+        self.process
     }
 }
 
 impl std::fmt::Display for SyntheticId {
-    /// Hex representation with leading `0x` and zero-padded to the
-    /// full 16-digit width (`{:#018x}`) so output stays column-aligned.
+    /// Opaque, fixed-axis representation suitable for row keys and logs.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#018x}", self.0)
+        write!(
+            f,
+            "p{:x}-d{:x}-c{:x}-r{:x}",
+            self.process, self.device, self.context, self.raw_corr
+        )
     }
 }
 
-/// Free-function alias for [`SyntheticId::pack`] that returns the raw
-/// `u64` — kept for the internal HashMap-key path inside this module
-/// (HashMaps stay keyed on `u64` so the bincode cache file format is
-/// unchanged).
 #[inline]
-fn synthetic_id(device: u64, context: u64, raw_corr: u64) -> u64 {
-    SyntheticId::pack(device, context, raw_corr).raw()
-}
-
-/// Extract native PID from NSys `globalTid`. The bit layout reserves
-/// bits 16-23 for a "source domain" byte that's not part of the PID, so
-/// the shift is by 24, not 16.
-#[inline]
-pub fn native_pid_from_global_tid(global_tid: i64) -> u64 {
-    ((global_tid >> 24) & 0xFF_FFFF) as u64
+fn synthetic_id(process: u64, device: u64, context: u64, raw_corr: u64) -> SyntheticId {
+    SyntheticId::pack(process, device, context, raw_corr)
 }
 
 impl CorrelationIndex {
-    /// Lookup by exact `(device, context, correlation_id)`.
-    pub fn lookup(&self, device: u64, context: u64, raw_corr: u64) -> Option<&CorrelatedRowIds> {
-        self.groups.get(&synthetic_id(device, context, raw_corr))
+    /// Lookup by exact `(process, device, context, correlation_id)`.
+    pub fn lookup(
+        &self,
+        process: u64,
+        device: u64,
+        context: u64,
+        raw_corr: u64,
+    ) -> Option<&CorrelatedRowIds> {
+        self.groups
+            .get(&synthetic_id(process, device, context, raw_corr))
     }
 
     /// Lookup by `correlation_id` when the caller has a runtime API event
@@ -168,14 +171,14 @@ impl CorrelationIndex {
         global_tid: i64,
         raw_corr: u64,
     ) -> Option<Cow<'_, CorrelatedRowIds>> {
-        let pid = native_pid_from_global_tid(global_tid);
+        let pid = native_pid_from_global_tid(global_tid) as u64;
         let candidates = self.process_to_contexts.get(&pid)?;
         // Single-borrow fast path: gather references to non-empty groups
         // first. If exactly one matches we hand it out as `Cow::Borrowed`
         // without any allocation.
         let mut hits: Vec<&CorrelatedRowIds> = Vec::with_capacity(candidates.len());
         for &(dev, ctx) in candidates {
-            if let Some(g) = self.lookup(dev, ctx, raw_corr) {
+            if let Some(g) = self.lookup(pid, dev, ctx, raw_corr) {
                 hits.push(g);
             }
         }
@@ -215,7 +218,7 @@ impl CorrelationIndex {
 
     pub fn stats(&self) -> CorrelationIndexStats {
         let mut s = CorrelationIndexStats {
-            contexts: self.context_to_process.len(),
+            contexts: self.contexts.len(),
             processes: self.process_to_contexts.len(),
             unique_groups: self.groups.len(),
             ..Default::default()
@@ -242,7 +245,8 @@ impl CorrelationIndex {
         // TARGET_INFO_CUDA_CONTEXT_INFO is small; read it straight
         // from the attached DuckDB view.
         idx.load_context_process_maps(trace.conn())?;
-        let items = collect_correlation_items(trace, &idx.process_to_contexts)?;
+        let resolver = CudaProcessResolver::build(trace)?;
+        let items = collect_correlation_items(trace, &resolver, &idx.process_to_contexts)?;
         idx.merge_items(items);
         Ok(idx)
     }
@@ -289,7 +293,7 @@ impl CorrelationIndex {
             let dev = device as u64;
             let ctx = context as u64;
             let pid = process as u64;
-            self.context_to_process.insert((dev, ctx), pid);
+            self.contexts.insert((pid, dev, ctx));
             // Dedup: TARGET_INFO_CUDA_CONTEXT_INFO usually has one row per
             // (dev, ctx, pid) triple but be defensive against duplicates.
             let entry = self.process_to_contexts.entry(pid).or_default();
@@ -299,7 +303,7 @@ impl CorrelationIndex {
         }
         log::info!(
             "loaded {} CUDA context↔process mappings across {} processes",
-            self.context_to_process.len(),
+            self.contexts.len(),
             self.process_to_contexts.len()
         );
         Ok(())
@@ -391,47 +395,53 @@ enum ItemKind {
 
 #[derive(Debug, Clone, Copy)]
 struct CorrelationItem {
-    syn_id: u64,
+    syn_id: SyntheticId,
     rowid: i64,
     kind: ItemKind,
 }
 
 fn collect_correlation_items(
     trace: &Trace,
+    resolver: &CudaProcessResolver,
     process_to_contexts: &HashMap<u64, Vec<(u64, u64)>>,
 ) -> NsysDataResult<Vec<CorrelationItem>> {
     let mut items: Vec<CorrelationItem> = Vec::new();
 
-    // Kernel/memcpy/memset/sync: native (device, context, correlation_id)
-    // all on the row.
+    // Kernel/memcpy/memset/sync: resolve process and retain the native
+    // (process, device, context, correlation_id) identity.
     collect_gpu_kind(
         trace,
+        resolver,
         "CUPTI_ACTIVITY_KIND_KERNEL",
         ItemKind::Kernel,
         &mut items,
     )?;
     collect_gpu_kind(
         trace,
+        resolver,
         "CUPTI_ACTIVITY_KIND_MEMCPY",
         ItemKind::Memcpy,
         &mut items,
     )?;
     collect_gpu_kind(
         trace,
+        resolver,
         "CUPTI_ACTIVITY_KIND_MEMSET",
         ItemKind::Memset,
         &mut items,
     )?;
     collect_gpu_kind(
         trace,
+        resolver,
         "CUPTI_ACTIVITY_KIND_SYNCHRONIZATION",
         ItemKind::Sync,
         &mut items,
     )?;
     // Graph_trace rows share correlationId with the host `cudaGraphLaunch`
-    // call; same (device, context, correlationId) shape as kernels.
+    // call; same (process, device, context, correlationId) shape as kernels.
     collect_gpu_kind(
         trace,
+        resolver,
         "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
         ItemKind::Graph,
         &mut items,
@@ -447,6 +457,7 @@ fn collect_correlation_items(
 
 fn collect_gpu_kind(
     trace: &Trace,
+    resolver: &CudaProcessResolver,
     table: &str,
     kind: ItemKind,
     out: &mut Vec<CorrelationItem>,
@@ -457,8 +468,20 @@ fn collect_gpu_kind(
     if probe.is_err() {
         return Ok(());
     }
+    let global_pid = if trace.table_has_column(table, "globalPid") {
+        "CAST(globalPid AS BIGINT)"
+    } else {
+        "CAST(NULL AS BIGINT)"
+    };
+    let start = if trace.table_has_column(table, "start") {
+        "CAST(start AS BIGINT)"
+    } else if trace.table_has_column(table, "timestamp") {
+        "CAST(timestamp AS BIGINT)"
+    } else {
+        "0::BIGINT"
+    };
     let sql = format!(
-        "SELECT rowid, correlationId, deviceId, contextId \
+        "SELECT rowid, correlationId, deviceId, contextId, {start}, {global_pid} \
          FROM nsight.{table} \
          WHERE correlationId IS NOT NULL"
     );
@@ -486,8 +509,22 @@ fn collect_gpu_kind(
         let context: i64 = r
             .get(3)
             .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let start_ns: i64 = r
+            .get(4)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let global_pid: Option<i64> = r
+            .get(5)
+            .map_err(|source| crate::NsysDataError::correlation_scan_read(table, source))?;
+        let process = resolver.resolve_required(
+            table,
+            device as i32,
+            context,
+            Some(corr),
+            start_ns,
+            global_pid,
+        )? as u64;
         out.push(CorrelationItem {
-            syn_id: synthetic_id(device as u64, context as u64, corr as u64),
+            syn_id: synthetic_id(process, device as u64, context as u64, corr as u64),
             rowid,
             kind,
         });
@@ -537,7 +574,7 @@ fn collect_runtime(
         let global_tid: i64 = r
             .get(2)
             .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
-        let pid = native_pid_from_global_tid(global_tid);
+        let pid = native_pid_from_global_tid(global_tid) as u64;
         match process_to_contexts.get(&pid) {
             Some(ctxs) if !ctxs.is_empty() => {
                 // Emit one item per candidate (dev, ctx). The runtime row
@@ -551,7 +588,7 @@ fn collect_runtime(
                 }
                 for &(dev, ctx) in ctxs {
                     out.push(CorrelationItem {
-                        syn_id: synthetic_id(dev, ctx, corr as u64),
+                        syn_id: synthetic_id(pid, dev, ctx, corr as u64),
                         rowid,
                         kind: ItemKind::Runtime,
                     });
@@ -564,7 +601,7 @@ fn collect_runtime(
                 // if the caller later infers context.
                 fallback += 1;
                 out.push(CorrelationItem {
-                    syn_id: synthetic_id(0, pid, corr as u64),
+                    syn_id: synthetic_id(pid, 0, pid, corr as u64),
                     rowid,
                     kind: ItemKind::Runtime,
                 });
@@ -657,13 +694,11 @@ mod tests {
 
     #[test]
     fn synthetic_id_layout() {
-        // bits 56-63: device, 40-55: context, 0-39: raw
-        assert_eq!(synthetic_id(0, 0, 0), 0);
-        assert_eq!(synthetic_id(1, 0, 0), 1u64 << 56);
-        assert_eq!(synthetic_id(0, 1, 0), 1u64 << 40);
-        assert_eq!(synthetic_id(0, 0, 1), 1);
-        // overflow on raw correlation is masked at 40 bits
-        assert_eq!(synthetic_id(0, 0, 0xFFFF_FFFF_FFFF), 0xFF_FFFF_FFFF);
+        let id = synthetic_id(1000, 1, 2, 3);
+        assert_eq!(id, SyntheticId::pack(1000, 1, 2, 3));
+        assert_eq!(id.process(), 1000);
+        assert_eq!(id.to_string(), "p3e8-d1-c2-r3");
+        assert_ne!(synthetic_id(1000, 0, 1, 42), synthetic_id(2000, 0, 1, 42));
     }
 
     #[test]
@@ -790,13 +825,13 @@ mod tests {
             Err(err) => err,
         };
 
-        assert_correlation_scan_error(err, "nsys.data.duckdb-read", "CUPTI_ACTIVITY_KIND_RUNTIME")
+        assert_correlation_scan_error(err, "nsys.data.duckdb-query", "CUPTI_ACTIVITY_KIND_RUNTIME")
     }
 
     #[test]
     fn lookup_returns_grouped_rows() -> Result<()> {
         let mut idx = CorrelationIndex::default();
-        let syn = synthetic_id(2, 5, 999);
+        let syn = synthetic_id(1000, 2, 5, 999);
         idx.groups.insert(
             syn,
             CorrelatedRowIds {
@@ -808,12 +843,12 @@ mod tests {
                 graph: vec![500],
             },
         );
-        let got = idx.lookup(2, 5, 999).context("group should exist")?;
+        let got = idx.lookup(1000, 2, 5, 999).context("group should exist")?;
         assert_eq!(got.kernel, vec![100, 101]);
         assert_eq!(got.runtime, vec![300]);
         assert_eq!(got.sync, vec![400]);
         assert_eq!(got.graph, vec![500]);
-        assert!(idx.lookup(2, 5, 888).is_none());
+        assert!(idx.lookup(1000, 2, 5, 888).is_none());
         Ok(())
     }
 
@@ -821,7 +856,7 @@ mod tests {
     fn lookup_by_runtime_resolves_via_process_map() -> Result<()> {
         let mut idx = CorrelationIndex::default();
         idx.process_to_contexts.insert(1000, vec![(3, 7)]);
-        let syn = synthetic_id(3, 7, 42);
+        let syn = synthetic_id(1000, 3, 7, 42);
         idx.groups.insert(
             syn,
             CorrelatedRowIds {
@@ -846,14 +881,14 @@ mod tests {
         let mut idx = CorrelationIndex::default();
         idx.process_to_contexts.insert(1000, vec![(0, 11), (1, 22)]);
         idx.groups.insert(
-            synthetic_id(0, 11, 99),
+            synthetic_id(1000, 0, 11, 99),
             CorrelatedRowIds {
                 kernel: vec![100],
                 ..Default::default()
             },
         );
         idx.groups.insert(
-            synthetic_id(1, 22, 99),
+            synthetic_id(1000, 1, 22, 99),
             CorrelatedRowIds {
                 memcpy: vec![200],
                 ..Default::default()
@@ -889,10 +924,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir)?;
         let mut idx = CorrelationIndex::default();
-        idx.context_to_process.insert((1, 1), 1000);
+        idx.contexts.insert((1000, 1, 1));
         idx.process_to_contexts.insert(1000, vec![(1, 1)]);
         idx.groups.insert(
-            synthetic_id(1, 1, 7),
+            synthetic_id(1000, 1, 1, 7),
             CorrelatedRowIds {
                 kernel: vec![10],
                 memcpy: vec![20, 21],
@@ -917,7 +952,7 @@ mod tests {
             .context("just-written cache must load")?;
         assert_eq!(back.groups.len(), 1);
         let g = back
-            .lookup(1, 1, 7)
+            .lookup(1000, 1, 1, 7)
             .context("group should survive round-trip")?;
         assert_eq!(g.kernel, vec![10]);
         assert_eq!(g.memcpy, vec![20, 21]);

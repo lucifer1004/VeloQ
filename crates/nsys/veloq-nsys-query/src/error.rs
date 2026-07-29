@@ -208,6 +208,11 @@ pub enum NsysQueryError {
     #[error("viz timeline track `cuda-stream` does not accept `device=all`")]
     VizTimelineCudaStreamDeviceAll,
 
+    #[error(
+        "viz timeline device selector matches multiple process-local CUDA namespaces; add `process=<pid>` or use `device=all`"
+    )]
+    VizTimelineProcessRequired,
+
     #[error("visualization artifact failed")]
     VizTimelineArtifact {
         #[source]
@@ -879,6 +884,9 @@ impl VeloqDiagnostic for NsysQueryError {
             }
             Self::VizTimelineCudaStreamDeviceAll => {
                 ErrorCode::new("nsys.query.viz-timeline-cuda-stream-device-all")
+            }
+            Self::VizTimelineProcessRequired => {
+                ErrorCode::new("nsys.query.viz-timeline-process-required")
             }
             Self::VizTimelineArtifact { source } => source.code(),
             Self::SlicesUnknownGroupBy { .. } => {

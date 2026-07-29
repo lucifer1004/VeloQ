@@ -1,0 +1,36 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-CUDA-IDENTITY"
+title = "Process-aware CUDA identity"
+kind = "normative"
+status = "active"
+since = "0.3.0"
+
+[content]
+text = """
+CUDA `deviceId`, `contextId`, `streamId`, `correlationId`, `graphId`, and `graphNodeId` values MUST be treated as process-local identifiers unless the trace provides a separate stable physical-device identity.
+
+When an NSys operation identifies causally related CUDA work, it MUST use the process-aware identity `(native_pid, device_id, context_id, correlation_id)`.
+
+When an NSys operation partitions device-local or stream-local CUDA work and no stable physical-device identity is available, it MUST partition by `(native_pid, device_id)` or `(native_pid, device_id, stream_id)` respectively.
+
+An NSys implementation MUST NOT collapse `TARGET_INFO_CUDA_CONTEXT_INFO` into a single-valued `(device_id, context_id) -> native_pid` mapping because the same process-local device and context ordinals MAY occur in multiple processes.
+
+A CUDA activity process identity SHOULD be read from the activity row's process field when available.
+
+When a CUDA activity row does not expose its process directly, its process identity SHOULD be resolved through the causally corresponding runtime row's `globalTid` and native PID.
+
+A command that requires a single process-device scope MUST refuse an ambiguous logical-device selection when more than one process exposes the selected logical ordinal.
+
+NSys list commands with CUDA location filters MUST accept `--process <native_pid>` to disambiguate process-local CUDA ordinals.
+
+An explicit `--process` filter MUST match the native PID decoded from NSys process or thread identity and MUST NOT be interpreted as a distributed rank.
+
+Rows whose public identity contains process-local CUDA axes MUST expose `process_id` and include `pid:<native_pid>` in the row key format defined by [[RFC-0006:C-ROW-KEYS]].
+
+Trace-wide aggregation modes MAY aggregate across process-device scopes when the caller explicitly selects all-device aggregation or the command contract is inherently trace-wide.
+
+Physical GPU inventory MUST NOT be inferred solely by deduplicating process-local CUDA ordinals.
+
+**Rationale:** Rank processes may each expose one physical GPU through a private `CUDA_VISIBLE_DEVICES` namespace, making every local device ordinal zero and allowing context, stream, correlation, and graph identifiers to repeat. Process-aware identities prevent unrelated ranks from being merged while preserving one-rank-one-device isolation in the profiled application. Physical topology remains a separate concern because process identity plus logical ordinal does not by itself prove which physical GPU executed the work."""

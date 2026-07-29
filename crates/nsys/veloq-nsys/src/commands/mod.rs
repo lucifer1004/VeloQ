@@ -183,6 +183,7 @@ pub fn run(
                             group_by,
                             time_window,
                             nvtx: gpu.nvtx.clone(),
+                            process_id: scope.applied.native_pid,
                             // Use the resolver-locked device (handles
                             // single-device auto-resolve) over the raw
                             // CLI value.
@@ -286,6 +287,7 @@ pub fn run(
                             kinds,
                             group_by,
                             time_window: common.time_window()?,
+                            process_id: scope.applied.native_pid,
                             device: scope.applied.device,
                             stream: scope.applied.stream,
                             sort,
@@ -341,6 +343,7 @@ pub fn run(
                     duration,
                     time_window: common.time_window()?,
                     nvtx: gpu.nvtx.clone(),
+                    process_id: scope.applied.native_pid,
                     device: scope.applied.device,
                     stream: scope.applied.stream,
                     sort,
@@ -424,6 +427,7 @@ pub fn run(
                 veloq_nsys_query::graph_replays::GraphReplaysRequest {
                     time_window: common.time_window()?,
                     nvtx: nvtx.clone(),
+                    process_id: scope.applied.native_pid,
                     device: scope.applied.device,
                     sort,
                     limit: common.limit_or(20)?,
@@ -486,6 +490,7 @@ pub fn run(
             let data = veloq_nsys_query::concurrency::run(
                 trace,
                 veloq_nsys_query::concurrency::ConcurrencyRequest {
+                    process_id: resolved.applied.native_pid,
                     device: resolved.applied.device,
                     time_window: common.time_window()?,
                     limit: common.limit_or(100)?,
@@ -532,6 +537,7 @@ pub fn run(
                 veloq_nsys_query::gaps::GapsRequest {
                     min_ns,
                     scope: gap_scope,
+                    process_id: resolved.applied.native_pid,
                     device: resolved.applied.device,
                     stream: resolved.applied.stream,
                     time_window: common.time_window()?,
@@ -583,6 +589,7 @@ pub fn run(
                     kinds,
                     time_window: common.time_window()?,
                     nvtx: gpu.nvtx.clone(),
+                    process_id: scope.applied.native_pid,
                     device: scope.applied.device,
                     stream: scope.applied.stream,
                     limit: common.limit_or(1000)?,

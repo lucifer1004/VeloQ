@@ -28,6 +28,7 @@ refs = [
     "RFC-0005:C-ARTIFACT-ROOT",
     "RFC-0005:C-FRESHNESS",
 ]
+signature = "95fad016751da79e7dbd23927f76a260ce22eb889649ed27054d1823e2d7352b"
 
 [[sections]]
 title = "Summary"

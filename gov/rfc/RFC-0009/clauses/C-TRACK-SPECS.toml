@@ -13,7 +13,7 @@ An NSys visualization track specification MUST have the form `<track-kind>` or `
 
 A selector MUST have the form `<name>=<value>`.
 
-The `device`, `stream`, and `context` selector values MUST be non-negative decimal integers unless a track kind explicitly permits `device=all`.
+The `process`, `device`, `stream`, and `context` selector values MUST be non-negative decimal integers unless a track kind explicitly permits `device=all`.
 
 The `top` selector value MUST be a positive decimal integer.
 
@@ -27,9 +27,9 @@ Track-local selectors MUST take precedence over any command-level default select
 
 The stable first-version track kind set MUST include `gpu`, `cuda-streams`, `cuda-stream`, `cuda-api`, `nvtx`, and `gaps-overlay`.
 
-The `gpu` track kind MUST select aggregate GPU work for one or more devices.
+The `gpu` track kind MUST select aggregate GPU work for one or more process-local devices.
 
-The `cuda-streams` track kind MUST expand to CUDA stream tracks selected from one or more devices.
+The `cuda-streams` track kind MUST expand to CUDA stream tracks selected from one or more process-local devices.
 
 The `cuda-stream` track kind MUST select one exact CUDA stream.
 
@@ -39,11 +39,15 @@ The `nvtx` track kind MUST select NVTX ranges.
 
 The `gaps-overlay` track kind MUST select GPU idle spans for overlay rendering rather than requiring a standalone lane.
 
-A selector that names a CUDA stream MUST identify the parent CUDA device unless the track kind defines an unambiguous device expansion.
+CUDA device, context, and stream selector values MUST be interpreted inside a native-process namespace.
 
-A selector that names a CUDA context MUST identify the parent CUDA device unless the track kind defines an unambiguous device expansion.
+A selector that names a CUDA stream MUST identify a unique parent `(process, device)` scope unless the track kind defines an unambiguous expansion.
 
-The command MUST reject a `cuda-stream` specification that contains `stream=<id>` without a unique device selector.
+A selector that names a CUDA context MUST identify a unique parent `(process, device)` scope unless the track kind defines an unambiguous expansion.
+
+The command MUST reject a `cuda-stream` specification that contains `stream=<id>` without a unique process/device selector.
+
+When the same requested device ordinal exists in more than one process, an exact device-bearing selector MUST require `process=<pid>` or an explicit all-device expansion.
 
 The command MUST reject unknown track kinds with a structured diagnostic.
 
@@ -51,7 +55,7 @@ The command MUST reject unknown selectors for a known track kind with a structur
 
 The command MUST reject selector combinations that cannot resolve to a finite track set with a structured diagnostic.
 
-The command SHOULD support `device=<id>` and `device=all` selectors for device-bearing track kinds.
+The command SHOULD support `process=<pid>`, `device=<id>`, and `device=all` selectors for device-bearing track kinds.
 
 The exact `cuda-stream` track kind MUST NOT accept `device=all`.
 
@@ -59,4 +63,4 @@ The command SHOULD support `top=<n>` for expansion track kinds whose natural exp
 
 The command SHOULD support `depth=<n>` for nested annotation track kinds such as `nvtx`.
 
-**Rationale:** Nsight Systems timeline rows are hierarchical, not a flat lane list. Track specifications need enough axis information to avoid ambiguous stream and context identities while still allowing concise expansion such as top streams on a device."""
+**Rationale:** CUDA ordinals and handles are process-local. Track specifications therefore need native-process identity in addition to device, stream, and context ordinals to avoid merging rank-private namespaces while still allowing concise expansions such as top streams across all scopes."""

@@ -70,6 +70,11 @@ tracks, suppressed labels, or truncated labels are non-zero, say so in
 the report; density means the figure stayed visually compact, not that
 the underlying query ignored those events.
 
+To select one process-private logical GPU, replace `device=all` with an
+exact pair such as
+`--track gpu:process=12345,device=0`; a bare `device=0` is ambiguous when
+multiple processes expose that ordinal.
+
 `--highlight-kernels top=<n>,scope=name` colors the top kernel names in
 the selected window without changing base event classes. Use
 `scope=instance` when the report needs individual long-running kernel
@@ -188,7 +193,7 @@ veloq slices T --aggregate --name '*' --group-by path \
   --sort path:asc --limit 200
 # stats rows carry .nvtx_path and .nvtx_path_key
 # ("nvtx-path:<path>" or "nvtx-path:none"). slices aggregate path rows
-# carry .path and keys shaped as "scope|path:<path>".
+# carry .path and keys shaped as "scope|pid:<pid>|path:<path>".
 
 # NVTX style breakdown: stats --type nvtx splits PushPop and StartEnd
 # ranges sharing a name into distinct rows via the derived

@@ -20,7 +20,7 @@ fn device_stream_and_compute_copy_overlap_match_rfc_example() -> Result<()> {
         .first()
         .ok_or_else(|| anyhow!("expected one device row"))?;
 
-    assert_eq!(d.key, "concurrency|dev:0");
+    assert_eq!(d.key, "concurrency|pid:12345|dev:0");
     assert_eq!(d.device_id, 0);
     assert_eq!(d.sum_busy_ns, 210_000_000);
     assert_eq!(d.union_busy_ns, 120_000_000);

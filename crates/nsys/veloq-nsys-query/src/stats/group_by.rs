@@ -37,19 +37,20 @@ pub enum NameAxis {
 ///
 /// `--group-by` accepts a comma-separated list of tokens. At most one
 /// of {short, demangled, mangled, no-name} is allowed (the name layer).
-/// The physical-dimension tokens {device, context, stream} can be
-/// combined freely. Order doesn't matter.
+/// The process-local CUDA-dimension tokens {device, context, stream}
+/// can be combined freely. Rows using one of them also carry process.
+/// Order doesn't matter.
 ///
 /// | tokens (any order)            | rows emitted (per kind)                |
 /// | ----------------------------- | -------------------------------------- |
 /// | (default = `short`)           | one per shortName                      |
 /// | `demangled`                   | one per demangled signature            |
 /// | `mangled`                     | one per mangled symbol                 |
-/// | `device`                      | one per device, rolled across kernels  |
-/// | `demangled,device`            | one per (demangled, device)            |
-/// | `mangled,device`              | one per (mangled, device)              |
-/// | `short,device,stream`         | one per (shortName, device, stream)    |
-/// | `no-name,device,stream`       | one per (device, stream)               |
+/// | `device`                      | one per (process, device)               |
+/// | `demangled,device`            | one per (demangled, process, device)    |
+/// | `mangled,device`              | one per (mangled, process, device)      |
+/// | `short,device,stream`         | one per (shortName, process, device, stream) |
+/// | `no-name,device,stream`       | one per (process, device, stream)       |
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GroupBy {
     pub name: NameAxis,
@@ -252,6 +253,7 @@ impl SortKey {
 pub(super) struct GroupBySql {
     pub(super) name_select: &'static str,
     pub(super) short_name_select: &'static str,
+    pub(super) process_select: &'static str,
     pub(super) device_select: &'static str,
     pub(super) context_select: &'static str,
     pub(super) stream_select: &'static str,
@@ -380,6 +382,14 @@ impl GroupBySql {
                 "CAST(NULL AS VARCHAR) AS short_name",
             ),
         };
+        let process_local_axis =
+            g.device || g.context || g.stream || g.graph || g.graph_node || g.grid_block;
+        let process_select = if process_local_axis {
+            group_keys.push("process_id".to_string());
+            "process_id"
+        } else {
+            "CAST(NULL AS BIGINT) AS process_id"
+        };
         let device_select = if g.device {
             group_keys.push("device_id".to_string());
             "device_id"
@@ -474,6 +484,7 @@ impl GroupBySql {
         Self {
             name_select,
             short_name_select,
+            process_select,
             device_select,
             context_select,
             stream_select,

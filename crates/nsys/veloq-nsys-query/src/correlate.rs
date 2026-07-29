@@ -1,7 +1,8 @@
 //! `veloq correlate <row_id>...` — single-event causal-chain reverse lookup.
 //!
-//! For each input `row_id`, walks the (device, context, correlationId)
-//! triple to find every event causally related — typically: the CPU
+//! For each input `row_id`, walks the
+//! `(process, device, context, correlationId)` identity to find every
+//! event causally related — typically: the CPU
 //! runtime API call that launched the GPU work, plus the GPU events
 //! that resulted. Useful as the "why is this kernel slow / what did
 //! this `cudaLaunchKernel` produce" drill-down.
@@ -17,7 +18,8 @@ use serde::Serialize;
 use std::borrow::Cow;
 use std::path::Path;
 use veloq_nsys_data::{
-    CorrelatedRowIds, CorrelationIndex, SyntheticId, Trace, native_pid_from_global_tid,
+    CorrelatedRowIds, CorrelationIndex, CudaProcessResolver, SyntheticId, Trace,
+    native_pid_from_global_tid,
 };
 
 const CORRELATE_GPU_INFO_SQL: &str = "GPU correlation info";
@@ -49,10 +51,12 @@ pub struct CorrelateResult {
     /// `true` if the input row had a `correlationId` and the
     /// (device, context) bridge resolved.
     pub correlation_found: bool,
-    /// Packed (device(8) | context(16) | raw(40)) — hex-formatted for
-    /// readability. Useful for cross-referencing in logs.
+    /// Opaque process-aware CUDA correlation identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthetic_id: Option<String>,
+    /// Owning native PID when correlation identity was resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<i64>,
     /// Raw correlationId from the NSys row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<i64>,
@@ -103,10 +107,18 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Correl
     // name, memset value, etc.) so correlate.events[] carries the
     // same EventRef shape as search.rows[].
     let cols = crate::column_map::load_standard(trace.conn())?;
+    let process_resolver =
+        CudaProcessResolver::build(&trace).map_err(NsysQueryError::correlation_index_load)?;
 
     let mut results = Vec::with_capacity(row_ids.len());
     for id in row_ids {
-        results.push(correlate_one(&trace, &index, &cols, *id)?);
+        results.push(correlate_one(
+            &trace,
+            &index,
+            &process_resolver,
+            &cols,
+            *id,
+        )?);
     }
     let count = results.len();
     Ok(CorrelateResponse {
@@ -119,16 +131,18 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Correl
 fn correlate_one(
     trace: &Trace,
     index: &CorrelationIndex,
+    process_resolver: &CudaProcessResolver,
     cols: &crate::column_map::ColumnMap,
     id: RowId,
 ) -> NsysQueryResult<CorrelateResult> {
     // Step 1: extract the input row's correlation triple.
-    let Some(info) = fetch_corr_info(trace, id)? else {
+    let Some(info) = fetch_corr_info(trace, process_resolver, cols, id)? else {
         return Ok(CorrelateResult {
             key: id.to_string(),
             row_id: id,
             correlation_found: false,
             synthetic_id: None,
+            process_id: None,
             correlation_id: None,
             events: Vec::new(),
             auxiliary: CorrelateResultAuxiliary {
@@ -144,13 +158,17 @@ fn correlate_one(
     // route through `lookup_by_runtime` which returns a `Cow` so the
     // single-context fast path skips the allocation.
     let (group, syn_id): (Cow<'_, CorrelatedRowIds>, SyntheticId) = match info.bridge {
-        Bridge::DevCtx { device, context } => {
-            let Some(g) = index.lookup(device, context, info.raw_corr) else {
+        Bridge::DevCtx {
+            process,
+            device,
+            context,
+        } => {
+            let Some(g) = index.lookup(process, device, context, info.raw_corr) else {
                 return Ok(not_found(id, info.raw_corr));
             };
             (
                 Cow::Borrowed(g),
-                SyntheticId::pack(device, context, info.raw_corr),
+                SyntheticId::pack(process, device, context, info.raw_corr),
             )
         }
         Bridge::RuntimeTid { global_tid } => {
@@ -160,13 +178,13 @@ fn correlate_one(
             // Pick the (dev, ctx) candidate that actually had a non-empty
             // GPU bucket — that's the one the runtime call really targeted.
             // Fall back to the first context, or pid-stuffed fallback.
-            let pid = native_pid_from_global_tid(global_tid);
+            let pid = native_pid_from_global_tid(global_tid) as u64;
             let candidates = index.contexts_for_pid(pid);
             let resolved = candidates
                 .iter()
                 .find(|&&(d, c)| {
                     index
-                        .lookup(d, c, info.raw_corr)
+                        .lookup(pid, d, c, info.raw_corr)
                         .map(|g| {
                             !(g.kernel.is_empty()
                                 && g.memcpy.is_empty()
@@ -181,7 +199,7 @@ fn correlate_one(
                 .unwrap_or((0, pid));
             (
                 merged,
-                SyntheticId::pack(resolved.0, resolved.1, info.raw_corr),
+                SyntheticId::pack(pid, resolved.0, resolved.1, info.raw_corr),
             )
         }
     };
@@ -207,6 +225,15 @@ fn correlate_one(
     let mut cpu_events = fetch_summaries(trace, cols, EventKind::Runtime, &group.runtime)?;
     let mut sync_events = fetch_summaries(trace, cols, EventKind::Sync, &group.sync)?;
     let mut graph_events = fetch_summaries(trace, cols, EventKind::Graph, &group.graph)?;
+    let process_id = Some(syn_id.process() as i64);
+    for event in cpu_events
+        .iter_mut()
+        .chain(gpu_events.iter_mut())
+        .chain(sync_events.iter_mut())
+        .chain(graph_events.iter_mut())
+    {
+        event.base_mut().process_id = process_id;
+    }
 
     // Sort each side by start time so output reads chronologically.
     cpu_events.sort_by_key(|e| (e.base().start_ns, e.base().row_id.rowid));
@@ -233,6 +260,7 @@ fn correlate_one(
         row_id: id,
         correlation_found: true,
         synthetic_id: Some(syn_id.to_string()),
+        process_id: Some(syn_id.process() as i64),
         correlation_id: Some(info.raw_corr as i64),
         events,
         auxiliary: CorrelateResultAuxiliary {
@@ -247,8 +275,12 @@ fn correlate_one(
 // ---- Step 1 helpers -------------------------------------------------------
 
 enum Bridge {
-    /// Native (device_id, context_id) already on the row — GPU events.
-    DevCtx { device: u64, context: u64 },
+    /// Process-aware CUDA identity resolved from the GPU event.
+    DevCtx {
+        process: u64,
+        device: u64,
+        context: u64,
+    },
     /// Only `globalTid` available — runtime API rows. Resolved through
     /// TARGET_INFO_CUDA_CONTEXT_INFO.
     RuntimeTid { global_tid: i64 },
@@ -259,7 +291,12 @@ struct CorrInfo {
     bridge: Bridge,
 }
 
-fn fetch_corr_info(trace: &Trace, id: RowId) -> NsysQueryResult<Option<CorrInfo>> {
+fn fetch_corr_info(
+    trace: &Trace,
+    process_resolver: &CudaProcessResolver,
+    cols: &crate::column_map::ColumnMap,
+    id: RowId,
+) -> NsysQueryResult<Option<CorrInfo>> {
     // Dispatch on kind once; per-shape helpers exhaustively handle
     // their column projections without a second `match id.kind` that
     // would have to add an `unreachable!` arm.
@@ -277,7 +314,7 @@ fn fetch_corr_info(trace: &Trace, id: RowId) -> NsysQueryResult<Option<CorrInfo>
         | EventKind::Memset
         | EventKind::Sync
         | EventKind::Graph
-        | EventKind::CudaEvent => fetch_gpu_corr_info(trace, id),
+        | EventKind::CudaEvent => fetch_gpu_corr_info(trace, process_resolver, cols, id),
         EventKind::Runtime => fetch_runtime_corr_info(trace, id),
         EventKind::Overhead => fetch_overhead_corr_info(trace, id),
         // No correlationId on these kinds — short-circuit.
@@ -291,19 +328,33 @@ fn fetch_corr_info(trace: &Trace, id: RowId) -> NsysQueryResult<Option<CorrInfo>
     }
 }
 
-fn fetch_gpu_corr_info(trace: &Trace, id: RowId) -> NsysQueryResult<Option<CorrInfo>> {
+fn fetch_gpu_corr_info(
+    trace: &Trace,
+    process_resolver: &CudaProcessResolver,
+    cols: &crate::column_map::ColumnMap,
+    id: RowId,
+) -> NsysQueryResult<Option<CorrInfo>> {
     let table = id.kind.table();
+    let global_pid = crate::column_map::maybe_col(cols, table, "globalPid");
+    let start_expr = if id.kind == EventKind::CudaEvent {
+        "CAST(t.timestamp AS BIGINT)"
+    } else {
+        "CAST(t.start AS BIGINT)"
+    };
     let sql = format!(
         "SELECT t.correlationId, \
                 CAST(t.deviceId  AS BIGINT), \
-                CAST(t.contextId AS BIGINT) \
+                CAST(t.contextId AS BIGINT), \
+                {start_expr}, \
+                CAST({global_pid} AS BIGINT) \
          FROM nsight.{table} t WHERE t.rowid = ?"
     );
-    fetch_gpu_corr_info_with_sql(trace.conn(), id, &sql)
+    fetch_gpu_corr_info_with_sql(trace.conn(), process_resolver, id, &sql)
 }
 
 fn fetch_gpu_corr_info_with_sql(
     conn: &duckdb::Connection,
+    process_resolver: &CudaProcessResolver,
     id: RowId,
     sql: &str,
 ) -> NsysQueryResult<Option<CorrInfo>> {
@@ -324,6 +375,16 @@ fn fetch_gpu_corr_info_with_sql(
     Ok(Some(CorrInfo {
         raw_corr: corr as u64,
         bridge: Bridge::DevCtx {
+            process: process_resolver
+                .resolve_required(
+                    id.kind.table(),
+                    row.device_id as i32,
+                    row.context_id,
+                    Some(corr),
+                    row.start_ns,
+                    row.global_pid,
+                )
+                .map_err(NsysQueryError::data)? as u64,
             device: row.device_id as u64,
             context: row.context_id as u64,
         },
@@ -334,6 +395,8 @@ struct GpuCorrInfoRow {
     correlation_id: Option<i64>,
     device_id: i64,
     context_id: i64,
+    start_ns: i64,
+    global_pid: Option<i64>,
 }
 
 fn gpu_corr_info_row(row: &duckdb::Row<'_>) -> Result<GpuCorrInfoRow, duckdb::Error> {
@@ -341,6 +404,8 @@ fn gpu_corr_info_row(row: &duckdb::Row<'_>) -> Result<GpuCorrInfoRow, duckdb::Er
         correlation_id: row.get(0)?,
         device_id: row.get(1)?,
         context_id: row.get(2)?,
+        start_ns: row.get(3)?,
+        global_pid: row.get(4)?,
     })
 }
 
@@ -494,6 +559,7 @@ fn not_found(id: RowId, raw_corr: u64) -> CorrelateResult {
         row_id: id,
         correlation_found: false,
         synthetic_id: None,
+        process_id: None,
         correlation_id: Some(raw_corr as i64),
         events: Vec::new(),
         auxiliary: CorrelateResultAuxiliary {
@@ -570,6 +636,7 @@ fn hydrate_summary_row(r: &duckdb::Row<'_>, kind: EventKind) -> NsysQueryResult<
         duration_ns: r.get(3).map_err(|source| {
             crate::NsysQueryError::sql_read("correlate", CORRELATE_SUMMARY_SQL, source)
         })?,
+        process_id: None,
         device_id: r.get(4).map_err(|source| {
             crate::NsysQueryError::sql_read("correlate", CORRELATE_SUMMARY_SQL, source)
         })?,
@@ -849,8 +916,14 @@ mod tests {
     #[test]
     fn fetch_gpu_corr_info_prepare_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
+        let resolver = CudaProcessResolver::default();
 
-        let err = match fetch_gpu_corr_info_with_sql(&conn, kernel_row_id(), "SELECT * FROM") {
+        let err = match fetch_gpu_corr_info_with_sql(
+            &conn,
+            &resolver,
+            kernel_row_id(),
+            "SELECT * FROM",
+        ) {
             Ok(_) => anyhow::bail!("malformed GPU corr-info SQL should not succeed"),
             Err(err) => err,
         };
@@ -870,12 +943,13 @@ mod tests {
     #[test]
     fn fetch_gpu_corr_info_query_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
+        let resolver = CudaProcessResolver::default();
         let sql = "SELECT \
                    ? AS correlation_id, \
                    ? AS device_id, \
                    0::BIGINT AS context_id";
 
-        let err = match fetch_gpu_corr_info_with_sql(&conn, kernel_row_id(), sql) {
+        let err = match fetch_gpu_corr_info_with_sql(&conn, &resolver, kernel_row_id(), sql) {
             Ok(_) => anyhow::bail!("unbound GPU corr-info SQL should not succeed"),
             Err(err) => err,
         };
@@ -894,13 +968,14 @@ mod tests {
     #[test]
     fn fetch_gpu_corr_info_read_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
+        let resolver = CudaProcessResolver::default();
         let sql = "SELECT \
                    'not-a-correlation' AS correlation_id, \
                    0::BIGINT AS device_id, \
                    0::BIGINT AS context_id \
                    WHERE ? IS NOT NULL";
 
-        let err = match fetch_gpu_corr_info_with_sql(&conn, kernel_row_id(), sql) {
+        let err = match fetch_gpu_corr_info_with_sql(&conn, &resolver, kernel_row_id(), sql) {
             Ok(_) => anyhow::bail!("malformed GPU corr-info row should not succeed"),
             Err(err) => err,
         };

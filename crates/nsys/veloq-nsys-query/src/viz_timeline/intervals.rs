@@ -4,8 +4,10 @@ use veloq_vis::{VizInterval, VizRole, VizTrack};
 
 use super::events::TimelineEvent;
 use super::highlights::HighlightAssignments;
-use super::keys::{axis_i32, axis_usize, gpu_summary_track_key, stream_track_key};
-use super::spec::{TrackKind, TrackSpec};
+use super::keys::{
+    axis_i32, axis_i64, axis_usize, cuda_api_track_key, gpu_summary_track_key, stream_track_key,
+};
+use super::spec::{DeviceSelector, TrackKind, TrackSpec};
 
 pub(super) fn build_intervals(
     tracks: &[VizTrack],
@@ -18,28 +20,35 @@ pub(super) fn build_intervals(
     let track_keys: BTreeSet<&str> = tracks.iter().map(|track| track.key.as_str()).collect();
     let mut out = Vec::new();
     for event in gpu_events {
-        if let Some(device) = event.device_id {
-            let key = gpu_summary_track_key(device);
+        if let (Some(process), Some(device)) = (event.process_id, event.device_id) {
+            let key = gpu_summary_track_key(process, device);
             if track_keys.contains(key.as_str()) {
                 out.push(interval_for_event(key, event, highlights));
             }
         }
-        if let (Some(device), Some(stream)) = (event.device_id, event.stream_id) {
-            let key = stream_track_key(device, stream);
+        if let (Some(process), Some(device), Some(stream)) =
+            (event.process_id, event.device_id, event.stream_id)
+        {
+            let key = stream_track_key(process, device, stream);
             if track_keys.contains(key.as_str()) {
                 out.push(interval_for_event(key, event, highlights));
             }
         }
     }
-    if specs.iter().any(|spec| spec.kind == TrackKind::GapsOverlay) {
-        out.extend(gap_overlay_intervals(tracks, gpu_events));
+    let gap_specs = specs
+        .iter()
+        .filter(|spec| spec.kind == TrackKind::GapsOverlay)
+        .collect::<Vec<_>>();
+    if !gap_specs.is_empty() {
+        out.extend(gap_overlay_intervals(tracks, gpu_events, &gap_specs));
     }
-    if track_keys.contains("cuda-api") {
-        out.extend(
-            api_events
-                .iter()
-                .map(|event| interval_for_event("cuda-api".to_string(), event, highlights)),
-        );
+    for event in api_events {
+        if let Some(process) = event.process_id {
+            let key = cuda_api_track_key(process);
+            if track_keys.contains(key.as_str()) {
+                out.push(interval_for_event(key, event, highlights));
+            }
+        }
     }
     let nvtx_tracks = tracks
         .iter()
@@ -47,14 +56,18 @@ pub(super) fn build_intervals(
         .map(|track| {
             (
                 track.key.clone(),
+                axis_i64(&track.axes, "process"),
                 axis_i32(&track.axes, "device"),
                 axis_usize(&track.axes, "depth"),
             )
         })
         .collect::<Vec<_>>();
     for event in nvtx_events {
-        for (track_key, track_device, track_depth) in &nvtx_tracks {
-            if *track_device == event.device_id && *track_depth == event.nvtx_depth {
+        for (track_key, track_process, track_device, track_depth) in &nvtx_tracks {
+            if *track_process == event.process_id
+                && *track_device == event.device_id
+                && *track_depth == event.nvtx_depth
+            {
                 out.push(interval_for_event(track_key.clone(), event, highlights));
             }
         }
@@ -84,28 +97,36 @@ fn interval_for_event(
     }
 }
 
-fn gap_overlay_intervals(tracks: &[VizTrack], events: &[TimelineEvent]) -> Vec<VizInterval> {
-    let gpu_track_devices: BTreeSet<i32> = tracks
+fn gap_overlay_intervals(
+    tracks: &[VizTrack],
+    events: &[TimelineEvent],
+    specs: &[&TrackSpec],
+) -> Vec<VizInterval> {
+    let gpu_track_scopes: BTreeSet<(i64, i32)> = tracks
         .iter()
         .filter(|track| track.kind == "gpu-summary")
         .filter_map(|track| {
-            track
-                .axes
+            Some((
+                axis_i64(&track.axes, "process")?,
+                axis_i32(&track.axes, "device")?,
+            ))
+        })
+        .filter(|(process, device)| {
+            specs
                 .iter()
-                .find(|axis| axis.name == "device")
-                .and_then(|axis| axis.value.parse::<i32>().ok())
+                .any(|spec| overlay_matches_scope(spec, *process, *device))
         })
         .collect();
-    let mut by_device: BTreeMap<i32, Vec<&TimelineEvent>> = BTreeMap::new();
+    let mut by_device: BTreeMap<(i64, i32), Vec<&TimelineEvent>> = BTreeMap::new();
     for event in events {
-        if let Some(device) = event.device_id
-            && gpu_track_devices.contains(&device)
+        if let (Some(process), Some(device)) = (event.process_id, event.device_id)
+            && gpu_track_scopes.contains(&(process, device))
         {
-            by_device.entry(device).or_default().push(event);
+            by_device.entry((process, device)).or_default().push(event);
         }
     }
     let mut out = Vec::new();
-    for (device, mut events) in by_device {
+    for ((process, device), mut events) in by_device {
         events.sort_by(|a, b| {
             a.start_ns
                 .cmp(&b.start_ns)
@@ -117,7 +138,7 @@ fn gap_overlay_intervals(tracks: &[VizTrack], events: &[TimelineEvent]) -> Vec<V
                 && event.start_ns > prev_end
             {
                 out.push(VizInterval {
-                    track_key: gpu_summary_track_key(device),
+                    track_key: gpu_summary_track_key(process, device),
                     start_ns: prev_end,
                     end_ns: event.start_ns,
                     label: Some("idle".to_string()),
@@ -131,4 +152,12 @@ fn gap_overlay_intervals(tracks: &[VizTrack], events: &[TimelineEvent]) -> Vec<V
         }
     }
     out
+}
+
+fn overlay_matches_scope(spec: &TrackSpec, process: i64, device: i32) -> bool {
+    spec.process.is_none_or(|wanted| wanted == process)
+        && match spec.device {
+            Some(DeviceSelector::One(wanted)) => wanted == device,
+            Some(DeviceSelector::All) | None => true,
+        }
 }

@@ -78,6 +78,8 @@ pub struct StatsRequest {
     /// When set, only aggregate over GPU events causally attributable
     /// to NVTX ranges whose name matches this glob (`*`/`?`).
     pub nvtx: Option<String>,
+    /// Restrict to one native process owning the CUDA namespace.
+    pub process_id: Option<i64>,
     /// Restrict to one CUDA device (NSys `deviceId`).
     pub device: Option<i32>,
     /// Restrict to one CUDA stream (NSys `streamId`).
@@ -130,6 +132,7 @@ impl Default for StatsRequest {
             group_by: GroupBy::default(),
             time_window: None,
             nvtx: None,
+            process_id: None,
             device: None,
             stream: None,
             hist: false,
@@ -215,6 +218,9 @@ pub struct StatRow {
     /// nvtx) and when the name axis is `no-name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_name: Option<String>,
+    /// Native process owning any process-local CUDA axes on this row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<i64>,
     /// Physical-dimension columns. Each is populated only when the
     /// corresponding axis is part of `--group-by`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -365,6 +371,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     crate::kind_policy::validate_location_filter(
         &req.kinds,
         crate::kind_policy::LocationFilter {
+            process_id: req.process_id,
             device: req.device,
             stream: req.stream,
         },
@@ -595,6 +602,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
         let (sql, params) = per_kind_subquery(
+            &trace,
             *kind,
             abs_window,
             nvtx_scope,
@@ -631,6 +639,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     let GroupBySql {
         name_select,
         short_name_select,
+        process_select,
         device_select,
         context_select,
         stream_select,
@@ -660,6 +669,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     let mut location_where = String::new();
     let mut location_params: Vec<Value> = Vec::new();
     crate::kind_policy::LocationFilter {
+        process_id: req.process_id,
         device: req.device,
         stream: req.stream,
     }
@@ -673,6 +683,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
                 {name_select},
                 {short_name_select},
                 kind,
+                {process_select},
                 {device_select},
                 {context_select},
                 {stream_select},
@@ -713,7 +724,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
             GROUP BY {group_keys_sql}
         )
         SELECT
-            name, short_name, kind,
+            name, short_name, kind, process_id,
             device_id, context_id, stream_id,
             graph_id, graph_node_id,
             nvtx_parent_rowid, nvtx_parent_name, nvtx_path,

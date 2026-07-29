@@ -95,6 +95,11 @@ impl CommonFilters {
 /// modes can explicitly opt into an implicit all-device scope.
 #[derive(Args, Debug, Clone, Default)]
 pub struct GpuLocationFilters {
+    /// Restrict to one native OS process. Required with `--device`
+    /// when rank-private CUDA namespaces reuse the same logical ordinal.
+    #[arg(long = "process", value_name = "PID")]
+    pub process: Option<i64>,
+
     /// Restrict to one CUDA device (NSys `deviceId`). On multi-device
     /// traces, most commands require this unless `--all-devices` is
     /// set; mutually exclusive with `--all-devices`. Also scopes
@@ -123,6 +128,11 @@ pub struct GpuLocationFilters {
 /// intentionally does not expose `--stream`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct DeviceLocationFilters {
+    /// Restrict to one native OS process. Required with `--device`
+    /// when rank-private CUDA namespaces reuse the same logical ordinal.
+    #[arg(long = "process", value_name = "PID")]
+    pub process: Option<i64>,
+
     /// Restrict to one CUDA device (NSys `deviceId`). On multi-device
     /// traces, strict commands require this unless `--all-devices` is
     /// set; mutually exclusive with `--all-devices`.

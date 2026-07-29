@@ -104,14 +104,16 @@ fn highlight_candidate_kernels<'a>(
 }
 
 fn kernel_event_has_rendered_gpu_track(event: &TimelineEvent, track_keys: &BTreeSet<&str>) -> bool {
-    if let Some(device) = event.device_id {
-        let key = gpu_summary_track_key(device);
+    if let (Some(process), Some(device)) = (event.process_id, event.device_id) {
+        let key = gpu_summary_track_key(process, device);
         if track_keys.contains(key.as_str()) {
             return true;
         }
     }
-    if let (Some(device), Some(stream)) = (event.device_id, event.stream_id) {
-        let key = stream_track_key(device, stream);
+    if let (Some(process), Some(device), Some(stream)) =
+        (event.process_id, event.device_id, event.stream_id)
+    {
+        let key = stream_track_key(process, device, stream);
         if track_keys.contains(key.as_str()) {
             return true;
         }

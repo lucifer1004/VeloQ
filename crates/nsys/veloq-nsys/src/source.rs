@@ -28,15 +28,12 @@ impl NsysSource {
     /// NSys data structures (StatsResponse, SummaryResponse, …), not
     /// the envelope wrapping them.
     ///
-    /// Every list response is canonical `data.rows[]` with a per-row
-    /// `key`, and event rows share the `EventRef` type. `stats
-    /// --group-by nvtx-path` rows carry the NVTX domain dimension: the
-    /// primary row `key` gains a `domain:<pid>:<domainId>` component and
-    /// each real nvtx-path row carries the resolved domain identity
-    /// (`domain_id`, `domain_pid`) plus its `domain_name` when
-    /// registered. Same-name/same-parent ranges in distinct
-    /// `(pid, domainId)` domains stay distinct.
-    pub const VERSION: &'static str = "v3";
+    /// Version `v4` makes process identity part of every process-local
+    /// CUDA identity and row key. Rank processes that each expose
+    /// logical device 0 therefore remain distinct across graph replay,
+    /// correlation, NVTX attribution, aggregation, gap, and
+    /// visualization responses.
+    pub const VERSION: &'static str = "v4";
 }
 
 impl ProfileSource for NsysSource {
@@ -148,7 +145,7 @@ fn emit_err(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use std::collections::BTreeSet;
     use std::fs;
 
@@ -186,6 +183,31 @@ mod tests {
         .collect();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn process_filter_is_exposed_on_every_standard_process_sensitive_list_verb() -> Result<()> {
+        let command = NsysSource.cli();
+        for name in [
+            "stats",
+            "search",
+            "graph-replays",
+            "concurrency",
+            "gaps",
+            "timeline",
+            "slices",
+        ] {
+            let subcommand = command
+                .find_subcommand(name)
+                .with_context(|| format!("missing {name} subcommand"))?;
+            assert!(
+                subcommand
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == "process"),
+                "{name} must expose --process for process-private CUDA ordinals"
+            );
+        }
+        Ok(())
     }
 
     #[test]

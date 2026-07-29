@@ -11,13 +11,14 @@
 //! The attribution walks:
 //!   NVTX range R on tid T, [s, e]
 //!     → runtime API rows in [s, e] with globalTid=T  (correlationId, native_pid)
-//!     → kernel / memcpy / memset rows with matching (device, context, correlationId)
+//!     → kernel / memcpy / memset rows with matching
+//!       (native_pid, device, context, correlationId)
 //! Graph-trace rows are intentionally absent: this is an NVTX
 //! attribution surface, not the generic GPU-busy interval set, and
 //! v1 attribution only has runtime→kernel/memcpy/memset row paths.
 //!
-//! The (device, context, correlationId) triple is what disambiguates
-//! raw `correlationId` across processes — see
+//! The (native_pid, device, context, correlationId) tuple is what
+//! disambiguates process-private CUDA identities — see
 //! `veloq-nsys-data::correlation` for the same logic in single-event form.
 
 use crate::query_sql::{
@@ -299,7 +300,7 @@ fn aggregate_sort_sql(spec: &SortSpec) -> NsysQueryResult<String> {
         NsysQueryError::slices_sort_invalid,
         "path",
     )?;
-    Ok(format!("{order}, name ASC"))
+    Ok(format!("{order}, process_id ASC, name ASC"))
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -350,6 +351,7 @@ pub struct Slice {
     /// per-iter wall-clock origin line up; agents can pre-normalize
     /// timestamps using envelope `trace_span.origin_ns`.
     pub key: String,
+    pub process_id: i64,
     pub row_id: RowId,
     pub name: String,
     pub cpu: CpuSpan,
@@ -364,9 +366,10 @@ pub struct Slice {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SliceAggregate {
-    /// Cross-trace key. `scope|<name>` for leaf-name aggregates or
-    /// `scope|path:<path>` for full-path aggregates.
+    /// Cross-trace key. `scope|pid:<pid>|<name>` for leaf-name
+    /// aggregates or `scope|pid:<pid>|path:<path>` for full paths.
     pub key: String,
+    pub process_id: i64,
     pub name: String,
     /// Full NVTX hierarchy path. Populated only in path aggregate mode.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -397,6 +400,7 @@ pub struct CpuSpan {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct GpuStreamSpan {
+    pub process_id: i64,
     pub device_id: i32,
     pub stream_id: i64,
     pub start_ns: i64,
@@ -555,6 +559,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     let mut gpu_event_unions: Vec<&str> = Vec::with_capacity(3);
     if has_kernel {
         gpu_event_ctes.push(gpu_kind_cte(
+            &trace,
             "gpu_kernels",
             "kernel",
             "CUPTI_ACTIVITY_KIND_KERNEL",
@@ -563,6 +568,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     }
     if has_memcpy {
         gpu_event_ctes.push(gpu_kind_cte(
+            &trace,
             "gpu_memcpys",
             "memcpy",
             "CUPTI_ACTIVITY_KIND_MEMCPY",
@@ -571,6 +577,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     }
     if has_memset {
         gpu_event_ctes.push(gpu_kind_cte(
+            &trace,
             "gpu_memsets",
             "memset",
             "CUPTI_ACTIVITY_KIND_MEMSET",
@@ -620,6 +627,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
         aggregated AS (
             SELECT
                 e.nvtx_rowid,
+                e.process_id,
                 e.device_id,
                 e.stream_id,
                 e.kind,
@@ -629,7 +637,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
                 CAST(COUNT(*)   AS BIGINT) AS event_count
             FROM gpu_events e
             WHERE 1=1 {gpu_stream_filter}
-            GROUP BY e.nvtx_rowid, e.device_id, e.stream_id, e.kind
+            GROUP BY e.nvtx_rowid, e.process_id, e.device_id, e.stream_id, e.kind
         ),
         per_range AS (
             SELECT
@@ -662,6 +670,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
             s.tid,
             s.r_start,
             s.r_end,
+            a.process_id,
             a.device_id,
             a.stream_id,
             a.kind,
@@ -672,7 +681,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
             s.total_matched
         FROM selected s
         LEFT JOIN aggregated a ON a.nvtx_rowid = s.nvtx_rowid
-        ORDER BY s.rn, a.device_id, a.stream_id, a.kind
+        ORDER BY s.rn, a.process_id, a.device_id, a.stream_id, a.kind
         "#
     );
 
@@ -748,6 +757,7 @@ fn run_aggregate(
     let mut gpu_event_unions: Vec<&str> = Vec::with_capacity(3);
     if has_kernel {
         gpu_event_ctes.push(gpu_kind_cte(
+            trace,
             "gpu_kernels",
             "kernel",
             "CUPTI_ACTIVITY_KIND_KERNEL",
@@ -756,6 +766,7 @@ fn run_aggregate(
     }
     if has_memcpy {
         gpu_event_ctes.push(gpu_kind_cte(
+            trace,
             "gpu_memcpys",
             "memcpy",
             "CUPTI_ACTIVITY_KIND_MEMCPY",
@@ -764,6 +775,7 @@ fn run_aggregate(
     }
     if has_memset {
         gpu_event_ctes.push(gpu_kind_cte(
+            trace,
             "gpu_memsets",
             "memset",
             "CUPTI_ACTIVITY_KIND_MEMSET",
@@ -779,6 +791,7 @@ fn run_aggregate(
             SELECT
                 n.rowid                          AS nvtx_rowid,
                 n.globalTid                      AS tid,
+                {native_pid_expr}                AS process_id,
                 n.start                          AS r_start,
                 n."end"                          AS r_end,
                 COALESCE(n.text, s.value, '<unnamed>') AS name,
@@ -819,6 +832,7 @@ fn run_aggregate(
         per_range AS (
             SELECT
                 m.nvtx_rowid,
+                m.process_id,
                 m.name,
                 m.path,
                 CAST(COALESCE(a.busy_ns, 0) AS BIGINT) AS attributed_total_ns
@@ -827,6 +841,7 @@ fn run_aggregate(
         ),
         per_group AS (
             SELECT
+                process_id,
                 {grouped_name_expr} AS name,
                 {grouped_path_expr} AS path,
                 CAST(COUNT(*) AS BIGINT) AS instances,
@@ -834,7 +849,7 @@ fn run_aggregate(
                 QUANTILE_CONT(attributed_total_ns, 0.50) AS p50_ns,
                 QUANTILE_CONT(attributed_total_ns, 0.99) AS p99_ns
             FROM per_range
-            GROUP BY {group_by_cols}
+            GROUP BY process_id, {group_by_cols}
         ),
         ranked AS (
             SELECT *,
@@ -842,11 +857,12 @@ fn run_aggregate(
             FROM per_group
         )
         SELECT
-            name, path, instances, attributed_total_ns, p50_ns, p99_ns, total_matched
+            process_id, name, path, instances, attributed_total_ns, p50_ns, p99_ns, total_matched
         FROM ranked
         ORDER BY {order_by}
         LIMIT ?
         "#,
+        native_pid_expr = veloq_nsys_data::native_pid_sql("n.globalTid"),
         total_matched = total_matched_bigint_expr(),
     );
 
@@ -902,6 +918,7 @@ fn hydrate_aggregate_rows(
 }
 
 struct SliceAggregateSqlRow {
+    process_id: i64,
     name: String,
     path: Option<String>,
     instances: i64,
@@ -913,13 +930,14 @@ struct SliceAggregateSqlRow {
 
 fn slice_aggregate_sql_row(row: &duckdb::Row<'_>) -> Result<SliceAggregateSqlRow, duckdb::Error> {
     Ok(SliceAggregateSqlRow {
-        name: row.get(0)?,
-        path: row.get(1)?,
-        instances: row.get(2)?,
-        attributed_total_ns: row.get(3)?,
-        p50_ns: row.get(4)?,
-        p99_ns: row.get(5)?,
-        total_matched: row.get(6)?,
+        process_id: row.get(0)?,
+        name: row.get(1)?,
+        path: row.get(2)?,
+        instances: row.get(3)?,
+        attributed_total_ns: row.get(4)?,
+        p50_ns: row.get(5)?,
+        p99_ns: row.get(6)?,
+        total_matched: row.get(7)?,
     })
 }
 
@@ -928,11 +946,14 @@ fn slice_aggregate_from_sql_row(
     group_by: SlicesAggregateGroupBy,
 ) -> SliceAggregate {
     let key = match (group_by, row.path.as_deref()) {
-        (SlicesAggregateGroupBy::Path, Some(p)) => format!("scope|path:{p}"),
-        _ => format!("scope|{}", row.name),
+        (SlicesAggregateGroupBy::Path, Some(p)) => {
+            format!("scope|pid:{}|path:{p}", row.process_id)
+        }
+        _ => format!("scope|pid:{}|{}", row.process_id, row.name),
     };
     SliceAggregate {
         key,
+        process_id: row.process_id,
         name: row.name,
         path: row.path,
         instances: row.instances,
@@ -1000,10 +1021,14 @@ where
             )
         });
 
-        if let (Some(dev), Some(stream), Some(kind)) =
-            (row.device_id, row.stream_id, row.kind.as_deref())
-        {
+        if let (Some(process_id), Some(dev), Some(stream), Some(kind)) = (
+            row.process_id,
+            row.device_id,
+            row.stream_id,
+            row.kind.as_deref(),
+        ) {
             builder.add_aggregate(
+                process_id,
                 dev,
                 stream,
                 kind,
@@ -1037,6 +1062,7 @@ struct SliceSqlRow {
     tid: i64,
     r_start: i64,
     r_end: i64,
+    process_id: Option<i64>,
     device_id: Option<i32>,
     stream_id: Option<i64>,
     kind: Option<String>,
@@ -1054,14 +1080,15 @@ fn slice_sql_row(row: &duckdb::Row<'_>) -> Result<SliceSqlRow, duckdb::Error> {
         tid: row.get(2)?,
         r_start: row.get(3)?,
         r_end: row.get(4)?,
-        device_id: row.get(5)?,
-        stream_id: row.get(6)?,
-        kind: row.get(7)?,
-        gpu_start: row.get(8)?,
-        gpu_end: row.get(9)?,
-        busy_ns: row.get(10)?,
-        event_count: row.get(11)?,
-        total_matched: row.get(12)?,
+        process_id: row.get(5)?,
+        device_id: row.get(6)?,
+        stream_id: row.get(7)?,
+        kind: row.get(8)?,
+        gpu_start: row.get(9)?,
+        gpu_end: row.get(10)?,
+        busy_ns: row.get(11)?,
+        event_count: row.get(12)?,
+        total_matched: row.get(13)?,
     })
 }
 
@@ -1074,7 +1101,7 @@ struct SliceBuilder {
     r_start: i64,
     r_end: i64,
     nesting_depth: Option<u8>,
-    per_stream: HashMap<(i32, i64), StreamAcc>,
+    per_stream: HashMap<(i64, i32, i64), StreamAcc>,
 }
 
 #[derive(Default)]
@@ -1116,6 +1143,7 @@ impl SliceBuilder {
     )]
     fn add_aggregate(
         &mut self,
+        process_id: i64,
         device_id: i32,
         stream_id: i64,
         kind: &str,
@@ -1124,7 +1152,10 @@ impl SliceBuilder {
         busy_ns: i64,
         event_count: i64,
     ) {
-        let acc = self.per_stream.entry((device_id, stream_id)).or_default();
+        let acc = self
+            .per_stream
+            .entry((process_id, device_id, stream_id))
+            .or_default();
         if !acc.seen {
             acc.gpu_start = gpu_start;
             acc.gpu_end = gpu_end;
@@ -1154,7 +1185,8 @@ impl SliceBuilder {
         let mut gpu_attributed: Vec<GpuStreamSpan> = self
             .per_stream
             .into_iter()
-            .map(|((device_id, stream_id), acc)| GpuStreamSpan {
+            .map(|((process_id, device_id, stream_id), acc)| GpuStreamSpan {
+                process_id,
                 device_id,
                 stream_id,
                 start_ns: acc.gpu_start,
@@ -1167,7 +1199,7 @@ impl SliceBuilder {
                 memset_count: acc.memset_count,
             })
             .collect();
-        gpu_attributed.sort_by_key(|s| (s.device_id, s.stream_id));
+        gpu_attributed.sort_by_key(|s| (s.process_id, s.device_id, s.stream_id));
 
         let mut tot_kernel_ns = 0i64;
         let mut tot_kernel_count = 0i64;
@@ -1184,9 +1216,11 @@ impl SliceBuilder {
             tot_memset_count += s.memset_count;
         }
 
-        let key = format!("slice|{}|@{}", self.name, self.r_start);
+        let process_id = veloq_nsys_data::native_pid_from_global_tid(self.tid);
+        let key = format!("slice|pid:{process_id}|{}|@{}", self.name, self.r_start);
         Slice {
             key,
+            process_id,
             row_id: RowId::new(EventKind::Nvtx, self.row_id),
             name: self.name,
             cpu: CpuSpan {

@@ -1,14 +1,18 @@
-use crate::{NsysDataResult, Trace};
+use crate::{CudaProcessResolver, NsysDataResult, Trace};
+#[cfg(test)]
 use arrow::array::{
     Array, Int8Array, Int16Array, Int32Array, Int64Array, UInt8Array, UInt16Array, UInt32Array,
     UInt64Array,
 };
+#[cfg(test)]
 use arrow::datatypes::Schema;
+#[cfg(test)]
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rayon::prelude::*;
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs::File;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
 
 /// All GPU activity tables that can populate the
 /// `(native_pid, correlation_id) → (device_id, context_id)` map. The
@@ -62,35 +66,17 @@ impl DevCtxValue {
             DevCtxValue::Many(v) => v.push(dx),
         }
     }
-
-    /// View as a slice for the merge step's dispatch.
-    fn as_slice(&self) -> &[(i32, i64)] {
-        match self {
-            DevCtxValue::Single(x) => std::slice::from_ref(x),
-            DevCtxValue::Many(v) => v.as_slice(),
-        }
-    }
 }
 
 pub(super) type DevCtxMap = HashMap<(i64, i64), DevCtxValue>;
 
 /// Collect `(native_pid, correlation_id) → (device_id, context_id)`.
 ///
-/// Two paths, picked at runtime based on what's available:
-///
-/// Reads each present GPU activity table's parquet file via Arrow's
-/// batched columnar reader, in parallel across tables, and joins
-/// against an in-memory `ctx_for_pid` map. DuckDB→Rust row iteration
-/// over ~27 M rows costs ~8 s on a 21.8 M-kernel trace; the columnar
-/// path skips that handoff entirely.
-///
-/// Returns an empty map when the context-info table is absent or no
-/// GPU activity table is present — callers treat empty as "no GPU
-/// disambiguation available", collapsing to runtime-only attribution.
+/// Process identity is resolved from activity `globalPid` where
+/// available, then from process-aware context/runtime evidence. This
+/// deliberately avoids the old single-valued `(device, context) -> pid`
+/// map, which overwrote rank-private ordinal collisions.
 pub(super) fn collect_runtime_dev_ctx(trace: &Trace) -> NsysDataResult<DevCtxMap> {
-    if !trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO") {
-        return Ok(HashMap::new());
-    }
     let present: Vec<&'static str> = GPU_ACTIVITY_TABLES
         .iter()
         .copied()
@@ -99,8 +85,11 @@ pub(super) fn collect_runtime_dev_ctx(trace: &Trace) -> NsysDataResult<DevCtxMap
     if present.is_empty() {
         return Ok(HashMap::new());
     }
-    let ctx_for_pid = read_ctx_for_pid(trace)?;
-    let map = collect_via_parquet(trace, &present, &ctx_for_pid)?;
+    let resolver = CudaProcessResolver::build(trace)?;
+    let mut map = HashMap::new();
+    for table in present {
+        collect_table(trace, &resolver, table, &mut map)?;
+    }
     // Count Single vs Many to surface the multi-context fan-out
     // case. CUPTI's documented model assigns process-unique
     // correlationIds across contexts, so `Many > 0` is unexpected
@@ -131,10 +120,75 @@ pub(super) fn collect_runtime_dev_ctx(trace: &Trace) -> NsysDataResult<DevCtxMap
     Ok(map)
 }
 
-/// `(device, context) → process_id` table from
+fn collect_table(
+    trace: &Trace,
+    resolver: &CudaProcessResolver,
+    table: &str,
+    out: &mut DevCtxMap,
+) -> NsysDataResult<()> {
+    let global_pid = if trace.table_has_column(table, "globalPid") {
+        "CAST(globalPid AS BIGINT)"
+    } else {
+        "CAST(NULL AS BIGINT)"
+    };
+    let sql = format!(
+        "SELECT CAST(correlationId AS BIGINT), CAST(deviceId AS INTEGER), \
+                CAST(contextId AS BIGINT), CAST(start AS BIGINT), {global_pid} \
+         FROM nsight.{table} \
+         WHERE correlationId IS NOT NULL"
+    );
+    let mut stmt = trace
+        .conn()
+        .prepare(&sql)
+        .map_err(|source| crate::NsysDataError::nvtx_parent_rows_prepare(table, source))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::nvtx_parent_rows_query(table, source))?;
+    while let Some(row) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?
+    {
+        let correlation_id: i64 = row
+            .get(0)
+            .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?;
+        let device_id: i32 = row
+            .get(1)
+            .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?;
+        let context_id: i64 = row
+            .get(2)
+            .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?;
+        let start_ns: i64 = row
+            .get(3)
+            .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?;
+        let global_pid: Option<i64> = row
+            .get(4)
+            .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(table, source))?;
+        let process_id = resolver.resolve_required(
+            table,
+            device_id,
+            context_id,
+            Some(correlation_id),
+            start_ns,
+            global_pid,
+        )?;
+        let dx = (device_id, context_id);
+        match out.entry((process_id, correlation_id)) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(DevCtxValue::Single(dx));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => entry.get_mut().push(dx),
+        }
+    }
+    Ok(())
+}
+
+/// `(device, context) → process_id[]` table from
 /// `TARGET_INFO_CUDA_CONTEXT_INFO`. Small (one row per CUDA context),
-/// so we just load it into a HashMap once.
-pub(super) fn read_ctx_for_pid(trace: &Trace) -> NsysDataResult<HashMap<(i32, i64), i64>> {
+/// so we just load it into a multimap once. The value must remain
+/// multi-valued because rank-private CUDA namespaces can reuse both
+/// device and context ordinals.
+#[cfg(test)]
+pub(super) fn read_ctx_for_pid(trace: &Trace) -> NsysDataResult<HashMap<(i32, i64), Vec<i64>>> {
     const TABLE: &str = "TARGET_INFO_CUDA_CONTEXT_INFO";
     let mut stmt = trace
         .conn()
@@ -162,7 +216,10 @@ pub(super) fn read_ctx_for_pid(trace: &Trace) -> NsysDataResult<HashMap<(i32, i6
         let pid: i64 = r
             .get(2)
             .map_err(|source| crate::NsysDataError::nvtx_parent_rows_read(TABLE, source))?;
-        out.insert((dev, ctx), pid);
+        let pids = out.entry((dev, ctx)).or_insert_with(Vec::new);
+        if !pids.contains(&pid) {
+            pids.push(pid);
+        }
     }
     Ok(out)
 }
@@ -174,41 +231,13 @@ pub(super) fn read_ctx_for_pid(trace: &Trace) -> NsysDataResult<HashMap<(i32, i6
 /// Rayon-parallelises across tables so kernel (the largest) doesn't
 /// gate memcpy / memset / sync; each table contributes a partial map
 /// that's merged at the end.
-fn collect_via_parquet(
-    trace: &Trace,
-    tables: &[&'static str],
-    ctx_for_pid: &HashMap<(i32, i64), i64>,
-) -> NsysDataResult<DevCtxMap> {
-    let paths: Vec<PathBuf> = tables.iter().map(|t| trace.parquet_path(t)).collect();
-    let partials: Vec<DevCtxMap> = paths
-        .par_iter()
-        .map(|p| read_gpu_dev_ctx_parquet(p, ctx_for_pid))
-        .collect::<NsysDataResult<Vec<_>>>()?;
-    let total: usize = partials.iter().map(|m| m.len()).sum();
-    let mut out: DevCtxMap = HashMap::with_capacity(total);
-    for p in partials {
-        for (k, v) in p {
-            match out.entry(k) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert(v);
-                }
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    for dx in v.as_slice() {
-                        e.get_mut().push(*dx);
-                    }
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// Read one GPU activity table's parquet file via Arrow's batched
 /// columnar reader and project each row through `ctx_for_pid` to a
 /// `(native_pid, correlation_id) → (device_id, context_id)` entry.
+#[cfg(test)]
 pub(super) fn read_gpu_dev_ctx_parquet(
     path: &Path,
-    ctx_for_pid: &HashMap<(i32, i64), i64>,
+    ctx_for_pid: &HashMap<(i32, i64), Vec<i64>>,
 ) -> NsysDataResult<DevCtxMap> {
     let file = File::open(path).map_err(|source| {
         crate::NsysDataError::nvtx_parent_gpu_activity_open(path.display(), source)
@@ -251,13 +280,15 @@ pub(super) fn read_gpu_dev_ctx_parquet(
                     dev_i64,
                 )
             })?;
-            if let Some(&native_pid) = ctx_for_pid.get(&(dev, ctx_id)) {
-                match out.entry((native_pid, corr)) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert(DevCtxValue::Single((dev, ctx_id)));
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                        e.get_mut().push((dev, ctx_id));
+            if let Some(native_pids) = ctx_for_pid.get(&(dev, ctx_id)) {
+                for &native_pid in native_pids {
+                    match out.entry((native_pid, corr)) {
+                        std::collections::hash_map::Entry::Vacant(e) => {
+                            e.insert(DevCtxValue::Single((dev, ctx_id)));
+                        }
+                        std::collections::hash_map::Entry::Occupied(mut e) => {
+                            e.get_mut().push((dev, ctx_id));
+                        }
                     }
                 }
             }
@@ -266,6 +297,7 @@ pub(super) fn read_gpu_dev_ctx_parquet(
     Ok(out)
 }
 
+#[cfg(test)]
 fn gpu_activity_column_index(
     schema: &Schema,
     path: &Path,
@@ -276,6 +308,7 @@ fn gpu_activity_column_index(
     })
 }
 
+#[cfg(test)]
 pub(super) fn parquet_integer_i64(
     array: &dyn Array,
     row: usize,

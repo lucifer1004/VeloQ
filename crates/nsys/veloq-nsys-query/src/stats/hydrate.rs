@@ -53,6 +53,7 @@ struct StatsSqlRow {
     name: Option<String>,
     short_name_raw: Option<String>,
     kind: String,
+    process_id: Option<i64>,
     device_id: Option<i32>,
     context_id: Option<i64>,
     stream_id: Option<i64>,
@@ -116,6 +117,7 @@ fn stats_sql_row(row: &duckdb::Row<'_>, hist: bool) -> Result<StatsSqlRow, duckd
         name: row.get("name")?,
         short_name_raw: row.get("short_name")?,
         kind: row.get("kind")?,
+        process_id: row.get("process_id")?,
         device_id: row.get("device_id")?,
         context_id: row.get("context_id")?,
         stream_id: row.get("stream_id")?,
@@ -181,6 +183,9 @@ fn stat_row_from_sql(
     let mut key_parts = vec![kind_static.to_string()];
     if let Some(n) = row.name.as_deref() {
         key_parts.push(n.to_string());
+    }
+    if let Some(pid) = row.process_id {
+        key_parts.push(format!("pid:{pid}"));
     }
     if let Some(d) = row.device_id {
         key_parts.push(format!("dev:{d}"));
@@ -263,6 +268,7 @@ fn stat_row_from_sql(
         name: row.name,
         kind: kind_static,
         short_name,
+        process_id: row.process_id,
         device_id: row.device_id,
         context_id: row.context_id,
         stream_id: row.stream_id,

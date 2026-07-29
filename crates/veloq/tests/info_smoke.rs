@@ -306,8 +306,7 @@ fn build_two_device_trace_with_rank_env() -> Result<(TempDir, PathBuf)> {
     Ok((dir, pqtdir))
 }
 
-/// `info` on a 2-device fixture surfaces `devices.count == 2` and the
-/// sorted device ids.
+/// `info` separates physical GPU ids from process-local CUDA ordinals.
 #[test]
 fn info_surfaces_device_inventory() -> Result<()> {
     let (_dir, pqtdir) = build_two_device_trace_with_rank_env()?;
@@ -319,12 +318,25 @@ fn info_surfaces_device_inventory() -> Result<()> {
         String::from_utf8_lossy(&out.stderr),
     );
     let v = parse_stdout(&out)?;
-    assert_eq!(at(&v, "/data/trace_map/devices/count")?.as_u64(), Some(2));
-    let ids = at(&v, "/data/trace_map/devices/ids")?
+    assert_eq!(
+        at(&v, "/data/trace_map/devices/physical/count")?.as_u64(),
+        Some(2)
+    );
+    let ids = at(&v, "/data/trace_map/devices/physical/ids")?
         .as_array()
-        .context("devices.ids must be an array")?;
+        .context("devices.physical.ids must be an array")?;
     let ids: Vec<i64> = ids.iter().filter_map(Value::as_i64).collect();
-    assert_eq!(ids, vec![0, 1], "device ids must be sorted ascending");
+    assert_eq!(ids, vec![10, 11], "physical ids must be sorted ascending");
+    let scopes = at(&v, "/data/trace_map/devices/logical_scopes")?
+        .as_array()
+        .context("devices.logical_scopes must be an array")?;
+    assert_eq!(
+        scopes,
+        &vec![
+            serde_json::json!({"process_id": 4242, "device_id": 0}),
+            serde_json::json!({"process_id": 4343, "device_id": 1}),
+        ]
+    );
     Ok(())
 }
 

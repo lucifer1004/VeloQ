@@ -175,15 +175,30 @@ pub fn emit_ambiguity_error(
     let qualified = format!("{}.{verb}", NsysSource::KIND);
     let trace_ref = Some(nsys_trace_ref(trace));
     let trace_arg = shell_quote(&trace.display().to_string());
+    let aggregate_selector = err
+        .requested_process
+        .map(|pid| format!(" --process {pid}"))
+        .unwrap_or_default();
+    let exact_selector = err
+        .candidate_scopes
+        .first()
+        .map(|(pid, device)| {
+            if *pid == 0 {
+                format!("--device {device}")
+            } else {
+                format!("--process {pid} --device {device}")
+            }
+        })
+        .unwrap_or_else(|| "--process <pid> --device <id>".to_string());
     let meta = Some(ResponseMeta {
         next_steps: vec![
             NextStep {
                 hint: "Aggregate intentionally across every CUDA device.".to_string(),
-                command: format!("veloq {verb} {trace_arg} --all-devices"),
+                command: format!("veloq {verb} {trace_arg}{aggregate_selector} --all-devices"),
             },
             NextStep {
-                hint: "Inspect one CUDA device before comparing peers.".to_string(),
-                command: format!("veloq {verb} {trace_arg} --device 0"),
+                hint: "Inspect one process-local CUDA device before comparing peers.".to_string(),
+                command: format!("veloq {verb} {trace_arg} {exact_selector}"),
             },
         ],
         warnings: vec![err.warning.clone()],
@@ -201,10 +216,10 @@ pub fn emit_ambiguity_error(
     env.error.code = Some(veloq_core::ErrorCode::new(
         "nsys.query.multi-device-ambiguous",
     ));
-    env.error.hint = Some(
-        "Rerun with `--all-devices` for an explicit aggregate, or `--device 0` for one GPU"
-            .to_string(),
-    );
+    env.error.hint = Some(format!(
+        "Rerun with `--all-devices` for an explicit aggregate, or `{exact_selector}` \
+             for one process-local GPU"
+    ));
     if !matches!(fmt, OutputFormat::Json) {
         eprintln!("veloq: {}", err.message);
     }

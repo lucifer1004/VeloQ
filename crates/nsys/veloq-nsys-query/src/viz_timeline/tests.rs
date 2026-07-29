@@ -7,6 +7,7 @@ use super::keys::{axis, gpu_summary_track_key, stream_track_key};
 use super::spec::{HighlightMetric, HighlightScope, KernelHighlightSpec, TrackSpec};
 use super::tracks::resolve_tracks;
 use crate::{EventKind, NsysQueryError, RowId};
+use std::collections::BTreeSet;
 use veloq_core::VeloqDiagnostic;
 use veloq_vis::{VizAxis, VizLabelPolicy, VizRenderPolicy, VizRole, VizTrack};
 
@@ -37,6 +38,55 @@ fn cuda_stream_requires_device_and_stream() -> anyhow::Result<()> {
         err,
         NsysQueryError::VizTimelineCudaStreamDeviceAll
     ));
+    Ok(())
+}
+
+#[test]
+fn device_selector_requires_process_when_logical_ordinal_is_reused() -> anyhow::Result<()> {
+    let mut rank0 = event(1, 0, 7, 0, 10);
+    rank0.process_id = Some(1001);
+    let mut rank1 = event(2, 0, 7, 20, 30);
+    rank1.process_id = Some(2002);
+    let events = vec![rank0, rank1];
+
+    let ambiguous = TrackSpec::parse("gpu:device=0")?;
+    let trace_scopes = BTreeSet::from([(1001, 0), (2002, 0)]);
+    let err = match resolve_tracks(&[ambiguous], &events, &[], &[], &trace_scopes) {
+        Ok(_) => anyhow::bail!("process-private device 0 must be ambiguous"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, NsysQueryError::VizTimelineProcessRequired));
+
+    let exact = TrackSpec::parse("gpu:process=1001,device=0")?;
+    let resolved = resolve_tracks(&[exact], &events, &[], &[], &trace_scopes)?;
+    assert!(
+        resolved
+            .response_tracks
+            .iter()
+            .all(|track| track.axes.contains(&axis("process", 1001)))
+    );
+    assert!(
+        resolved
+            .response_tracks
+            .iter()
+            .all(|track| !track.axes.contains(&axis("process", 2002)))
+    );
+    Ok(())
+}
+
+#[test]
+fn device_ambiguity_uses_trace_scopes_outside_the_window() -> anyhow::Result<()> {
+    let mut visible = event(1, 0, 7, 0, 10);
+    visible.process_id = Some(1001);
+    let window_events = vec![visible];
+    let trace_scopes = BTreeSet::from([(1001, 0), (2002, 0)]);
+
+    let ambiguous = TrackSpec::parse("gpu:device=0")?;
+    let err = match resolve_tracks(&[ambiguous], &window_events, &[], &[], &trace_scopes) {
+        Ok(_) => anyhow::bail!("trace-wide process collision must remain ambiguous"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, NsysQueryError::VizTimelineProcessRequired));
     Ok(())
 }
 
@@ -77,12 +127,12 @@ fn parses_kernel_highlight_specs() -> anyhow::Result<()> {
 #[test]
 fn name_highlights_rank_by_full_name_but_label_with_short_name() -> anyhow::Result<()> {
     let tracks = vec![VizTrack {
-        key: gpu_summary_track_key(0),
+        key: gpu_summary_track_key(42, 0),
         label: "busy summary".to_string(),
         kind: "gpu-summary".to_string(),
         role: VizRole::Summary,
         depth: 1,
-        axes: vec![axis("device", 0)],
+        axes: vec![axis("process", 42), axis("device", 0)],
     }];
     let events = vec![
         event_named(1, 0, 7, 0, 100, "short", "void short<int>()"),
@@ -124,12 +174,12 @@ fn name_highlights_rank_by_full_name_but_label_with_short_name() -> anyhow::Resu
 #[test]
 fn kernel_highlight_score_uses_selected_metric() -> anyhow::Result<()> {
     let tracks = vec![VizTrack {
-        key: gpu_summary_track_key(0),
+        key: gpu_summary_track_key(42, 0),
         label: "busy summary".to_string(),
         kind: "gpu-summary".to_string(),
         role: VizRole::Summary,
         depth: 1,
-        axes: vec![axis("device", 0)],
+        axes: vec![axis("process", 42), axis("device", 0)],
     }];
     let events = vec![
         event_named(1, 0, 7, 0, 10, "many", "void many()"),
@@ -155,12 +205,12 @@ fn kernel_highlight_score_uses_selected_metric() -> anyhow::Result<()> {
 #[test]
 fn instance_highlights_attach_row_id() -> anyhow::Result<()> {
     let tracks = vec![VizTrack {
-        key: stream_track_key(0, 7),
+        key: stream_track_key(42, 0, 7),
         label: "stream 7".to_string(),
         kind: "cuda-stream".to_string(),
         role: VizRole::Detail,
         depth: 1,
-        axes: vec![axis("device", 0), axis("stream", 7)],
+        axes: vec![axis("process", 42), axis("device", 0), axis("stream", 7)],
     }];
     let events = vec![
         event_named(1, 0, 7, 0, 100, "fast", "void fast()"),
@@ -210,7 +260,8 @@ fn resolved_tracks_group_streams_under_their_device() -> anyhow::Result<()> {
         event(3, 0, 8, 0, 50),
         event(4, 1, 4, 0, 50),
     ];
-    let resolved = resolve_tracks(&specs, &events, false, &[])?;
+    let trace_scopes = BTreeSet::from([(42, 0), (42, 1)]);
+    let resolved = resolve_tracks(&specs, &events, &[], &[], &trace_scopes)?;
     let rows = resolved
         .response_tracks
         .iter()
@@ -220,11 +271,11 @@ fn resolved_tracks_group_streams_under_their_device() -> anyhow::Result<()> {
     assert_eq!(
         rows,
         vec![
-            ("GPU 0", "group"),
+            ("PID 42 / GPU 0", "group"),
             ("busy summary", "summary"),
             ("stream 7", "detail"),
             ("stream 8", "detail"),
-            ("GPU 1", "group"),
+            ("PID 42 / GPU 1", "group"),
             ("busy summary", "summary"),
             ("stream 3", "detail"),
             ("stream 4", "detail"),
@@ -233,15 +284,15 @@ fn resolved_tracks_group_streams_under_their_device() -> anyhow::Result<()> {
     let stream = resolved
         .response_tracks
         .iter()
-        .find(|track| track.track_key == "cuda-stream|dev:0|stream:7")
+        .find(|track| track.track_key == "cuda-stream|pid:42|dev:0|stream:7")
         .ok_or_else(|| anyhow::anyhow!("expected stream track"))?;
     assert_eq!(
         stream.source_axes,
-        vec![axis("device", 0), axis("stream", 7)]
+        vec![axis("process", 42), axis("device", 0), axis("stream", 7)]
     );
     assert_eq!(
         stream.placement_axes,
-        vec![axis("device", 0), axis("stream", 7)]
+        vec![axis("process", 42), axis("device", 0), axis("stream", 7)]
     );
     assert_eq!(stream.placement_source, "native");
     Ok(())
@@ -258,6 +309,7 @@ fn nvtx_depth_track_uses_dynamic_key_for_routing() -> anyhow::Result<()> {
             full_name: "depth2".to_string(),
             start_ns: 0,
             end_ns: 5,
+            process_id: Some(42),
             device_id: None,
             stream_id: None,
             nvtx_depth: Some(2),
@@ -269,18 +321,22 @@ fn nvtx_depth_track_uses_dynamic_key_for_routing() -> anyhow::Result<()> {
             full_name: "depth3".to_string(),
             start_ns: 10,
             end_ns: 20,
+            process_id: Some(42),
             device_id: None,
             stream_id: None,
             nvtx_depth: Some(3),
         },
     ];
-    let resolved = resolve_tracks(&specs, &[], false, &nvtx_events)?;
+    let resolved = resolve_tracks(&specs, &[], &[], &nvtx_events, &BTreeSet::new())?;
     let track = resolved
         .response_tracks
         .first()
         .ok_or_else(|| anyhow::anyhow!("expected resolved NVTX track"))?;
-    assert_eq!(track.track_key, "nvtx|depth:3");
-    assert_eq!(track.source_axes, vec![axis("depth", 3)]);
+    assert_eq!(track.track_key, "nvtx|depth:3|pid:42");
+    assert_eq!(
+        track.source_axes,
+        vec![axis("process", 42), axis("depth", 3)]
+    );
     assert_eq!(track.placement_axes, Vec::<VizAxis>::new());
     assert_eq!(track.placement_source, "fallback");
 
@@ -295,7 +351,7 @@ fn nvtx_depth_track_uses_dynamic_key_for_routing() -> anyhow::Result<()> {
     let interval = intervals
         .first()
         .ok_or_else(|| anyhow::anyhow!("expected routed NVTX interval"))?;
-    assert_eq!(interval.track_key, "nvtx|depth:3");
+    assert_eq!(interval.track_key, "nvtx|depth:3|pid:42");
     assert_eq!(interval.row_id.as_deref(), Some("nvtx:42"));
     assert_eq!(intervals.len(), 1);
     Ok(())
@@ -312,6 +368,7 @@ fn device_attributed_nvtx_tracks_group_under_devices() -> anyhow::Result<()> {
             full_name: "dev0".to_string(),
             start_ns: 0,
             end_ns: 10,
+            process_id: Some(42),
             device_id: Some(0),
             stream_id: None,
             nvtx_depth: Some(1),
@@ -323,12 +380,13 @@ fn device_attributed_nvtx_tracks_group_under_devices() -> anyhow::Result<()> {
             full_name: "dev1".to_string(),
             start_ns: 0,
             end_ns: 10,
+            process_id: Some(42),
             device_id: Some(1),
             stream_id: None,
             nvtx_depth: Some(1),
         },
     ];
-    let resolved = resolve_tracks(&specs, &[], false, &nvtx_events)?;
+    let resolved = resolve_tracks(&specs, &[], &[], &nvtx_events, &BTreeSet::new())?;
     let rows = resolved
         .response_tracks
         .iter()
@@ -338,10 +396,10 @@ fn device_attributed_nvtx_tracks_group_under_devices() -> anyhow::Result<()> {
     assert_eq!(
         rows,
         vec![
-            ("gpu-device|dev:0", "group"),
-            ("nvtx|depth:1|dev:0", "annotation"),
-            ("gpu-device|dev:1", "group"),
-            ("nvtx|depth:1|dev:1", "annotation"),
+            ("gpu-device|pid:42|dev:0", "group"),
+            ("nvtx|depth:1|pid:42|dev:0", "annotation"),
+            ("gpu-device|pid:42|dev:1", "group"),
+            ("nvtx|depth:1|pid:42|dev:1", "annotation"),
         ]
     );
 
@@ -358,15 +416,56 @@ fn device_attributed_nvtx_tracks_group_under_devices() -> anyhow::Result<()> {
         .map(|interval| interval.track_key.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(keys, vec!["nvtx|depth:1|dev:0", "nvtx|depth:1|dev:1"]);
+    assert_eq!(
+        keys,
+        vec!["nvtx|depth:1|pid:42|dev:0", "nvtx|depth:1|pid:42|dev:1"]
+    );
     let device_track = resolved
         .response_tracks
         .iter()
-        .find(|track| track.track_key == "nvtx|depth:1|dev:0")
+        .find(|track| track.track_key == "nvtx|depth:1|pid:42|dev:0")
         .ok_or_else(|| anyhow::anyhow!("expected device-attributed NVTX track"))?;
-    assert_eq!(device_track.source_axes, vec![axis("depth", 1)]);
-    assert_eq!(device_track.placement_axes, vec![axis("device", 0)]);
+    assert_eq!(
+        device_track.source_axes,
+        vec![axis("process", 42), axis("depth", 1)]
+    );
+    assert_eq!(
+        device_track.placement_axes,
+        vec![axis("process", 42), axis("device", 0)]
+    );
     assert_eq!(device_track.placement_source, "nvtx_parent_sidecar");
+    Ok(())
+}
+
+#[test]
+fn gaps_overlay_selectors_limit_overlay_scope() -> anyhow::Result<()> {
+    let specs = vec![
+        TrackSpec::parse("gpu:device=all")?,
+        TrackSpec::parse("gaps-overlay:process=42,device=0")?,
+    ];
+    let events = vec![
+        event(1, 0, 7, 0, 10),
+        event(2, 0, 7, 20, 30),
+        event(3, 1, 7, 0, 10),
+        event(4, 1, 7, 20, 30),
+    ];
+    let trace_scopes = BTreeSet::from([(42, 0), (42, 1)]);
+    let resolved = resolve_tracks(&specs, &events, &[], &[], &trace_scopes)?;
+    let intervals = build_intervals(
+        &resolved.tracks,
+        &specs,
+        &events,
+        &[],
+        &[],
+        &HighlightAssignments::default(),
+    );
+    let gap_tracks = intervals
+        .iter()
+        .filter(|interval| interval.class.as_deref() == Some("gap"))
+        .map(|interval| interval.track_key.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(gap_tracks, vec!["gpu-summary|pid:42|dev:0"]);
     Ok(())
 }
 
@@ -398,6 +497,7 @@ fn event_named(
         full_name: full_name.to_string(),
         start_ns,
         end_ns,
+        process_id: Some(42),
         device_id: Some(device),
         stream_id: Some(stream),
         nvtx_depth: None,

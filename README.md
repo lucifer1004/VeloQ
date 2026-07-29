@@ -220,6 +220,10 @@ veloq search path/to/trace.nsys-rep --type kernel --name-regex 'gemm' --sort dur
 # Dense events are aggregated into per-track density bins by default.
 veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000
 
+# Select one process-private logical GPU exactly in a figure.
+veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 \
+  --track gpu:process=12345,device=0
+
 # Highlight the top kernel names in that window while preserving the
 # base event-type legend; metadata lands in data.auxiliary.resolved_highlights.
 veloq viz timeline path/to/trace.nsys-rep --from @100000000 --to @120000000 --highlight-kernels top=3,scope=name
@@ -327,14 +331,14 @@ Every successful JSON call returns the source-qualified v1 envelope:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v3" },
+  "source": { "kind": "nsys", "version": "v4" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "trace_span": { "origin_ns": 0, "span_ns": 12345000000 },
   "data": {
     "count": 50,
     "total_matched": 1234,
-    "rows": [{ "key": "kernel|...|dev:0|stream:7", "...": "..." }]
+    "rows": [{ "key": "kernel|...|pid:12345|dev:0|stream:7", "...": "..." }]
   }
 }
 ```
@@ -345,12 +349,13 @@ Every successful JSON call returns the source-qualified v1 envelope:
   (`"nsys"`, `"ncu"`, `"pytorch"`, or `"veloq"` for meta verbs).
 - `source.version` — per-source wire-format version. Bumps
   independently from the envelope when the source's payload shapes
-  change. Currently NSys reports `v3` (`v1` introduced the NVTX domain
+  change. Currently NSys reports `v4` (`v1` introduced the NVTX domain
   dimension on `stats --group-by nvtx-path` rows; `v2` makes `prep` and
   `prep --status` canonical list responses where `data.rows[]` carries
   registered sidecar readiness keyed as `sidecar|<sidecar-id>`; `v3`
   removes the `viz timeline` label character-cap option and response
-  echo) and NCU reports `v1` (the
+  echo; `v4` makes CUDA-local identities, filters, keys, aggregations,
+  graph correlation, and trace-map device scopes process-aware) and NCU reports `v1` (the
   `ncu_report`-native wire — `inspect` carries no section catalog and
   `summary.auxiliary.session` keeps only the NCU version; each
   `ncu inspect` metric's
@@ -390,7 +395,7 @@ Errors share the same shape, with `data` replaced by `error`:
 ```json
 {
   "schema": "v1",
-  "source": { "kind": "nsys", "version": "v3" },
+  "source": { "kind": "nsys", "version": "v4" },
   "command": "nsys.stats",
   "trace": { "kind": "nsys", "path": "trace.nsys-rep" },
   "error": {
@@ -420,11 +425,11 @@ without a JSON envelope.
 | `inspect`           | Full per-kind details for one or more `row_id`s                                                                                                                                         |
 | `correlate`         | CPU↔GPU causal chain for a `row_id`                                                                                                                                                     |
 | `ncu-command`       | Generate a native `ncu` rerun command for one selected kernel event                                                                                                                     |
-| `gaps`              | GPU idle bubbles. Default `--scope device` is cross-stream (no phantom gaps from idle peer streams); `--scope stream` for per-stream starvation; `--scope trace` for multi-GPU rig idle |
+| `gaps`              | GPU idle bubbles. Default `--scope device` is per process/device and cross-stream; `--scope stream` for per-stream starvation; `--scope trace` for whole-trace idle                    |
 | `timeline`          | Time-bucketed GPU activity (busy ns + per-kind breakdown per bucket)                                                                                                                    |
 | `viz timeline`      | Export a bounded NSys timeline window as an SVG artifact with resolved track roles, placement provenance, render metadata, and label counters                                           |
-| `concurrency`       | Kernel/transfer overlap: per-device union vs sum busy time, peak concurrency, per-stream (incl. same-stream PDL) + compute/copy overlap. Extraction-only (ratios in jq)                 |
-| `graph-replays`     | CUDA Graph replay decomposition: per-replay GPU work keyed by `(device, context, correlationId)`, across both `--cuda-graph-trace=graph` and `=node` captures                           |
+| `concurrency`       | Kernel/transfer overlap: per-process/device union vs sum busy time, peak concurrency, per-stream (incl. same-stream PDL) + compute/copy overlap. Extraction-only (ratios in jq)         |
+| `graph-replays`     | CUDA Graph replay decomposition: per-replay GPU work keyed by `(process, device, context, correlationId)`, across both `--cuda-graph-trace=graph` and `=node` captures                  |
 | `slices`            | Per-NVTX-range CPU bounds + attributed GPU work                                                                                                                                         |
 | `hardware`          | CPU / GPU / NIC inventory from the trace's `TARGET_INFO_*` tables                                                                                                                       |
 | `metrics`           | GPU/NIC PM counters, CPU IP samples, or CPU scheduler events — hotspot summary, time series, callchain via `inspect`                                                                    |
@@ -434,6 +439,17 @@ without a JSON envelope.
 
 Every NSys command above can also be invoked as `veloq nsys <command>
 ...`; the top-level form is kept as the default-source shorthand.
+
+NSys CUDA device ordinals are process-local. If multiple rank processes
+each expose logical device 0, `--device 0` alone is ambiguous; use
+`--process <native-pid> --device 0` for an exact scope. When an ordinal
+matches only one process, the original `--device <ordinal>` form remains
+sufficient and VeloQ resolves the PID automatically. `veloq info`
+reports `trace_map.devices.physical` separately from
+`trace_map.devices.logical_scopes[]` so physical inventory is not confused
+with `(process_id, device_id)` query identity. `viz timeline` expresses the
+same exact scope inside each device-bearing track spec:
+`--track gpu:process=<native-pid>,device=0`.
 
 ### NCU verbs (namespaced under `ncu`)
 
@@ -514,7 +530,7 @@ in `veloq <verb> --help` (which is projected from the same
 
 NSys's `NVTX_EVENTS` table records CPU-side range timestamps only;
 GPU work is reached by walking `correlationId` from `NVTX → runtime
-API → kernel/memcpy/memset` with `(device, context)` disambiguation
+API → kernel/memcpy/memset` with `(process, device, context)` disambiguation
 from `TARGET_INFO_CUDA_CONTEXT_INFO`. VeloQ does this walk in SQL for
 `stats --nvtx`/`search --nvtx`/`slices` and in a pre-built index
 (`<trace>.veloq/correlation.bin`) for `correlate`.

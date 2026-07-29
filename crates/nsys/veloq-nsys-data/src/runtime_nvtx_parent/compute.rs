@@ -59,9 +59,9 @@ pub(super) fn compute(trace: &Trace) -> NsysDataResult<Vec<RuntimeParentEntry>> 
 /// per `(device, context)` candidate when CUPTI somehow presents the
 /// same `(native_pid, correlation_id)` for multiple contexts).
 ///
-/// Fan-out keeps the trio-keyed `by_correlation` map unambiguous on
+/// Fan-out keeps the process-aware `by_correlation` map unambiguous on
 /// every legitimate GPU row: each kernel/memcpy/memset/sync brings
-/// its own `(deviceId, contextId, correlationId)` and only ever
+/// its own `(native_pid, deviceId, contextId, correlationId)` and only ever
 /// joins the one sidecar entry that matches. Runtime-side
 /// `by_rt_rowid` collapses the fanout (the enclosing chain is
 /// identical across copies, so any copy is correct for that map's

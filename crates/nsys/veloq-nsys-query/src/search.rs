@@ -110,6 +110,8 @@ pub struct SearchRequest {
     /// ranges matching this glob. Non-GPU kinds (runtime/osrt/nvtx) get
     /// implicitly dropped from `kinds` since attribution doesn't apply.
     pub nvtx: Option<String>,
+    /// Restrict to one native process owning the CUDA namespace.
+    pub process_id: Option<i64>,
     /// Restrict to one CUDA device (NSys `deviceId`). Only the GPU
     /// kinds (kernel/memcpy/memset) carry a deviceId; runtime/osrt/nvtx
     /// rows pass through this filter unchanged.
@@ -144,6 +146,7 @@ impl Default for SearchRequest {
             duration: None,
             time_window: None,
             nvtx: None,
+            process_id: None,
             device: None,
             stream: None,
             sort: None,
@@ -244,6 +247,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     crate::kind_policy::validate_location_filter(
         &req.kinds,
         crate::kind_policy::LocationFilter {
+            process_id: req.process_id,
             device: req.device,
             stream: req.stream,
         },
@@ -305,6 +309,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     }
 
     crate::kind_policy::LocationFilter {
+        process_id: req.process_id,
         device: req.device,
         stream: req.stream,
     }
@@ -382,6 +387,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     let mut rank_subquery_params = Vec::new();
     for k in &kinds {
         let fragment = crate::query_sql::event_scan::search_rank_select(
+            &trace,
             *k,
             nvtx_scope,
             include_name,
@@ -410,7 +416,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     let rank_sql = format!(
         r#"
         {attribution_prefix}
-        SELECT kind, row_id_num,
+        SELECT kind, row_id_num, process_id,
                {total_matched}
         FROM ({rank_union})
         {where_clause}
@@ -473,8 +479,8 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     for k in &kinds {
         let ids: Vec<i64> = survivors
             .iter()
-            .filter(|(sk, _)| sk == k)
-            .map(|(_, r)| *r)
+            .filter(|(sk, _, _)| sk == k)
+            .map(|(_, r, _)| *r)
             .collect();
         if ids.is_empty() {
             continue;
@@ -510,8 +516,10 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     // (arbitrary order), so walk the ranked survivor list and pull each
     // materialized row back out in that order.
     let mut events: Vec<EventRef> = Vec::with_capacity(survivors.len());
-    for (k, r) in &survivors {
+    for (k, r, process_id) in &survivors {
         if let Some(ev) = by_id.remove(&RowId::new(*k, *r)) {
+            let mut ev = ev;
+            ev.base_mut().process_id = *process_id;
             events.push(ev);
         }
     }
@@ -548,7 +556,7 @@ fn hydrate_ranked_survivors(
     conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-) -> NsysQueryResult<(Vec<(EventKind, i64)>, i64)> {
+) -> NsysQueryResult<(Vec<(EventKind, i64, Option<i64>)>, i64)> {
     let rows = query_rows(
         conn,
         sql,
@@ -561,13 +569,20 @@ fn hydrate_ranked_survivors(
         duckdb_list::TotalCarrier::First,
         |row| row.total_matched,
         duckdb_list::infallible_count_error,
-        |row| Ok((parse_search_sql_kind(&row.kind)?, row.rowid_num)),
+        |row| {
+            Ok((
+                parse_search_sql_kind(&row.kind)?,
+                row.rowid_num,
+                row.process_id,
+            ))
+        },
     )
 }
 
 struct SearchRankSqlRow {
     kind: String,
     rowid_num: i64,
+    process_id: Option<i64>,
     total_matched: i64,
 }
 
@@ -575,7 +590,8 @@ fn search_rank_sql_row(row: &duckdb::Row<'_>) -> Result<SearchRankSqlRow, duckdb
     Ok(SearchRankSqlRow {
         kind: row.get(0)?,
         rowid_num: row.get(1)?,
-        total_matched: row.get(2)?,
+        process_id: row.get(2)?,
+        total_matched: row.get(3)?,
     })
 }
 
@@ -677,6 +693,7 @@ fn event_ref_from_sql_row(
         name: row.name,
         start_ns: row.start_ns,
         duration_ns: row.duration_ns,
+        process_id: None,
         device_id: row.device_id,
         stream_id: row.stream_id,
         global_tid: row.global_tid,
@@ -1178,8 +1195,8 @@ mod tests {
     #[test]
     fn hydrate_ranked_survivors_kind_tag_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
-        let sql =
-            "SELECT 'not_a_kind' AS kind, 1::BIGINT AS row_id_num, 1::BIGINT AS total_matched";
+        let sql = "SELECT 'not_a_kind' AS kind, 1::BIGINT AS row_id_num, \
+                          NULL::BIGINT AS process_id, 1::BIGINT AS total_matched";
 
         let err = match hydrate_ranked_survivors(&conn, sql, &[]) {
             Ok(rows) => anyhow::bail!(

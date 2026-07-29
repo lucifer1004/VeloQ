@@ -373,7 +373,8 @@ pub fn minimal_gpu() -> Result<Fixture> {
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
 
     // `minimal_gpu` stays *intentionally sparse*: only StringIds +
-    // KERNEL + MEMCPY + MEMSET. Five negative-path tests (e.g.
+    // CUDA context ownership + KERNEL + MEMCPY + MEMSET. Five
+    // negative-path tests (e.g.
     // `errors_on_missing_nvtx_events_table`,
     // `mangled_axis_falls_back_to_demangled_when_column_absent`,
     // `missing_*_errors_with_capture_hint`) rely on this fixture
@@ -384,6 +385,9 @@ pub fn minimal_gpu() -> Result<Fixture> {
     conn.execute_batch(
         r#"
         CREATE TABLE StringIds (id BIGINT PRIMARY KEY, value TEXT);
+        CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (
+            deviceId BIGINT, contextId BIGINT, processId BIGINT
+        );
         CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY (
             start BIGINT, "end" BIGINT,
             deviceId BIGINT, contextId BIGINT, streamId BIGINT,
@@ -410,6 +414,11 @@ pub fn minimal_gpu() -> Result<Fixture> {
     conn.execute(
         "INSERT INTO StringIds (id, value) VALUES (?, ?)",
         params![2i64, "slow_kernel"],
+    )?;
+    conn.execute(
+        "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO \
+         (deviceId, contextId, processId) VALUES (?, ?, ?)",
+        params![0i32, 0i64, 12345i64],
     )?;
 
     // 2 fast_kernel (1ms each), 2 slow_kernel (10ms each) on stream 7.
@@ -516,6 +525,11 @@ pub fn concurrency_overlap() -> Result<Fixture> {
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
     setup_canonical_schema(&conn)?;
     conn.execute(
+        "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO \
+         (deviceId, contextId, processId) VALUES (?, ?, ?)",
+        params![0i32, 0i64, 12345i64],
+    )?;
+    conn.execute(
         "INSERT INTO StringIds (id, value) VALUES (?, ?)",
         params![1i64, "k"],
     )?;
@@ -584,6 +598,11 @@ pub fn concurrency_two_devices() -> Result<Fixture> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
     setup_canonical_schema(&conn)?;
+    conn.execute(
+        "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO \
+         (deviceId, contextId, processId) VALUES (?, ?, ?), (?, ?, ?)",
+        params![0i32, 0i64, 12345i64, 1i32, 0i64, 12345i64],
+    )?;
     conn.execute(
         "INSERT INTO StringIds (id, value) VALUES (?, ?)",
         params![1i64, "k"],
@@ -1120,7 +1139,7 @@ pub fn with_graph_trace() -> Result<Fixture> {
 
 /// Graph-trace fixture where two devices reuse the same raw
 /// `correlationId`. Replay analysis must keep them distinct by the
-/// full `(device, context, correlationId)` key.
+/// full `(process, device, context, correlationId)` key.
 pub fn graph_trace_reused_correlation_two_devices() -> Result<Fixture> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
@@ -2224,6 +2243,95 @@ pub fn with_graph_nodes() -> Result<Fixture> {
                 3i64,
                 node,
                 Option::<i64>::None
+            ],
+        )?;
+    }
+
+    finalize_to_pqtdir(&conn, dir)
+}
+
+/// Two rank processes expose one private CUDA device each, so both
+/// reuse the exact local identity `(device=0, context=1, stream=7,
+/// correlationId=42)`. Their graph replays are 635ms apart. This is the
+/// regression shape that used to collapse into one long replay when
+/// process identity was omitted from the graph/correlation key.
+pub fn process_private_cuda_identity_collision() -> Result<Fixture> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
+    setup_canonical_schema_minus(&conn, &["CUPTI_ACTIVITY_KIND_GRAPH_TRACE"])?;
+
+    conn.execute(
+        "INSERT INTO StringIds (id, value) VALUES (?, ?), (?, ?)",
+        params![
+            1i64,
+            "rank_private_graph_kernel",
+            2i64,
+            "cudaGraphLaunch_v10000"
+        ],
+    )?;
+
+    let corr = 42i64;
+    for (pid, replay_start, range_name) in [
+        (1001i64, 100_000_000i64, "rank0_step"),
+        (2002i64, 735_000_000i64, "rank1_step"),
+    ] {
+        let global_tid = pid << 24;
+        insert_cuda_context(&conn, 0, 1, pid)?;
+        insert_nvtx_range(
+            &conn,
+            replay_start - 20_000_000,
+            replay_start + 30_000_000,
+            global_tid,
+            "shared_step",
+        )?;
+        insert_nvtx_range(
+            &conn,
+            replay_start - 10_000_000,
+            replay_start + 20_000_000,
+            global_tid,
+            range_name,
+        )?;
+        conn.execute(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME \
+             (start, \"end\", globalTid, correlationId, nameId) \
+             VALUES (?, ?, ?, ?, ?)",
+            params![
+                replay_start - 1_000_000,
+                replay_start - 500_000,
+                global_tid,
+                corr,
+                2i64
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+             (start, \"end\", deviceId, contextId, streamId, \
+              shortName, demangledName, gridX, gridY, gridZ, \
+              blockX, blockY, blockZ, correlationId, \
+              registersPerThread, staticSharedMemory, dynamicSharedMemory, globalPid, \
+              graphId, graphNodeId) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                replay_start,
+                replay_start + 10_000_000,
+                0i32,
+                1i64,
+                7i64,
+                1i64,
+                1i64,
+                1i64,
+                1i64,
+                1i64,
+                128i64,
+                1i64,
+                1i64,
+                corr,
+                32i64,
+                0i64,
+                0i64,
+                0i64,
+                99i64,
+                100i64,
             ],
         )?;
     }

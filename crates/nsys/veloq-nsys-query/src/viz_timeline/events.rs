@@ -15,6 +15,7 @@ pub(super) struct TimelineEvent {
     pub(super) full_name: String,
     pub(super) start_ns: i64,
     pub(super) end_ns: i64,
+    pub(super) process_id: Option<i64>,
     pub(super) device_id: Option<i32>,
     pub(super) stream_id: Option<i64>,
     pub(super) nvtx_depth: Option<usize>,
@@ -37,7 +38,7 @@ pub(super) fn query_gpu_events(
     let mut subqueries = Vec::new();
     let mut params = Vec::new();
     for kind in kinds {
-        let fragment = interval_select(kind, abs_window, None, None)?;
+        let fragment = interval_select(trace, kind, abs_window, None, None)?;
         subqueries.push(fragment.sql);
         params.extend(fragment.params);
     }
@@ -58,7 +59,7 @@ pub(super) fn query_runtime_events(
     if !trace.table_exists(EventKind::Runtime.table()) {
         return Ok(Vec::new());
     }
-    let fragment = interval_select(EventKind::Runtime, abs_window, None, None)?;
+    let fragment = interval_select(trace, EventKind::Runtime, abs_window, None, None)?;
     exec::query_rows_fallible(
         trace.conn(),
         &fragment.sql,
@@ -99,10 +100,11 @@ pub(super) fn query_nvtx_events(
         WITH {sidecar_expanded_cte},
         nvtx_devices AS (
             SELECT nvtx_rowid,
+                   native_pid AS process_id,
                    CAST(device_id AS INTEGER) AS device_id
             FROM sidecar_expanded
             WHERE device_id IS NOT NULL
-            GROUP BY nvtx_rowid, device_id
+            GROUP BY nvtx_rowid, native_pid, device_id
         )
         SELECT
             '{label}' AS kind,
@@ -111,6 +113,10 @@ pub(super) fn query_nvtx_events(
             {full_name_expr} AS full_name,
             t.start AS start_ns,
             COALESCE(t."end", t.start) AS end_ns,
+            COALESCE(
+                nvtx_dev.process_id,
+                CAST(((t.globalTid >> 24) & 16777215) AS BIGINT)
+            ) AS process_id,
             nvtx_dev.device_id AS device_id,
             CAST(NULL AS BIGINT) AS stream_id
         FROM nsight.{table} t {joins}
@@ -143,6 +149,7 @@ pub(super) fn query_nvtx_events(
 }
 
 fn interval_select(
+    trace: &Trace,
     kind: EventKind,
     abs_window: (i64, i64),
     device: Option<i32>,
@@ -165,6 +172,8 @@ fn interval_select(
         &intrinsic,
     )?;
     let where_clause = filter.where_clause();
+    let process =
+        veloq_nsys_data::process_sql_projection(trace, sem.table(), "t", "event_proc", "t.start");
     let sql = format!(
         r#"
         SELECT
@@ -174,14 +183,17 @@ fn interval_select(
             {full_name_expr} AS full_name,
             t.start AS start_ns,
             COALESCE(t."end", t.start) AS end_ns,
+            {process_expr} AS process_id,
             {device_expr} AS device_id,
             {stream_expr} AS stream_id
-        FROM nsight.{table} t {joins}
+        FROM nsight.{table} t {joins} {process_join}
         {where_clause}
         "#,
         label = sem.label(),
         short_name_expr = sem.short_name_expr(),
         full_name_expr = sem.display_name_expr(),
+        process_expr = process.expr,
+        process_join = process.join,
         device_expr = sem.device_expr(),
         stream_expr = sem.stream_expr(),
         table = sem.table(),
@@ -202,6 +214,7 @@ fn timeline_event_row(row: &duckdb::Row<'_>) -> NsysQueryResult<TimelineEvent> {
         full_name: row.get("full_name").map_err(viz_timeline_row_read)?,
         start_ns: row.get("start_ns").map_err(viz_timeline_row_read)?,
         end_ns: row.get("end_ns").map_err(viz_timeline_row_read)?,
+        process_id: row.get("process_id").map_err(viz_timeline_row_read)?,
         device_id: row.get("device_id").map_err(viz_timeline_row_read)?,
         stream_id: row.get("stream_id").map_err(viz_timeline_row_read)?,
         nvtx_depth: None,

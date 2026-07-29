@@ -419,7 +419,7 @@ fn runtime_row_with_null_correlation_id_is_still_attributed() -> Result<()> {
     // No reasonable trio would resolve to this entry — verify a
     // representative probe misses cleanly.
     assert!(
-        idx.get_by_correlation(0, 1, 0).is_none(),
+        idx.get_by_correlation(12345, 0, 1, 0).is_none(),
         "by_correlation must not surface NULL-correlation entries under any trio"
     );
     Ok(())

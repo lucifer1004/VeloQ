@@ -14,6 +14,7 @@ mod tests;
 mod tracks;
 mod types;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use veloq_core::artifact_dir_for;
@@ -37,7 +38,7 @@ pub use types::{
 pub const DEFAULT_TOP_STREAMS: usize = 8;
 const VIZ_TIMELINE_COMMAND: &str = "nsys.viz.timeline";
 const NSYS_SOURCE_KIND: &str = "nsys";
-const NSYS_SOURCE_VERSION: &str = "v3";
+const NSYS_SOURCE_VERSION: &str = "v4";
 
 pub fn default_track_specs() -> Vec<String> {
     vec![
@@ -77,6 +78,10 @@ pub fn run<P: AsRef<Path>>(
         .collect::<NsysQueryResult<Vec<_>>>()?;
 
     let gpu_events = query_gpu_events(&trace, (start_ns, end_ns))?;
+    let trace_cuda_scopes = veloq_nsys_data::scope::cuda_scope_set(&trace)
+        .map_err(NsysQueryError::data)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     let api_events = if parsed_tracks
         .iter()
         .any(|spec| spec.kind == TrackKind::CudaApi)
@@ -97,8 +102,9 @@ pub fn run<P: AsRef<Path>>(
     let resolved = resolve_tracks(
         &parsed_tracks,
         &gpu_events,
-        !api_events.is_empty(),
+        &api_events,
         &nvtx_events,
+        &trace_cuda_scopes,
     )?;
     let highlights = resolve_kernel_highlights(&parsed_highlights, &resolved.tracks, &gpu_events);
     let intervals = build_intervals(

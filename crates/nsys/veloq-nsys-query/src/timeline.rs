@@ -9,7 +9,7 @@
 //! exceed the bucket width. It answers "how much kernel/copy work was
 //! issued in this window" (timeline plots, saturation trends), not "how
 //! long the device was busy" — for true union busy/idle time use
-//! `concurrency` (per-device union + overlap) or `gaps` (idle bubbles).
+//! `concurrency` (per-process/device union + overlap) or `gaps` (idle bubbles).
 //!
 //! Bucket alignment: aligned to multiples of `interval_ns` from the
 //! window start (or the trace's primary origin if no `--time-range`).
@@ -38,6 +38,8 @@ pub struct TimelineRequest {
     pub time_window: Option<TimeWindow>,
     /// Optional NVTX-attribution scope (glob against NVTX range name).
     pub nvtx: Option<String>,
+    /// Restrict to one native process owning the CUDA namespace.
+    pub process_id: Option<i64>,
     /// Restrict to one CUDA device (NSys `deviceId`).
     pub device: Option<i32>,
     /// Restrict to one CUDA stream (NSys `streamId`).
@@ -53,6 +55,7 @@ impl Default for TimelineRequest {
             kinds: KindFilter::All,
             time_window: None,
             nvtx: None,
+            process_id: None,
             device: None,
             stream: None,
             limit: 1000,
@@ -221,9 +224,11 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     let mut per_kind_params: Vec<Value> = Vec::new();
     for kind in &kinds {
         let fragment = per_kind_select(
+            &trace,
             *kind,
             abs_window,
             nvtx_scope,
+            req.process_id,
             req.device,
             req.stream,
             kind_policy.allowed(),
@@ -386,9 +391,11 @@ fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Err
 /// are clipped before bucket generation, so buckets and `total_ns`
 /// reflect in-window work only.
 fn per_kind_select(
+    trace: &Trace,
     kind: EventKind,
     abs_window: Option<(i64, i64)>,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
+    process_id: Option<i64>,
     device: Option<i32>,
     stream: Option<i64>,
     allowed_kinds: &[EventKind],
@@ -410,7 +417,7 @@ fn per_kind_select(
         None => ("t.start".to_string(), r#"t."end""#.to_string(), Vec::new()),
     };
 
-    let filter = event_scan_filter(
+    let mut filter = event_scan_filter(
         sem,
         EventScanFilterOptions {
             abs_window,
@@ -424,14 +431,21 @@ fn per_kind_select(
         },
         &[],
     )?;
+    let process =
+        veloq_nsys_data::process_sql_projection(trace, sem.table(), "t", "event_proc", "t.start");
+    if let Some(process_id) = process_id {
+        filter.push_predicate(format!("{} = ?", process.expr));
+        filter.push_param(Value::BigInt(process_id));
+    }
     let where_clause = filter.where_clause();
     params.extend(filter.into_params());
 
     let sql = format!(
         "SELECT '{label}' AS kind, {start_expr} AS start_ns, {end_expr} AS end_ns \
-         FROM nsight.{table} t {where_clause}",
+         FROM nsight.{table} t {process_join} {where_clause}",
         label = sem.label(),
         table = sem.table(),
+        process_join = process.join,
     );
     Ok(SqlFragment::new(sql, params))
 }
@@ -509,10 +523,13 @@ mod tests {
             EventKind::Memset,
             EventKind::Graph,
         ];
+        let (_dir, trace) = minimal_trace()?;
         let fragment = per_kind_select(
+            &trace,
             EventKind::Kernel,
             Some((10, 20)),
             crate::nvtx_attribution::NvtxScope::None,
+            None,
             None,
             None,
             &allowed,

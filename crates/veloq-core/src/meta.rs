@@ -80,11 +80,10 @@ pub struct AppliedScope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<i64>,
     /// Resolved native_pid (high 24 bits of `globalTid`) of the host
-    /// process that ran work on the resolved device. **Resolver output,
-    /// not a user input** — populated by the device→native_pid bridge
-    /// when the caller picked `--device <N>`. `None` when no device
-    /// filter was set, when `TARGET_INFO_CUDA_CONTEXT_INFO` is absent,
-    /// or when `--all-devices` was used. The wire field is
+    /// process that owns the process-local CUDA namespace. It may be
+    /// supplied through `--process <PID>` or auto-resolved from an
+    /// unambiguous `(process, device)` scope. `None` when process scope
+    /// is aggregated or unavailable. The wire field is
     /// deliberately named `native_pid` (the OS-level concept) rather
     /// than `rank` (the distributed-runtime cohort index from `RANK` /
     /// `SLURM_PROCID` / `MPI_COMM_WORLD_RANK` env vars), which veloq

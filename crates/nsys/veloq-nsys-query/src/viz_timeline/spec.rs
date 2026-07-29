@@ -46,6 +46,7 @@ pub(super) enum DeviceSelector {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TrackSpec {
     pub(super) kind: TrackKind,
+    pub(super) process: Option<i64>,
     pub(super) device: Option<DeviceSelector>,
     pub(super) stream: Option<i64>,
     pub(super) top: Option<usize>,
@@ -61,6 +62,7 @@ impl TrackSpec {
         let kind = TrackKind::parse(kind_raw)?;
         let mut spec = Self {
             kind,
+            process: None,
             device: None,
             stream: None,
             top: None,
@@ -86,6 +88,10 @@ impl TrackSpec {
 
     fn apply_selector(&mut self, name: &str, value: &str) -> NsysQueryResult<()> {
         match name {
+            "process" if self.kind_accepts_selector("process") => {
+                self.process = Some(parse_non_negative_i64("process", value)?);
+                Ok(())
+            }
             "device" if self.kind_accepts_selector("device") => {
                 self.device = Some(parse_device_selector(value)?);
                 Ok(())
@@ -112,11 +118,12 @@ impl TrackSpec {
     fn kind_accepts_selector(&self, selector: &str) -> bool {
         matches!(
             (self.kind, selector),
-            (TrackKind::Gpu, "device")
-                | (TrackKind::CudaStreams, "device" | "top")
-                | (TrackKind::CudaStream, "device" | "stream")
-                | (TrackKind::Nvtx, "depth")
-                | (TrackKind::GapsOverlay, "device")
+            (TrackKind::Gpu, "process" | "device")
+                | (TrackKind::CudaStreams, "process" | "device" | "top")
+                | (TrackKind::CudaStream, "process" | "device" | "stream")
+                | (TrackKind::CudaApi, "process")
+                | (TrackKind::Nvtx, "process" | "depth")
+                | (TrackKind::GapsOverlay, "process" | "device")
         )
     }
 

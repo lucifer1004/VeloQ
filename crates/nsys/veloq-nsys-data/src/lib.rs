@@ -28,6 +28,7 @@
 pub mod adapter;
 pub mod capabilities;
 pub mod correlation;
+pub mod cuda_identity;
 pub mod error;
 pub mod gpu_work;
 pub mod gpu_work_events;
@@ -52,9 +53,10 @@ pub use adapter::{
     pick_adapter, table_exists,
 };
 pub use capabilities::CapabilityFlags;
-pub use correlation::{
-    CorrelatedRowIds, CorrelationIndex, CorrelationIndexStats, SyntheticId,
-    native_pid_from_global_tid,
+pub use correlation::{CorrelatedRowIds, CorrelationIndex, CorrelationIndexStats, SyntheticId};
+pub use cuda_identity::{
+    CudaProcessResolver, ProcessSqlProjection, native_pid_from_global_tid, native_pid_sql,
+    process_lateral_join_sql, process_sql_projection,
 };
 pub use error::{DuckdbPhase, NsysDataError, NsysDataResult};
 pub use gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
@@ -323,6 +325,25 @@ impl Trace {
     /// presence-of-parquet shape matters.
     pub fn table_exists(&self, table: &str) -> bool {
         self.has_table(table)
+    }
+
+    /// Does an attached NSys table expose a column?
+    ///
+    /// Table and column names come from VeloQ's internal schema inventory,
+    /// never from user input. Probe failures conservatively report absence so
+    /// optional-column paths can fall back to other identity evidence.
+    pub fn table_has_column(&self, table: &str, column: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) > 0 \
+                 FROM information_schema.columns \
+                 WHERE table_schema = 'nsight' \
+                   AND table_name = ? \
+                   AND column_name = ?",
+                [table, column],
+                |row| row.get(0),
+            )
+            .unwrap_or(false)
     }
 
     /// Resolve an optional caller-provided `TimeWindow` to absolute ns

@@ -13,6 +13,7 @@ refs = [
     "RFC-0001",
     "RFC-0002",
 ]
+signature = "d10c861bc9cff636a8456fa44b8ec586222935ddf1a25f210bee4677f3131e28"
 
 [[sections]]
 title = "Summary"

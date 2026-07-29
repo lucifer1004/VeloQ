@@ -14,7 +14,7 @@ refs = [
     "RFC-0002",
     "RFC-0003",
 ]
-signature = "64fd8bc4f0771e551b62cd1b9bf312baf4915178f20c694b2d0c7c6ee80696c6"
+signature = "78fb66121141cbfe8fea68e349a98a8c154be9890b825197886f8e1ecb592ad0"
 
 [[sections]]
 title = "Summary"

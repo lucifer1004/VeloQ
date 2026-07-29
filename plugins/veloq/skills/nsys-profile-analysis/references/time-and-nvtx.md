@@ -137,7 +137,7 @@ veloq slices T --aggregate --name '*' --group-by path \
 ```
 
 Path-mode rows carry `.path` and keys shaped as
-`scope|path:<path>`.
+`scope|pid:<pid>|path:<path>`.
 
 ## NVTX nesting depth
 

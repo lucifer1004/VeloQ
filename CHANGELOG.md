@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **NSys source wire version v4** — make CUDA identity process-aware.
+  Process-sensitive rows now carry `process_id`; device, stream, context,
+  graph replay, slice, gap, concurrency, and visualization keys include a
+  `pid:` axis where required. `--process <PID> --device <ID>` precisely
+  selects a rank-private CUDA device when logical ordinals collide.
+- **NSys trace-map device inventory** — report physical GPU ids from
+  `TARGET_INFO_GPU.id` separately from process-local
+  `(process_id, device_id)` CUDA scopes.
+
+### Fixed
+
+- **Cross-process CUDA identity collisions** — stop merging ranks that reuse
+  the same private `(device, context, stream, correlationId)` values in CUDA
+  graph replay, correlate, NVTX attribution, gaps, concurrency, slices,
+  statistics, and static timeline tracks.
+- **Exact-scope recovery** — ambiguity diagnostics and scoped follow-up
+  commands now preserve both native PID and logical device ordinal instead
+  of suggesting another ambiguous bare `--device`.
+- **Partial-trace scope discovery** — when CUDA context metadata is absent,
+  recover process/device scopes from activity `globalPid` while retaining
+  inactive ordinals from the target GPU inventory.
+
 ## [0.4.1] - 2026-06-19
 
 ### Added

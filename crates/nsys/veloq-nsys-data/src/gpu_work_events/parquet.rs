@@ -17,6 +17,7 @@ pub(super) fn parquet_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("kind", DataType::Utf8, false),
         Field::new("row_id", DataType::Int64, false),
+        Field::new("process_id", DataType::Int64, false),
         Field::new("device_id", DataType::Int32, false),
         Field::new("stream_id", DataType::Int64, false),
         Field::new("start_ns", DataType::Int64, false),
@@ -35,6 +36,7 @@ pub(super) fn write_parquet(
 
     let mut kinds = StringBuilder::new();
     let mut row_ids: Vec<i64> = Vec::with_capacity(records.len());
+    let mut processes: Vec<i64> = Vec::with_capacity(records.len());
     let mut devices: Vec<i32> = Vec::with_capacity(records.len());
     let mut streams: Vec<i64> = Vec::with_capacity(records.len());
     let mut starts: Vec<i64> = Vec::with_capacity(records.len());
@@ -43,6 +45,7 @@ pub(super) fn write_parquet(
     for r in records {
         kinds.append_value(&r.kind);
         row_ids.push(r.row_id);
+        processes.push(r.process_id);
         devices.push(r.device_id);
         streams.push(r.stream_id);
         starts.push(r.start_ns);
@@ -52,6 +55,7 @@ pub(super) fn write_parquet(
     let columns: Vec<ArrayRef> = vec![
         Arc::new(kinds.finish()),
         Arc::new(Int64Array::from(row_ids)),
+        Arc::new(Int64Array::from(processes)),
         Arc::new(Int32Array::from(devices)),
         Arc::new(Int64Array::from(streams)),
         Arc::new(Int64Array::from(starts)),
@@ -100,14 +104,17 @@ pub(super) fn read_parquet(path: &Path) -> NsysDataResult<Vec<GpuWorkEventRecord
         })?;
         let kinds = gpu_work_events_column::<StringArray>(&batch, 0, "kind", "Utf8", path)?;
         let row_ids = gpu_work_events_column::<Int64Array>(&batch, 1, "row_id", "Int64", path)?;
-        let devices = gpu_work_events_column::<Int32Array>(&batch, 2, "device_id", "Int32", path)?;
-        let streams = gpu_work_events_column::<Int64Array>(&batch, 3, "stream_id", "Int64", path)?;
-        let starts = gpu_work_events_column::<Int64Array>(&batch, 4, "start_ns", "Int64", path)?;
-        let ends = gpu_work_events_column::<Int64Array>(&batch, 5, "end_ns", "Int64", path)?;
+        let processes =
+            gpu_work_events_column::<Int64Array>(&batch, 2, "process_id", "Int64", path)?;
+        let devices = gpu_work_events_column::<Int32Array>(&batch, 3, "device_id", "Int32", path)?;
+        let streams = gpu_work_events_column::<Int64Array>(&batch, 4, "stream_id", "Int64", path)?;
+        let starts = gpu_work_events_column::<Int64Array>(&batch, 5, "start_ns", "Int64", path)?;
+        let ends = gpu_work_events_column::<Int64Array>(&batch, 6, "end_ns", "Int64", path)?;
         for i in 0..batch.num_rows() {
             out.push(GpuWorkEventRecord {
                 kind: kinds.value(i).to_string(),
                 row_id: row_ids.value(i),
+                process_id: processes.value(i),
                 device_id: devices.value(i),
                 stream_id: streams.value(i),
                 start_ns: starts.value(i),

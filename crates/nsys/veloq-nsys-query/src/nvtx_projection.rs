@@ -21,6 +21,7 @@
 //! row, and the GPU JOIN below uses them directly.
 
 use std::path::Path;
+use veloq_nsys_data::Trace;
 
 /// Quote a filesystem path for splicing into a DuckDB
 /// `read_parquet('…')` literal. Doubles any embedded single quote
@@ -71,9 +72,11 @@ pub fn sidecar_expanded_cte(alias: &str, sidecar_quoted: &str) -> String {
 /// runtime-attribution set, not the generic GPU-busy set: graph_trace
 /// rows intentionally stay out because v1 attribution has no graph row
 /// path.
-pub fn gpu_kind_cte(alias: &str, label: &str, table: &str) -> String {
+pub fn gpu_kind_cte(trace: &Trace, alias: &str, label: &str, table: &str) -> String {
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
+    let process_join =
+        veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
     // Attribution: `attributed_runtime` carries `(device_id,
     // context_id, correlationId)` directly from the sidecar, so the
     // GPU JOIN is a single trio match — no `ctx_for_pid` bridge.
@@ -81,6 +84,7 @@ pub fn gpu_kind_cte(alias: &str, label: &str, table: &str) -> String {
         r#"{alias} AS (
             SELECT '{label}' AS kind,
                    ar.nvtx_rowid,
+                   ar.native_pid AS process_id,
                    {dev} AS device_id,
                    {stm} AS stream_id,
                    t.start  AS evt_start,
@@ -91,6 +95,8 @@ pub fn gpu_kind_cte(alias: &str, label: &str, table: &str) -> String {
               ON t.correlationId              = ar.correlationId
              AND CAST(t.deviceId  AS INTEGER) = ar.device_id
              AND CAST(t.contextId AS BIGINT)  = ar.context_id
+            {process_join}
+            WHERE proc.process_id = ar.native_pid
         )"#
     )
 }

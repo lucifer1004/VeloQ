@@ -4,9 +4,8 @@
 //! touchpoints; this module owns touchpoint 1 ("what is this trace?").
 //! The output is a structured snapshot of:
 //!
-//! - **devices** — count + CUDA ordinals, from
-//!   `TARGET_INFO_GPU.cuDevice` (preferred) or the
-//!   `CUPTI_ACTIVITY_KIND_KERNEL` DISTINCT fallback.
+//! - **devices** — physical GPU ids from `TARGET_INFO_GPU.id`, kept
+//!   separate from process-local `(native_pid, deviceId)` CUDA scopes.
 //! - **processes** — count + sorted native pids + per-launch env-derived
 //!   labels (`rank=`, `local_rank=`, `slurm_procid=`,
 //!   `mpi_comm_world_rank=`, `pmi_rank=`) recovered from
@@ -42,13 +41,29 @@ pub struct TraceMap {
     pub nvtx: Option<NvtxSummary>,
 }
 
-/// Distinct CUDA device ids seen in the trace.
+/// Physical GPU inventory plus process-local CUDA namespaces.
 #[derive(Debug, Clone, Default)]
 pub struct DeviceInventory {
+    /// Physical inventory is absent when `TARGET_INFO_GPU` was not
+    /// exported. It must never be inferred by deduplicating CUDA
+    /// ordinals because those ordinals are process-local.
+    pub physical: Option<PhysicalDeviceInventory>,
+    /// Ascending `(process_id, device_id)` pairs. Two rank processes can
+    /// legitimately both expose logical device 0.
+    pub logical_scopes: Vec<LogicalDeviceScope>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PhysicalDeviceInventory {
     pub count: usize,
-    /// Ascending order — keeps test assertions and human inspection
-    /// stable.
+    /// `TARGET_INFO_GPU.id`, sorted for stable output.
     pub ids: Vec<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogicalDeviceScope {
+    pub process_id: i64,
+    pub device_id: i32,
 }
 
 /// Process inventory: distinct native pids that produced rows, plus a
@@ -109,10 +124,10 @@ pub struct NvtxTopPath {
 /// Build the full trace map. Caller picks `nvtx_top_k`
 /// ([`NVTX_TOP_PATHS_DEFAULT`] is the reasonable default).
 ///
-/// All four sub-queries (`device_ids`, `process_pids`, `launches`,
-/// `nvtx`) are independent — none of them errors out on missing tables;
-/// each returns an empty inventory instead so an agent sees the honest
-/// "this trace doesn't have it" shape rather than an opaque failure.
+/// The physical-device, logical-scope, process, launch, and NVTX probes
+/// are independent. Missing optional tables yield an absent or empty
+/// inventory so an agent sees the honest "this trace doesn't have it"
+/// shape rather than an opaque failure.
 pub fn build(trace: &Trace, nvtx_top_k: usize) -> NsysDataResult<TraceMap> {
     let devices = build_devices(trace)?;
     let processes = build_processes(trace)?;
@@ -125,74 +140,51 @@ pub fn build(trace: &Trace, nvtx_top_k: usize) -> NsysDataResult<TraceMap> {
 }
 
 fn build_devices(trace: &Trace) -> NsysDataResult<DeviceInventory> {
-    let mut ids = collect_device_ids(trace)?;
-    ids.sort_unstable();
-    ids.dedup();
+    let physical = collect_physical_device_ids(trace)?.map(|mut ids| {
+        ids.sort_unstable();
+        ids.dedup();
+        PhysicalDeviceInventory {
+            count: ids.len(),
+            ids,
+        }
+    });
+    let mut logical_scopes = crate::scope::cuda_scope_set(trace)?
+        .into_iter()
+        .map(|(process_id, device_id)| LogicalDeviceScope {
+            process_id,
+            device_id,
+        })
+        .collect::<Vec<_>>();
+    logical_scopes.sort_unstable();
     Ok(DeviceInventory {
-        count: ids.len(),
-        ids,
+        physical,
+        logical_scopes,
     })
 }
 
-fn collect_device_ids(trace: &Trace) -> NsysDataResult<Vec<i32>> {
-    if trace.has_table("TARGET_INFO_GPU") {
-        let mut stmt = trace
-            .conn()
-            .prepare("SELECT CAST(cuDevice AS INTEGER) FROM nsight.TARGET_INFO_GPU")
-            .map_err(|source| {
-                crate::NsysDataError::trace_map_probe_column_missing(
-                    "TARGET_INFO_GPU",
-                    "cuDevice",
-                    source,
-                )
-            })?;
-        let mut rows = stmt.query([]).map_err(|source| {
-            crate::NsysDataError::trace_map_rows_query("TARGET_INFO_GPU", source)
-        })?;
-        let mut out = Vec::new();
-        while let Some(r) = rows.next().map_err(|source| {
-            crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source)
-        })? {
-            let id: Option<i32> = r.get(0).map_err(|source| {
-                crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source)
-            })?;
-            if let Some(id) = id {
-                out.push(id);
-            }
-        }
-        if !out.is_empty() {
-            return Ok(out);
-        }
-    }
-    if !trace.has_table("CUPTI_ACTIVITY_KIND_KERNEL") {
-        return Ok(Vec::new());
+fn collect_physical_device_ids(trace: &Trace) -> NsysDataResult<Option<Vec<i32>>> {
+    if !trace.has_table("TARGET_INFO_GPU") {
+        return Ok(None);
     }
     let mut stmt = trace
         .conn()
-        .prepare(
-            "SELECT DISTINCT CAST(deviceId AS INTEGER) \
-             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL \
-             WHERE deviceId IS NOT NULL",
-        )
+        .prepare("SELECT CAST(id AS INTEGER) FROM nsight.TARGET_INFO_GPU WHERE id IS NOT NULL")
         .map_err(|source| {
-            crate::NsysDataError::trace_map_probe_column_missing(
-                "CUPTI_ACTIVITY_KIND_KERNEL",
-                "deviceId",
-                source,
-            )
+            crate::NsysDataError::trace_map_probe_column_missing("TARGET_INFO_GPU", "id", source)
         })?;
-    let mut rows = stmt.query([]).map_err(|source| {
-        crate::NsysDataError::trace_map_rows_query("CUPTI_ACTIVITY_KIND_KERNEL", source)
-    })?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|source| crate::NsysDataError::trace_map_rows_query("TARGET_INFO_GPU", source))?;
     let mut out = Vec::new();
-    while let Some(r) = rows.next().map_err(|source| {
-        crate::NsysDataError::trace_map_rows_read("CUPTI_ACTIVITY_KIND_KERNEL", source)
-    })? {
+    while let Some(r) = rows
+        .next()
+        .map_err(|source| crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source))?
+    {
         out.push(r.get::<_, i32>(0).map_err(|source| {
-            crate::NsysDataError::trace_map_rows_read("CUPTI_ACTIVITY_KIND_KERNEL", source)
+            crate::NsysDataError::trace_map_rows_read("TARGET_INFO_GPU", source)
         })?);
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 fn build_processes(trace: &Trace) -> NsysDataResult<ProcessInventory> {
@@ -673,23 +665,23 @@ mod tests {
     }
 
     #[test]
-    fn device_probe_missing_target_info_gpu_cudevice_has_typed_error() -> Result<()> {
+    fn physical_device_probe_missing_target_info_gpu_id_has_typed_error() -> Result<()> {
         let (_dir, pqtdir) = malformed_trace(&[(
             "TARGET_INFO_GPU",
-            "CREATE TABLE TARGET_INFO_GPU (id BIGINT)",
+            "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
         )])?;
         let trace = crate::Trace::open(&pqtdir)?;
 
-        let err = match collect_device_ids(&trace) {
+        let err = match collect_physical_device_ids(&trace) {
             Ok(ids) => anyhow::bail!("malformed TARGET_INFO_GPU should fail: {ids:?}"),
             Err(err) => err,
         };
 
-        assert_trace_map_column_error(err, "TARGET_INFO_GPU", "cuDevice")
+        assert_trace_map_column_error(err, "TARGET_INFO_GPU", "id")
     }
 
     #[test]
-    fn device_probe_bad_target_info_gpu_cudevice_has_typed_query_error() -> Result<()> {
+    fn physical_device_probe_bad_target_info_gpu_id_has_typed_query_error() -> Result<()> {
         let (_dir, pqtdir) = parquet_fixture_with_rows(&[
             (
                 "CUPTI_ACTIVITY_KIND_KERNEL",
@@ -698,13 +690,13 @@ mod tests {
             ),
             (
                 "TARGET_INFO_GPU",
-                "CREATE TABLE TARGET_INFO_GPU (cuDevice TEXT)",
-                vec!["INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES ('bad')"],
+                "CREATE TABLE TARGET_INFO_GPU (id TEXT)",
+                vec!["INSERT INTO TARGET_INFO_GPU (id) VALUES ('bad')"],
             ),
         ])?;
         let trace = crate::Trace::open(&pqtdir)?;
 
-        let err = match collect_device_ids(&trace) {
+        let err = match collect_physical_device_ids(&trace) {
             Ok(ids) => anyhow::bail!("invalid TARGET_INFO_GPU should fail: {ids:?}"),
             Err(err) => err,
         };
@@ -713,16 +705,12 @@ mod tests {
     }
 
     #[test]
-    fn device_probe_missing_kernel_deviceid_has_typed_error() -> Result<()> {
+    fn physical_device_probe_does_not_infer_inventory_from_activity() -> Result<()> {
         let (_dir, pqtdir) = malformed_trace(&[])?;
         let trace = crate::Trace::open(&pqtdir)?;
 
-        let err = match collect_device_ids(&trace) {
-            Ok(ids) => anyhow::bail!("malformed kernel table should fail: {ids:?}"),
-            Err(err) => err,
-        };
-
-        assert_trace_map_column_error(err, "CUPTI_ACTIVITY_KIND_KERNEL", "deviceId")
+        assert!(collect_physical_device_ids(&trace)?.is_none());
+        Ok(())
     }
 
     #[test]

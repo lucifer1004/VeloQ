@@ -235,7 +235,7 @@ pub enum Cmd {
         status: bool,
     },
 
-    /// GPU overlap: per-device union vs sum busy time, peak concurrency, per-stream + compute/copy overlap.
+    /// GPU overlap: per-process/device union vs sum busy time, peak concurrency, per-stream + compute/copy overlap.
     Concurrency {
         #[command(flatten)]
         trace_arg: TraceArg,
@@ -247,7 +247,7 @@ pub enum Cmd {
         common: CommonFilters,
     },
 
-    /// Find GPU idle bubbles per device, per stream, or across the trace (`--scope`).
+    /// Find GPU idle bubbles per process/device, per stream, or across the trace (`--scope`).
     Gaps {
         #[command(flatten)]
         trace_arg: TraceArg,

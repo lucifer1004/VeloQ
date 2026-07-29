@@ -3,12 +3,12 @@
 [govctl]
 id = "RFC-0009"
 title = "NSys static timeline visualization artifact contract"
-version = "0.3.0"
+version = "0.4.0"
 status = "normative"
-phase = "test"
+phase = "stable"
 owners = ["@Zihua Wu"]
 created = "2026-06-09"
-updated = "2026-06-09"
+updated = "2026-07-28"
 refs = [
     "RFC-0001",
     "RFC-0002",
@@ -24,7 +24,7 @@ refs = [
     "RFC-0004:C-COMMAND-SURFACE",
     "RFC-0006:C-SUPPORTED-INPUTS",
 ]
-signature = "e2e0118c08608dcf04b2d569c78b285d59b471b9f11dbc04aae8eb33549ea952"
+signature = "2d1e6a3a970d5cd70080c1f1f746200a3db36981207b5e609350f1f9d0b664b4"
 
 [[sections]]
 title = "Summary"
@@ -44,6 +44,12 @@ clauses = [
     "clauses/C-COMPATIBILITY.toml",
     "clauses/C-HIGHLIGHT-POLICY.toml",
 ]
+
+[[changelog]]
+version = "0.4.0"
+date = "2026-07-28"
+notes = "Make CUDA timeline tracks process-aware"
+changed = ["Treat CUDA device, context, and stream selectors and track identities as process-local; require PID disambiguation for collisions"]
 
 [[changelog]]
 version = "0.3.0"

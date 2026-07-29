@@ -78,6 +78,7 @@ pub fn ensure_sidecar(trace: &Trace) -> NsysQueryResult<()> {
 /// parquet reader gets filter pushdown for free; the path is escaped
 /// via [`crate::nvtx_projection::quote_sidecar_path`].
 pub fn join_clause(
+    trace: &Trace,
     kind: EventKind,
     sidecar_path: &Path,
     include_path: bool,
@@ -117,13 +118,18 @@ pub fn join_clause(
             )
         }
         EventKind::Kernel | EventKind::Memcpy | EventKind::Memset | EventKind::Sync => {
-            // The sidecar is keyed by the documented disambiguator
-            // `(device_id, context_id, correlation_id)`. The GPU
-            // row brings the trio directly — no `ctx_for_pid` bridge
-            // needed.
+            let process_join = veloq_nsys_data::process_lateral_join_sql(
+                trace,
+                kind.table(),
+                "t",
+                "cuda_proc",
+                "t.start",
+            );
             format!(
-                "LEFT JOIN {read} np \
-                   ON np.device_id      = {dev} \
+                "{process_join} \
+                 LEFT JOIN {read} np \
+                   ON np.native_pid     = cuda_proc.process_id \
+                  AND np.device_id      = {dev} \
                   AND np.context_id     = {ctx} \
                   AND np.correlation_id = t.correlationId",
                 dev = crate::kind_sql::GPU_DEVICE_ID_EXPR,

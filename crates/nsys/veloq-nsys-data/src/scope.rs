@@ -1,24 +1,21 @@
 //! Scope-ambiguity resolver for list verbs.
 //!
 //! Every veloq list verb that operates on event rows
-//! takes the same scope filter — `--device <N>` (existing on
-//! `stats`/`search`/`gaps`/`timeline`, added to `slices` in v3) — plus
+//! takes the same scope filters — `--process <PID>` and `--device <N>`
+//! (`stats`/`search`/`gaps`/`timeline`/`slices` and process-sensitive
+//! graph/viz views) — plus
 //! the `--all-devices` aggregator opt-in. This module owns the rule:
 //!
-//! 1. *Single device:* resolver returns the unique value automatically.
+//! 1. *Single process/device scope:* resolver returns both values automatically.
 //!    No flag required.
 //! 2. *Multiple devices, `--device` unset, `--all-devices` unset:*
 //!    refuse with [`AmbiguityError`]. The verb dispatch surfaces this
 //!    as an `EnvelopeError` carrying a `multi-device-ambiguous` warning
 //!    code so the agent reads the refusal in
 //!    structured form.
-//! 3. *Multiple devices, `--device <id>` set:* resolver returns the
-//!    single resolved device PLUS the native_pid that ran work on it
-//!    (looked up via `TARGET_INFO_CUDA_CONTEXT_INFO`). The cross-axis
-//!    bridge is the load-bearing TP-dedup mechanism: each host process
-//!    emits NVTX on its own `globalTid`, so filtering by the resolved
-//!    native_pid is what deduplicates the per-process rows in
-//!    `slices` on a TP workload.
+//! 3. *Colliding logical ordinals:* `--device <id>` alone refuses when
+//!    multiple processes expose that same ordinal; `--process <PID>`
+//!    disambiguates it.
 //! 4. *Multiple devices, `--all-devices` set:* aggregate response;
 //!    `applied_scope.aggregated_over = ["device"]`.
 //! 5. *Multiple devices, command opts into implicit all-device scope:*
@@ -57,6 +54,7 @@ const DEVICE_AXIS: &[&str] = &["device"];
 /// participate in ambiguity refusal so they don't belong here.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeRequest {
+    pub process: Option<i64>,
     pub device: Option<i32>,
     pub stream: Option<i64>,
     pub all_devices: bool,
@@ -74,21 +72,32 @@ pub struct ResolvedScope {
     pub applied: AppliedScope,
 }
 
-/// Refusal payload for an ambiguous query — multi-device trace with no
-/// `--device` and no `--all-devices` opt-in. Holds a human-readable
-/// message + the `WarningCode` that goes into the error envelope's
-/// `meta.warnings`.
+/// Refusal payload for a query matching multiple process/device scopes
+/// without an exact selector or all-device opt-in. Holds a human-readable
+/// message, structured warning, and exact recovery candidates.
 #[derive(Debug, Error)]
 #[error("{message}")]
 pub struct AmbiguityError {
     pub message: String,
     pub warning: Warning,
+    /// Stable process-local CUDA scopes that matched the request.
+    /// The command layer uses the first pair for an executable exact
+    /// recovery suggestion instead of suggesting another ambiguous
+    /// bare device ordinal.
+    pub candidate_scopes: Vec<(i64, i32)>,
+    /// Preserve a caller-supplied process when suggesting an intentional
+    /// all-device aggregate.
+    pub requested_process: Option<i64>,
 }
 
 impl AmbiguityError {
-    fn multi_device(n: usize) -> Self {
+    fn multi_device(mut candidate_scopes: Vec<(i64, i32)>, requested_process: Option<i64>) -> Self {
+        candidate_scopes.sort_unstable();
+        candidate_scopes.dedup();
+        let n = candidate_scopes.len();
         let message = format!(
-            "trace has {n} devices; pass `--device <id>` or `--all-devices` to scope the query"
+            "trace has {n} CUDA process/device scopes; pass `--process <pid>` with \
+             `--device <id>`, or `--all-devices` to scope the query"
         );
         Self {
             warning: Warning {
@@ -97,11 +106,13 @@ impl AmbiguityError {
                 message: message.clone(),
             },
             message,
+            candidate_scopes,
+            requested_process,
         }
     }
 }
 
-/// Resolve the scope for a query. Reads the trace's device set, picks
+/// Resolve the scope for a query. Reads the trace's process/device set, picks
 /// the resolution path per the case analysis above, and (when a single
 /// device is locked in) cross-references `TARGET_INFO_CUDA_CONTEXT_INFO`
 /// to surface the native_pid that ran on it.
@@ -111,8 +122,8 @@ impl AmbiguityError {
 /// `meta.applied_scope` and uses the resolved fields in its SQL WHERE
 /// clauses.
 ///
-/// Returns `Err(AmbiguityError)` when the trace has >1 device and the
-/// user gave neither `--device` nor `--all-devices`. The verb's
+/// Returns `Err(AmbiguityError)` when the request matches more than one
+/// process/device scope without all-device aggregation. The verb's
 /// `run()` converts the error into an `EnvelopeError` whose
 /// `meta.warnings` carries the structured `multi-device-ambiguous`
 /// code.
@@ -130,46 +141,56 @@ pub fn resolve_scope(
         ));
     }
 
-    // Case analysis split by `all_devices` first so the match stays
-    // exhaustive without a wildcard arm (each branch enumerates every
-    // `(device, device_count)` pair it can hit).
-    let (resolved_device, aggregated_over): (Option<i32>, Vec<String>) = if req.all_devices {
-        // (Case 4) `--all-devices` opts into the aggregate.
-        (None, vec!["device".to_string()])
-    } else {
-        let devices = device_set(trace).map_err(ResolveError::probe)?;
-        match (req.device, devices.len()) {
-            // Zero-device trace (no events at all). Resolver returns
-            // None; verb's SQL will produce an empty result — the
-            // guardrail layer in WI-C will warn.
-            (None, 0) => (None, Vec::new()),
+    let scopes = cuda_scope_set(trace).map_err(ResolveError::probe)?;
+    let matching: HashSet<(i64, i32)> = scopes
+        .iter()
+        .copied()
+        .filter(|(pid, _device)| req.process.is_none_or(|wanted| wanted == *pid))
+        .filter(|(_pid, device)| req.device.is_none_or(|wanted| wanted == *device))
+        .collect();
+    let matching_process_count = matching
+        .iter()
+        .map(|(pid, _)| *pid)
+        .collect::<HashSet<_>>()
+        .len();
 
-            // (Case 1) Single device: auto-resolve to the unique value.
-            (None, 1) => (devices.into_iter().next(), Vec::new()),
-
-            // Multi-device, no `--device`: `--stream` is more specific
-            // than the generic ambiguity error because `--all-devices`
-            // is not a valid recovery for a stream-local filter.
-            (None, n) => {
-                if let Some(err) = stream_parent_error(req.stream, NO_AXES) {
-                    return Err(ResolveError::probe(err));
+    let (native_pid, resolved_device, aggregated_over): (Option<i64>, Option<i32>, Vec<String>) =
+        if req.all_devices {
+            let mut axes = vec!["device".to_string()];
+            if req.process.is_none() && matching_process_count > 1 {
+                axes.insert(0, "process".to_string());
+            }
+            (req.process, None, axes)
+        } else {
+            match matching.len() {
+                0 => (req.process, req.device, Vec::new()),
+                1 => {
+                    let (pid, device) = matching.into_iter().next().expect("one scope");
+                    (Some(pid), Some(device), Vec::new())
                 }
-                if req.implicit_all_devices {
-                    (None, vec!["device".to_string()])
-                } else {
-                    return Err(ResolveError::Ambiguous(AmbiguityError::multi_device(n)));
+                _ => {
+                    if let Some(err) = stream_parent_error(req.stream, NO_AXES) {
+                        return Err(ResolveError::probe(err));
+                    }
+                    if req.implicit_all_devices {
+                        let mut axes = Vec::new();
+                        if req.process.is_none() && matching_process_count > 1 {
+                            axes.push("process".to_string());
+                        }
+                        if req.device.is_none() {
+                            axes.push("device".to_string());
+                        }
+                        (req.process, req.device, axes)
+                    } else {
+                        let candidate_scopes = matching.iter().copied().collect();
+                        return Err(ResolveError::Ambiguous(AmbiguityError::multi_device(
+                            candidate_scopes,
+                            req.process,
+                        )));
+                    }
                 }
             }
-
-            // (Case 3) Explicit `--device <N>` — single-device traces
-            // accept it as long as it matches; multi-device traces
-            // accept any value. We do NOT pre-validate that `d` is in
-            // the device set: picking a device
-            // with zero events is a valid request that returns an
-            // empty success envelope with `empty-with-scope` warning.
-            (Some(d), _) => (Some(d), Vec::new()),
-        }
-    };
+        };
 
     let fixed_axes = if resolved_device.is_some() {
         DEVICE_AXIS
@@ -179,17 +200,6 @@ pub fn resolve_scope(
     if let Some(err) = stream_parent_error(req.stream, fixed_axes) {
         return Err(ResolveError::probe(err));
     }
-
-    // Cross-axis bridge: when a single device is locked in, look up
-    // the native_pid(s) that ran on it. In a TP workload this is the
-    // single host-thread process; in PP setups it can be multiple.
-    // We surface ONE native_pid on `applied_scope.native_pid` for the
-    // v1 contract; the verb's host-thread SQL uses that value to
-    // dedupe TP-replica rows.
-    let native_pid = match resolved_device {
-        Some(d) => native_pid_for_device(trace, d).map_err(ResolveError::probe)?,
-        None => None,
-    };
 
     Ok(ResolvedScope {
         applied: AppliedScope {
@@ -235,18 +245,63 @@ impl ResolveError {
     }
 }
 
-/// Set of distinct `deviceId`s present in the trace's GPU event
-/// tables. Reads `TARGET_INFO_GPU.cuDevice` first (preferred — one row
-/// per CUDA device the runtime knew about); falls back to `SELECT DISTINCT
-/// deviceId FROM CUPTI_ACTIVITY_KIND_KERNEL` when the inventory table
-/// is absent.
-fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
+/// Set of distinct process-local CUDA scopes `(native_pid, deviceId)`.
+///
+/// Context metadata is authoritative when present. Activity scans are
+/// the fallback and use the same process resolver as correlation and
+/// sidecar builders. Physical `TARGET_INFO_GPU` rows are validated here
+/// but never fabricated into process-local logical scopes.
+pub fn cuda_scope_set(trace: &Trace) -> NsysDataResult<HashSet<(i64, i32)>> {
     let mut out = HashSet::new();
 
+    if trace.has_table("TARGET_INFO_CUDA_CONTEXT_INFO") {
+        let mut stmt = trace
+            .conn()
+            .prepare(
+                "SELECT DISTINCT CAST(processId AS BIGINT), CAST(deviceId AS INTEGER) \
+                 FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO",
+            )
+            .map_err(|source| {
+                crate::NsysDataError::scope_device_probe_column_missing(
+                    "TARGET_INFO_CUDA_CONTEXT_INFO",
+                    "deviceId/processId",
+                    source,
+                )
+            })?;
+        let mut rows = stmt.query([]).map_err(|source| {
+            crate::NsysDataError::scope_device_probe_query("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+        })?;
+        while let Some(r) = rows.next().map_err(|source| {
+            crate::NsysDataError::scope_device_probe_read("TARGET_INFO_CUDA_CONTEXT_INFO", source)
+        })? {
+            let pid: i64 = r.get(0).map_err(|source| {
+                crate::NsysDataError::scope_device_probe_read(
+                    "TARGET_INFO_CUDA_CONTEXT_INFO",
+                    source,
+                )
+            })?;
+            let device: i32 = r.get(1).map_err(|source| {
+                crate::NsysDataError::scope_device_probe_read(
+                    "TARGET_INFO_CUDA_CONTEXT_INFO",
+                    source,
+                )
+            })?;
+            out.insert((pid, device));
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+
+    // Validate and retain the target-info ordinal inventory before
+    // scanning activity. It has no owning-process axis, so activity
+    // rows remain the preferred source of process-aware scopes; target
+    // rows are added afterward only for ordinals with no activity.
+    let mut target_devices = HashSet::new();
     if trace.has_table("TARGET_INFO_GPU") {
         let mut stmt = trace
             .conn()
-            .prepare("SELECT CAST(cuDevice AS INTEGER) FROM nsight.TARGET_INFO_GPU")
+            .prepare("SELECT DISTINCT CAST(cuDevice AS INTEGER) FROM nsight.TARGET_INFO_GPU")
             .map_err(|source| {
                 crate::NsysDataError::scope_device_probe_column_missing(
                     "TARGET_INFO_GPU",
@@ -257,26 +312,18 @@ fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
         let mut rows = stmt.query([]).map_err(|source| {
             crate::NsysDataError::scope_device_probe_query("TARGET_INFO_GPU", source)
         })?;
-        while let Some(r) = rows.next().map_err(|source| {
+        while let Some(row) = rows.next().map_err(|source| {
             crate::NsysDataError::scope_device_probe_read("TARGET_INFO_GPU", source)
         })? {
-            let id: Option<i32> = r.get(0).map_err(|source| {
+            if let Some(device) = row.get::<_, Option<i32>>(0).map_err(|source| {
                 crate::NsysDataError::scope_device_probe_read("TARGET_INFO_GPU", source)
-            })?;
-            if let Some(id) = id {
-                out.insert(id);
+            })? {
+                target_devices.insert(device);
             }
-        }
-        if !out.is_empty() {
-            return Ok(out);
         }
     }
 
-    // Fallback to DISTINCT scans over location-bearing activity
-    // tables. This is broader than GPU-busy interval semantics: sync
-    // rows can reveal device scope even though they are host waits, not
-    // busy work. Graph-trace-only captures can legitimately have no
-    // kernel rows while still spanning multiple devices.
+    let resolver = crate::CudaProcessResolver::build(trace)?;
     for table in crate::GPU_WORK_INTERVAL_KINDS
         .iter()
         .map(|kind| kind.table)
@@ -285,8 +332,35 @@ fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
         if !trace.has_table(table) {
             continue;
         }
+        // A partial activity export can omit the location columns while
+        // TARGET_INFO_GPU still supplies a usable ordinal inventory.
+        // Preserve that fallback instead of failing the whole probe.
+        if !trace.table_has_column(table, "deviceId") && !target_devices.is_empty() {
+            continue;
+        }
+        let start_col = if trace.table_has_column(table, "start") {
+            "CAST(start AS BIGINT)"
+        } else {
+            "0::BIGINT"
+        };
+        let corr_col = if trace.table_has_column(table, "correlationId") {
+            "CAST(correlationId AS BIGINT)"
+        } else {
+            "CAST(NULL AS BIGINT)"
+        };
+        let global_pid_col = if trace.table_has_column(table, "globalPid") {
+            "CAST(globalPid AS BIGINT)"
+        } else {
+            "CAST(NULL AS BIGINT)"
+        };
+        let context_col = if trace.table_has_column(table, "contextId") {
+            "CAST(contextId AS BIGINT)"
+        } else {
+            "0::BIGINT"
+        };
         let sql = format!(
-            "SELECT DISTINCT CAST(deviceId AS INTEGER) \
+            "SELECT DISTINCT CAST(deviceId AS INTEGER), {context_col}, \
+                    {corr_col}, {start_col}, {global_pid_col} \
              FROM nsight.\"{table}\" \
              WHERE deviceId IS NOT NULL"
         );
@@ -300,67 +374,34 @@ fn device_set(trace: &Trace) -> NsysDataResult<HashSet<i32>> {
             .next()
             .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?
         {
-            let id: i32 = r
+            let device: i32 = r
                 .get(0)
                 .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
-            out.insert(id);
+            let context: i64 = r
+                .get(1)
+                .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
+            let correlation: Option<i64> = r
+                .get(2)
+                .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
+            let start: i64 = r
+                .get(3)
+                .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
+            let global_pid: Option<i64> = r
+                .get(4)
+                .map_err(|source| crate::NsysDataError::scope_device_probe_read(table, source))?;
+            let process = resolver.resolve_required(
+                table,
+                device,
+                context,
+                correlation,
+                start,
+                global_pid,
+            )?;
+            out.insert((process, device));
         }
     }
 
     Ok(out)
-}
-
-/// Map `deviceId -> native_pid` via `TARGET_INFO_CUDA_CONTEXT_INFO`
-/// joined with the high-24-bit native_pid extraction used everywhere
-/// else (per `AGENTS.md` globalTid bit layout / `decode_global_tid`).
-///
-/// Returns the *first* native_pid found for the device — in a TP
-/// workload there is exactly one host process per device, so "first"
-/// = "the one that ran on this device". On PP / shared-device
-/// workloads multiple native_pids can run on one device; we surface
-/// the first match because the v1 `applied_scope.native_pid` field
-/// carries a single value. Future ADR will extend if PP becomes a
-/// target workload.
-///
-/// `Ok(None)` when `TARGET_INFO_CUDA_CONTEXT_INFO` is absent (older
-/// nsys captures), or no row matches the device — both are valid
-/// "host pid unknown" states and the caller surfaces `null` to the
-/// agent.
-fn native_pid_for_device(trace: &Trace, device: i32) -> NsysDataResult<Option<i64>> {
-    if !trace.has_table("TARGET_INFO_CUDA_CONTEXT_INFO") {
-        return Ok(None);
-    }
-    let mut stmt = trace
-        .conn()
-        .prepare(
-            "SELECT CAST(processId AS BIGINT) FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO \
-         WHERE CAST(deviceId AS INTEGER) = ? \
-         ORDER BY processId ASC LIMIT 1",
-        )
-        .map_err(|source| {
-            crate::NsysDataError::scope_device_probe_column_missing(
-                "TARGET_INFO_CUDA_CONTEXT_INFO",
-                "deviceId/processId",
-                source,
-            )
-        })?;
-    let mut rows = stmt.query([device]).map_err(|source| {
-        crate::NsysDataError::scope_device_probe_query("TARGET_INFO_CUDA_CONTEXT_INFO", source)
-    })?;
-    Ok(
-        if let Some(row) = rows.next().map_err(|source| {
-            crate::NsysDataError::scope_device_probe_read("TARGET_INFO_CUDA_CONTEXT_INFO", source)
-        })? {
-            Some(row.get::<_, i64>(0).map_err(|source| {
-                crate::NsysDataError::scope_device_probe_read(
-                    "TARGET_INFO_CUDA_CONTEXT_INFO",
-                    source,
-                )
-            })?)
-        } else {
-            None
-        },
-    )
 }
 
 #[cfg(test)]
@@ -429,19 +470,25 @@ mod tests {
 
     #[test]
     fn ambiguity_error_carries_multi_device_warning_code() {
-        let e = AmbiguityError::multi_device(4);
+        let e =
+            AmbiguityError::multi_device(vec![(1001, 0), (2002, 0), (3003, 1), (4004, 1)], None);
         assert_eq!(
             e.warning.code as u8,
             WarningCode::MultiDeviceAmbiguous as u8,
             "code variant must be MultiDeviceAmbiguous"
         );
         assert!(matches!(e.warning.severity, WarningSeverity::Warn));
-        assert!(e.message.contains("4 devices"), "message: {}", e.message);
+        assert!(
+            e.message.contains("4 CUDA process/device scopes"),
+            "message: {}",
+            e.message
+        );
         assert!(
             e.message.contains("--device") && e.message.contains("--all-devices"),
             "message must mention both flags: {}",
             e.message
         );
+        assert_eq!(e.candidate_scopes.first(), Some(&(1001, 0)));
     }
 
     #[test]
@@ -464,11 +511,12 @@ mod tests {
                 Vec::new(),
             ),
             (
-                "TARGET_INFO_GPU",
-                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (\
+                    deviceId BIGINT, contextId BIGINT, processId BIGINT)",
                 vec![
-                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)",
-                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (1)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 1, 1001)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (1, 1, 1001)",
                 ],
             ),
         ])?;
@@ -545,6 +593,132 @@ mod tests {
         )?;
         assert_eq!(scoped.applied.device, Some(0));
         assert_eq!(scoped.applied.stream, Some(7));
+        Ok(())
+    }
+
+    #[test]
+    fn activity_global_pid_recovers_process_collision_without_context_table() -> Result<()> {
+        let pid0 = 1001_i64;
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                vec!["INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)"],
+            ),
+            (
+                "PROCESSES",
+                "CREATE TABLE PROCESSES (globalPid BIGINT, pid BIGINT)",
+                vec![
+                    "INSERT INTO PROCESSES (globalPid, pid) \
+                     VALUES (1001::BIGINT * 16777216, 1001)",
+                    "INSERT INTO PROCESSES (globalPid, pid) \
+                     VALUES (2002::BIGINT * 16777216, 2002)",
+                ],
+            ),
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (\
+                    start BIGINT, \"end\" BIGINT, deviceId BIGINT, contextId BIGINT, \
+                    correlationId BIGINT, globalPid BIGINT)",
+                vec![
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES \
+                     (10, 11, 0, 1, 42, 1001::BIGINT * 16777216)",
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES \
+                     (20, 21, 0, 1, 42, 2002::BIGINT * 16777216)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        assert!(matches!(
+            resolve_scope(
+                &trace,
+                ScopeRequest {
+                    device: Some(0),
+                    ..ScopeRequest::default()
+                }
+            ),
+            Err(ResolveError::Ambiguous(_))
+        ));
+        let exact = resolve_scope(
+            &trace,
+            ScopeRequest {
+                process: Some(pid0),
+                device: Some(0),
+                ..ScopeRequest::default()
+            },
+        )?;
+        assert_eq!(exact.applied.native_pid, Some(pid0));
+        assert_eq!(exact.applied.device, Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn inactive_physical_device_is_not_fabricated_into_logical_scope() -> Result<()> {
+        let pid = 1001_i64;
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "TARGET_INFO_GPU",
+                "CREATE TABLE TARGET_INFO_GPU (cuDevice BIGINT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (0)",
+                    "INSERT INTO TARGET_INFO_GPU (cuDevice) VALUES (1)",
+                ],
+            ),
+            (
+                "PROCESSES",
+                "CREATE TABLE PROCESSES (globalPid BIGINT, pid BIGINT)",
+                vec![
+                    "INSERT INTO PROCESSES (globalPid, pid) \
+                     VALUES (1001::BIGINT * 16777216, 1001)",
+                ],
+            ),
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (\
+                    start BIGINT, \"end\" BIGINT, deviceId BIGINT, contextId BIGINT, \
+                    correlationId BIGINT, globalPid BIGINT)",
+                vec![
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES \
+                     (10, 11, 0, 1, 42, 1001::BIGINT * 16777216)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+        let scopes = cuda_scope_set(&trace)?;
+        assert_eq!(
+            scopes,
+            HashSet::from([(pid, 0)]),
+            "logical scopes require ownership evidence; physical inventory is separate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unresolved_activity_process_is_a_typed_error() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (\
+                start BIGINT, \"end\" BIGINT, deviceId BIGINT, contextId BIGINT, \
+                correlationId BIGINT)",
+            vec!["INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES (10, 11, 0, 1, 42)"],
+        )])?;
+        let trace = Trace::open(&pqtdir)?;
+
+        let err = match resolve_scope(&trace, ScopeRequest::default()) {
+            Ok(scope) => anyhow::bail!("unresolved CUDA ownership should fail: {scope:?}"),
+            Err(err) => downcast_scope_probe_error(err)?,
+        };
+        assert_eq!(err.code().as_str(), "nsys.data.cuda-process-unresolved");
+        assert!(matches!(
+            err,
+            crate::NsysDataError::CudaProcessUnresolved {
+                device_id: 0,
+                context_id: 1,
+                correlation_id: Some(42),
+                ..
+            }
+        ));
         Ok(())
     }
 

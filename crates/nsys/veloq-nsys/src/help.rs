@@ -298,13 +298,15 @@ fn long_about_correlate() -> String {
 
 const GRAPH_REPLAYS_BLURB: &str = "List CUDA graph replays. In graph-trace capture mode, each \
      row is one CUPTI graph execution with wall time but no internal decomposition. In node \
-     capture mode, replays are grouped by (device, context, correlationId) and include the \
-     top graph nodes/kernels by summed GPU time. `--nvtx` is launch-scoped: it matches \
-     cudaGraphLaunch runtime calls inside NVTX ranges, then joins those launches to replay work.";
+     capture mode, replays are grouped by (process, device, context, correlationId) and include \
+     the top graph nodes/kernels by summed GPU time. `--nvtx` is launch-scoped: it matches \
+     cudaGraphLaunch runtime calls inside NVTX ranges, then joins those launches to replay work. \
+     When a logical device ordinal is reused across processes, select it exactly with \
+     `--process <pid> --device <ordinal>`.";
 const GRAPH_REPLAYS_EXAMPLES: &[&str] = &[
-    "veloq graph-replays T --device 0 --limit 20",
-    "veloq graph-replays T --device 0 --sort sum:desc --top-nodes 5",
-    "veloq graph-replays T --device 0 --nvtx '*frame*'",
+    "veloq graph-replays T --process 12345 --device 0 --limit 20",
+    "veloq graph-replays T --process 12345 --device 0 --sort sum:desc --top-nodes 5",
+    "veloq graph-replays T --process 12345 --device 0 --nvtx '*frame*'",
 ];
 
 fn long_about_graph_replays() -> String {
@@ -388,11 +390,11 @@ const CONCURRENCY_BLURB: &str = "GPU kernel/transfer overlap, extracted as union
      events). Each device row nests a per-stream breakdown — a stream's own overlap_ns is its \
      same-stream (e.g. Programmatic Dependent Launch) overlap — plus a compute_vs_copy block \
      (compute = kernel/graph, copy = memcpy/memset). Extraction only: no ratio or verdict; compute \
-     any ratio in jq. Reported per device, never summed across devices.";
+     any ratio in jq. Reported per process-local device, never merged across processes.";
 const CONCURRENCY_EXAMPLES: &[&str] = &[
     "veloq concurrency T",
-    "veloq concurrency T --device 0",
-    "veloq concurrency T | jq '.data.rows[] | {device_id, overlap_ns, max_concurrency}'",
+    "veloq concurrency T --process 12345 --device 0",
+    "veloq concurrency T | jq '.data.rows[] | {process_id, device_id, overlap_ns, max_concurrency}'",
 ];
 
 fn long_about_concurrency() -> String {
@@ -411,10 +413,10 @@ fn long_about_concurrency() -> String {
 
 const GAPS_BLURB: &str = "Find GPU idle bubbles. Three scopes via `--scope`:\n\
                          \n\
-                         - `device` (default): per device, gap = window where no stream was \
+                         - `device` (default): per process-local device, gap = window where no stream was \
                          running GPU work. Cross-stream concurrency is accounted for — long-idle \
                          peer streams don't produce phantom gaps.\n\
-                         - `stream`: per (device, stream), gap = window between consecutive \
+                         - `stream`: per (process, device, stream), gap = window between consecutive \
                          events on that stream. Use for per-stream starvation diagnostics.\n\
                          - `trace`: across all devices, gap = window where no device ran GPU \
                          work. Multi-GPU rig idle analysis.\n\
@@ -429,7 +431,7 @@ const GAPS_BLURB: &str = "Find GPU idle bubbles. Three scopes via `--scope`:\n\
                          streams — `prev.stream_id` / `next.stream_id` make that visible.";
 const GAPS_EXAMPLES: &[&str] = &[
     "veloq gaps T --min-duration 1ms --limit 20",
-    "veloq gaps T --scope stream --device 0 --stream 7 --sort start:asc",
+    "veloq gaps T --scope stream --process 12345 --device 0 --stream 7 --sort start:asc",
     "veloq gaps T --scope trace --min-duration 5ms",
 ];
 
@@ -482,11 +484,12 @@ const VIZ_TIMELINE_BLURB: &str = "Export a bounded NSys timeline window as a rep
      Dense intervals are aggregated into per-track density bins by default, \
      not stretched bars; --max-items may raise the density threshold, and --no-density uses tick-only rendering. \
      Label suppression, truncation, \
-     density aggregation, and omitted counts are reported in the response.";
+     density aggregation, and omitted counts are reported in the response. Select an exact \
+     process-private device inside a track with `process=<pid>,device=<ordinal>`.";
 const VIZ_TIMELINE_EXAMPLES: &[&str] = &[
     "veloq viz timeline T --from @100000000 --to @110000000",
-    "veloq viz timeline T --from 1s --to 1.1s --track gpu:device=0 --track cuda-streams:device=0,top=6",
-    "veloq viz timeline T --from 1s --to 1.1s --track cuda-streams:device=0,top=6 --highlight-kernels top=3,scope=name",
+    "veloq viz timeline T --from 1s --to 1.1s --track gpu:process=12345,device=0 --track cuda-streams:process=12345,device=0,top=6",
+    "veloq viz timeline T --from 1s --to 1.1s --track cuda-streams:process=12345,device=0,top=6 --highlight-kernels top=3,scope=name",
 ];
 
 fn long_about_viz_timeline() -> String {
@@ -625,7 +628,7 @@ pub fn long_about_schema() -> String {
     out.push('.');
     out.push_str("\n\nResponse envelope:\n  ");
     out.push_str(
-        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v3\" }, \
+        "{ schema: \"v1\", source: { kind: \"nsys\", version: \"v4\" }, \
          command: \"nsys.schema\", data: { target: <string>, schema: <JSON Schema document> } }",
     );
     out.push_str("\n\nExamples:\n");

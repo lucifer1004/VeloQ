@@ -153,9 +153,9 @@ fn nvtx_without_device_attribution_uses_fallback_placement() -> Result<()> {
         .auxiliary
         .resolved_tracks
         .iter()
-        .find(|track| track.track_key == "nvtx|depth:1")
+        .find(|track| track.track_key == "nvtx|depth:1|pid:12345")
         .ok_or_else(|| anyhow::anyhow!("expected fallback NVTX track"))?;
-    assert_eq!(nvtx.source_axes.len(), 1);
+    assert_eq!(nvtx.source_axes.len(), 2);
     assert!(nvtx.placement_axes.is_empty());
     assert_eq!(nvtx.placement_source, "fallback");
     Ok(())

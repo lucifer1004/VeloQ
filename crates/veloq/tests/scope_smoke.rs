@@ -57,12 +57,21 @@ fn finalize_to_pqtdir(conn: &Connection, dir: &TempDir) -> Result<PathBuf> {
     Ok(pqtdir)
 }
 
-/// Build a synthetic 2-device parquetdir trace. Two kernel rows (one
-/// per `deviceId`), two `PROCESSES` rows, and two
+/// Build a synthetic two-process parquetdir trace. Two kernel rows, two
+/// `PROCESSES` rows, and two
 /// `TARGET_INFO_CUDA_CONTEXT_INFO` rows so the resolver can map
 /// `deviceId = 0` → `native_pid = 4242` and `deviceId = 1` →
 /// `native_pid = 4343`.
 fn build_two_device_trace() -> Result<(TempDir, PathBuf)> {
+    build_two_process_trace(1)
+}
+
+/// Same two-process trace, but both processes expose logical device 0.
+fn build_colliding_logical_device_trace() -> Result<(TempDir, PathBuf)> {
+    build_two_process_trace(0)
+}
+
+fn build_two_process_trace(second_logical_device: i64) -> Result<(TempDir, PathBuf)> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
     conn.execute_batch(
@@ -122,18 +131,30 @@ fn build_two_device_trace() -> Result<(TempDir, PathBuf)> {
             params![k, v],
         )?;
     }
-    for did in [0_i64, 1_i64] {
+    for (physical_id, logical_device) in [(10_i64, 0_i64), (11_i64, second_logical_device)] {
         conn.execute(
             "INSERT INTO TARGET_INFO_GPU (id, cuDevice, uuid) VALUES (?, ?, ?)",
-            params![did + 10_i64, did, format!("synthetic-gpu-{did}")],
+            params![
+                physical_id,
+                logical_device,
+                format!("synthetic-gpu-{physical_id}")
+            ],
         )?;
     }
-    // Map device 0 → pid 4242, device 1 → pid 4343. The resolver
-    // surfaces the matched native_pid on `meta.applied_scope.native_pid`.
+    // The resolver surfaces the matched native_pid on
+    // `meta.applied_scope.native_pid`, including when both processes
+    // reuse logical ordinal 0.
     conn.execute(
         "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO (deviceId, contextId, processId) \
          VALUES (?, ?, ?), (?, ?, ?)",
-        params![0_i64, 100_i64, 4242_i64, 1_i64, 200_i64, 4343_i64],
+        params![
+            0_i64,
+            100_i64,
+            4242_i64,
+            second_logical_device,
+            200_i64,
+            4343_i64
+        ],
     )?;
     conn.execute(
         "INSERT INTO PROCESSES (globalPid, pid, name) VALUES (?, ?, ?), (?, ?, ?)",
@@ -146,11 +167,16 @@ fn build_two_device_trace() -> Result<(TempDir, PathBuf)> {
             "synthetic-host-1",
         ],
     )?;
-    // One kernel per device — enough to make the device-count probe
-    // see 2 distinct `deviceId`s.
-    for (start, did, sid) in [
-        (100_000_000_i64, 0_i64, 7_i64),
-        (200_000_000_i64, 1_i64, 9_i64),
+    // One kernel per process-local CUDA scope.
+    for (start, did, context, sid, pid) in [
+        (100_000_000_i64, 0_i64, 100_i64, 7_i64, 4242_i64),
+        (
+            200_000_000_i64,
+            second_logical_device,
+            200_i64,
+            9_i64,
+            4343_i64,
+        ),
     ] {
         conn.execute(
             "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
@@ -163,7 +189,7 @@ fn build_two_device_trace() -> Result<(TempDir, PathBuf)> {
                 start,
                 start + 1_000_000,
                 did,
-                if did == 0 { 100_i64 } else { 200_i64 },
+                context,
                 sid,
                 1_i64,
                 1_i64,
@@ -177,11 +203,7 @@ fn build_two_device_trace() -> Result<(TempDir, PathBuf)> {
                 32_i64,
                 0_i64,
                 0_i64,
-                if did == 0 {
-                    4242_i64 << 24
-                } else {
-                    4343_i64 << 24
-                },
+                pid << 24,
             ],
         )?;
     }
@@ -223,14 +245,15 @@ fn stats_refuses_multi_device_without_flag() -> Result<()> {
     let hint = at(&v, "/error/hint")?
         .as_str()
         .context("error.hint must be a string")?;
+    assert!(hint.contains("--all-devices"), "hint: {hint}");
     assert!(
-        hint.contains("--all-devices") && hint.contains("--device 0"),
-        "hint must mention both recovery flags: {hint}",
+        hint.contains("--process 4242") && hint.contains("--device 0"),
+        "hint must contain an exact process/device recovery scope: {hint}",
     );
     let msg = at(&v, "/error/message")?
         .as_str()
         .context("error.message must be a string")?;
-    assert!(msg.contains("2 devices"), "got: {msg}");
+    assert!(msg.contains("2 CUDA process/device scopes"), "got: {msg}");
     assert!(
         msg.contains("--device") && msg.contains("--all-devices"),
         "message must mention both flags: {msg}",
@@ -255,9 +278,63 @@ fn stats_refuses_multi_device_without_flag() -> Result<()> {
         .context("second next_steps command must be a string")?;
     assert!(
         device_command.contains("veloq stats")
+            && device_command.contains("--process 4242")
             && device_command.contains("--device 0")
             && device_command.contains(pqtdir.to_string_lossy().as_ref()),
         "device next step should rerun this stats query: {device_command}",
+    );
+    Ok(())
+}
+
+#[test]
+fn colliding_device_zero_requires_process_and_exact_scope_succeeds() -> Result<()> {
+    let (_dir, pqtdir) = build_colliding_logical_device_trace()?;
+
+    let ambiguous = run_veloq(["stats", pqtdir.to_string_lossy().as_ref(), "--device", "0"])?;
+    assert_eq!(ambiguous.status.code(), Some(1));
+    let error = parse_stdout(&ambiguous)?;
+    assert_eq!(
+        at(&error, "/error/code")?.as_str(),
+        Some("nsys.query.multi-device-ambiguous")
+    );
+    let exact_command = at(&error, "/meta/next_steps/1/command")?
+        .as_str()
+        .context("exact next step must be a string")?;
+    assert!(
+        exact_command.contains("--process 4242") && exact_command.contains("--device 0"),
+        "exact recovery command must select both axes: {exact_command}"
+    );
+
+    let exact = run_veloq([
+        "stats",
+        pqtdir.to_string_lossy().as_ref(),
+        "--process",
+        "4242",
+        "--device",
+        "0",
+    ])?;
+    assert!(
+        exact.status.success(),
+        "exact process/device selection failed: stdout={}; stderr={}",
+        String::from_utf8_lossy(&exact.stdout),
+        String::from_utf8_lossy(&exact.stderr)
+    );
+    let response = parse_stdout(&exact)?;
+    assert_eq!(at(&response, "/data/rows/0/count")?.as_u64(), Some(1));
+    assert_eq!(
+        at(&response, "/meta/applied_scope/native_pid")?.as_i64(),
+        Some(4242)
+    );
+    assert_eq!(
+        at(&response, "/meta/applied_scope/device")?.as_i64(),
+        Some(0)
+    );
+    let follow_up = at(&response, "/meta/next_steps/0/command")?
+        .as_str()
+        .context("stats follow-up command must be a string")?;
+    assert!(
+        follow_up.contains("--process 4242") && follow_up.contains("--device 0"),
+        "scoped follow-up must preserve both identity axes: {follow_up}"
     );
     Ok(())
 }
@@ -296,12 +373,12 @@ fn graph_replays_refuses_multi_device_without_flag() -> Result<()> {
 /// `native_pid = 4242` (the host pid that ran on device 0, via the
 /// `TARGET_INFO_CUDA_CONTEXT_INFO` bridge).
 #[test]
-fn stats_with_explicit_device_populates_applied_scope_and_native_pid() -> Result<()> {
+fn unambiguous_device_preserves_process_optional_behavior() -> Result<()> {
     let (_dir, pqtdir) = build_two_device_trace()?;
     let out = run_veloq(["stats", pqtdir.to_string_lossy().as_ref(), "--device", "0"])?;
     assert!(
         out.status.success(),
-        "expected success, got exit {:?}; stderr={}",
+        "an unambiguous bare --device must remain sufficient; exit {:?}; stderr={}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr),
     );
@@ -326,9 +403,9 @@ fn stats_with_explicit_device_populates_applied_scope_and_native_pid() -> Result
 
 /// Multi-device trace + `--all-devices` → success aggregate.
 /// `applied_scope.device` is absent (null), `aggregated_over =
-/// ["device"]`.
+/// ["process", "device"]`.
 #[test]
-fn stats_with_all_devices_marks_aggregated_over_device() -> Result<()> {
+fn stats_with_all_devices_marks_process_and_device_aggregation() -> Result<()> {
     let (_dir, pqtdir) = build_two_device_trace()?;
     let out = run_veloq(["stats", pqtdir.to_string_lossy().as_ref(), "--all-devices"])?;
     assert!(
@@ -346,11 +423,10 @@ fn stats_with_all_devices_marks_aggregated_over_device() -> Result<()> {
     let agg = at(&v, "/meta/applied_scope/aggregated_over")?
         .as_array()
         .context("aggregated_over must be an array")?;
-    assert_eq!(agg.len(), 1, "expected exactly one aggregated axis: {v}");
-    let first = agg
-        .first()
-        .context("aggregated_over array unexpectedly empty after len-check")?;
-    assert_eq!(first.as_str(), Some("device"));
+    assert_eq!(
+        agg.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+        vec!["process", "device"]
+    );
     Ok(())
 }
 
@@ -372,9 +448,14 @@ fn concurrency_defaults_to_all_devices_on_multi_device_trace() -> Result<()> {
         "implicit all-device concurrency should not lock a single device: {v}",
     );
     assert_eq!(
-        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
-        Some("device"),
-        "implicit all-device concurrency should mark the device axis: {v}",
+        at(&v, "/meta/applied_scope/aggregated_over")?
+            .as_array()
+            .context("aggregated_over must be an array")?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["process", "device"],
+        "implicit all-device concurrency should mark both process-local axes: {v}",
     );
     Ok(())
 }
@@ -400,9 +481,14 @@ fn gaps_trace_scope_defaults_to_all_devices_on_multi_device_trace() -> Result<()
     let v = parse_stdout(&out)?;
     assert_eq!(at(&v, "/data/scope")?.as_str(), Some("trace"));
     assert_eq!(
-        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
-        Some("device"),
-        "trace-scope gaps should mark the implicit all-device axis: {v}",
+        at(&v, "/meta/applied_scope/aggregated_over")?
+            .as_array()
+            .context("aggregated_over must be an array")?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["process", "device"],
+        "trace-scope gaps should mark both implicit aggregate axes: {v}",
     );
     assert!(
         v.pointer("/data/rows/0/device_id").is_none(),
@@ -572,9 +658,14 @@ fn stats_all_devices_group_by_device_stream_is_valid_comparison() -> Result<()> 
     let v = parse_stdout(&out)?;
     assert_eq!(at(&v, "/data/count")?.as_u64(), Some(2));
     assert_eq!(
-        at(&v, "/meta/applied_scope/aggregated_over/0")?.as_str(),
-        Some("device"),
-        "all-device comparison should still mark aggregated_over: {v}",
+        at(&v, "/meta/applied_scope/aggregated_over")?
+            .as_array()
+            .context("aggregated_over must be an array")?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>(),
+        vec!["process", "device"],
+        "all-device comparison should mark both process-local axes: {v}",
     );
     let rows = at(&v, "/data/rows")?
         .as_array()

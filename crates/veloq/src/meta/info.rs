@@ -27,8 +27,8 @@ use std::path::{Path, PathBuf};
 use veloq_core::{EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta};
 use veloq_nsys::CapabilityFlags;
 use veloq_nsys::trace_map::{
-    DeviceInventory, NVTX_TOP_PATHS_DEFAULT, NvtxDomain, NvtxSummary, NvtxTopPath,
-    ProcessInventory, ProcessLaunch, TraceMap,
+    DeviceInventory, LogicalDeviceScope, NVTX_TOP_PATHS_DEFAULT, NvtxDomain, NvtxSummary,
+    NvtxTopPath, PhysicalDeviceInventory, ProcessInventory, ProcessLaunch, TraceMap,
 };
 
 use super::{MetaError, MetaResult, emit_meta_error, emit_or_error};
@@ -82,8 +82,21 @@ struct TraceMapOut {
 
 #[derive(Serialize)]
 struct DevicesOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    physical: Option<PhysicalDevicesOut>,
+    logical_scopes: Vec<LogicalDeviceScopeOut>,
+}
+
+#[derive(Serialize)]
+struct PhysicalDevicesOut {
     count: usize,
     ids: Vec<i32>,
+}
+
+#[derive(Serialize)]
+struct LogicalDeviceScopeOut {
+    process_id: i64,
+    device_id: i32,
 }
 
 #[derive(Serialize)]
@@ -254,7 +267,11 @@ fn trace_shape(caps: &CapabilityFlags, map: &TraceMap) -> TraceShape {
         has_memcpy: caps.has_memcpy,
         has_nvtx: caps.has_nvtx,
         has_target_info: caps.has_target_info,
-        multi_device: map.devices.count > 1,
+        multi_device: map
+            .devices
+            .physical
+            .as_ref()
+            .is_some_and(|physical| physical.count > 1),
         multi_process: map.processes.count > 1,
         has_graph_trace: caps.has_graph_trace,
         has_graph_nodes: caps.has_graph_nodes,
@@ -277,8 +294,26 @@ fn project_trace_map(map: TraceMap) -> TraceMapOut {
 
 fn project_devices(d: DeviceInventory) -> DevicesOut {
     DevicesOut {
+        physical: d.physical.map(project_physical_devices),
+        logical_scopes: d
+            .logical_scopes
+            .into_iter()
+            .map(project_logical_scope)
+            .collect(),
+    }
+}
+
+fn project_physical_devices(d: PhysicalDeviceInventory) -> PhysicalDevicesOut {
+    PhysicalDevicesOut {
         count: d.count,
         ids: d.ids,
+    }
+}
+
+fn project_logical_scope(scope: LogicalDeviceScope) -> LogicalDeviceScopeOut {
+    LogicalDeviceScopeOut {
+        process_id: scope.process_id,
+        device_id: scope.device_id,
     }
 }
 

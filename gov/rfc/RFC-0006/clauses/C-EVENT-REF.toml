@@ -29,9 +29,11 @@ An EventRef `start_ns` MUST be an integer nanosecond timestamp in the opened tra
 
 An EventRef `duration_ns` MUST be an integer nanosecond duration.
 
-An EventRef object MAY carry `device_id`, `stream_id`, `global_tid`, `depth`, and `nvtx_context` when those values are known for the event.
+An EventRef object MAY carry `process_id`, `device_id`, `stream_id`, `global_tid`, `depth`, and `nvtx_context` when those values are known for the event.
 
-An EventRef `device_id`, `stream_id`, and `global_tid` value MUST be an integer when present.
+An EventRef `process_id`, `device_id`, `stream_id`, and `global_tid` value MUST be an integer when present.
+
+A CUDA EventRef SHOULD carry `process_id` when VeloQ can resolve its owning native PID.
 
 An EventRef `depth` value MUST be a non-negative integer when present.
 

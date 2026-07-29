@@ -236,6 +236,18 @@ pub enum NsysDataError {
     )]
     ScopeStreamRequiresDevice { stream: i64 },
 
+    #[error(
+        "CUDA process identity could not be resolved for {table} \
+         (device={device_id}, context={context_id}, correlation={correlation_id:?}); \
+         capture process/runtime metadata or use a complete Nsight Systems export"
+    )]
+    CudaProcessUnresolved {
+        table: String,
+        device_id: i32,
+        context_id: i64,
+        correlation_id: Option<i64>,
+    },
+
     #[error("scope device probe requires {table}.{column}, which is not present in this trace")]
     ScopeDeviceProbeColumnMissing {
         table: String,
@@ -826,6 +838,20 @@ impl NsysDataError {
 
     pub fn scope_stream_requires_device(stream: i64) -> Self {
         Self::ScopeStreamRequiresDevice { stream }
+    }
+
+    pub fn cuda_process_unresolved(
+        table: impl Into<String>,
+        device_id: i32,
+        context_id: i64,
+        correlation_id: Option<i64>,
+    ) -> Self {
+        Self::CudaProcessUnresolved {
+            table: table.into(),
+            device_id,
+            context_id,
+            correlation_id,
+        }
     }
 
     pub fn scope_device_probe_column_missing(
@@ -1575,6 +1601,9 @@ impl VeloqDiagnostic for NsysDataError {
             }
             Self::ScopeStreamRequiresDevice { .. } => {
                 ErrorCode::new("nsys.data.scope-stream-requires-device")
+            }
+            Self::CudaProcessUnresolved { .. } => {
+                ErrorCode::new("nsys.data.cuda-process-unresolved")
             }
             Self::ScopeDeviceProbeColumnMissing { .. } => {
                 ErrorCode::new("nsys.data.scope-device-probe-column-missing")

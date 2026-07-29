@@ -6,12 +6,12 @@
 //!   kernel/memcpy/memset decomposition.
 //! - `--cuda-graph-trace=node`: graph-captured GPU work lands in the
 //!   normal kernel/memcpy/memset tables with `graphNodeId` populated.
-//!   Replays are keyed by the documented correlation triple
-//!   `(deviceId, contextId, correlationId)`.
+//!   Replays are keyed by the process-aware correlation identity
+//!   `(native_pid, deviceId, contextId, correlationId)`.
 //!
 //! Raw `correlationId` is never used alone. Every public row carries
-//! the packed [`veloq_nsys_data::SyntheticId`] display value for the
-//! full triple.
+//! the [`veloq_nsys_data::SyntheticId`] display value for the full
+//! process-aware identity.
 
 use crate::{NsysQueryError, NsysQueryResult, RowId};
 use duckdb::types::Value;
@@ -30,8 +30,9 @@ pub struct GraphReplaysRequest {
     pub time_window: Option<TimeWindow>,
     /// Launch-scoped NVTX glob. Matches enclosing NVTX names around
     /// `cudaGraphLaunch%` runtime rows, then joins launches to replay
-    /// work by `(device, context, correlationId)`.
+    /// work by `(process, device, context, correlationId)`.
     pub nvtx: Option<String>,
+    pub process_id: Option<i64>,
     pub device: Option<i32>,
     pub sort: Option<SortSpec>,
     pub limit: usize,
@@ -43,6 +44,7 @@ impl Default for GraphReplaysRequest {
         Self {
             time_window: None,
             nvtx: None,
+            process_id: None,
             device: None,
             sort: None,
             limit: 20,
@@ -84,12 +86,13 @@ pub struct GraphReplaysResponse {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct GraphReplayRow {
-    /// List key for this replay. Includes the packed synthetic
-    /// correlation id so two devices/processes reusing a raw
-    /// `correlationId` stay distinct.
+    /// List key for this replay. Includes the lossless synthetic
+    /// correlation identity so processes reusing CUDA-local values
+    /// stay distinct.
     pub key: String,
     pub capture_mode: CaptureMode,
     pub synthetic_id: String,
+    pub process_id: i64,
     pub device_id: i32,
     pub context_id: i64,
     pub correlation_id: i64,
@@ -171,6 +174,7 @@ impl SortKeyDef for SortKey {
 
 #[derive(Debug, Clone)]
 struct ReplaySummary {
+    process_id: i64,
     device_id: i32,
     context_id: i64,
     correlation_id: i64,
@@ -224,6 +228,7 @@ pub fn run<P: AsRef<Path>>(
     for (summary, _) in rows.drain(..) {
         let launcher = find_launcher(&trace, &summary)?;
         let synthetic = SyntheticId::pack(
+            summary.process_id as u64,
             summary.device_id as u64,
             summary.context_id as u64,
             summary.correlation_id as u64,
@@ -252,6 +257,7 @@ pub fn run<P: AsRef<Path>>(
             key: format!("graph-replay|{synthetic}"),
             capture_mode: mode,
             synthetic_id: synthetic,
+            process_id: summary.process_id,
             device_id: summary.device_id,
             context_id: summary.context_id,
             correlation_id: summary.correlation_id,
@@ -332,6 +338,10 @@ fn query_graph_trace(
         params.push(Value::BigInt(start));
         params.push(Value::BigInt(end));
     }
+    if let Some(process_id) = req.process_id {
+        where_parts.push("proc.process_id = ?".to_string());
+        params.push(Value::BigInt(process_id));
+    }
     if let Some(device) = req.device {
         where_parts.push("CAST(t.deviceId AS INTEGER) = ?".to_string());
         params.push(Value::Int(device));
@@ -340,11 +350,19 @@ fn query_graph_trace(
     let order_by = order_by_sql(req.sort.as_ref())?;
     params.push(Value::BigInt(req.limit as i64));
 
+    let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+        trace,
+        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
+        "t",
+        "proc",
+        "t.start",
+    );
     let sql = format!(
         r#"
         WITH {scope_cte}
         base AS (
             SELECT
+                proc.process_id AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.correlationId AS BIGINT) AS correlation_id,
@@ -361,6 +379,7 @@ fn query_graph_trace(
                 CAST(t.graphId AS BIGINT) AS graph_id,
                 CAST(t.graphExecId AS BIGINT) AS graph_exec_id
             FROM nsight.CUPTI_ACTIVITY_KIND_GRAPH_TRACE t
+            {process_join}
             WHERE {where_sql}
         ),
         scoped AS (
@@ -393,7 +412,13 @@ fn query_graph_nodes(
     let mut params = Vec::new();
     let (scope_cte, scoped_join) = launch_scope_sql(trace, req.nvtx.as_deref(), &mut params)?;
     let mut where_parts = Vec::new();
-    append_scope_filters(&mut where_parts, &mut params, abs_window, req.device);
+    append_scope_filters(
+        &mut where_parts,
+        &mut params,
+        abs_window,
+        req.process_id,
+        req.device,
+    );
     let where_sql = if where_parts.is_empty() {
         String::new()
     } else {
@@ -408,6 +433,7 @@ fn query_graph_nodes(
         event_rows AS ({union}),
         replay_base AS (
             SELECT
+                process_id,
                 device_id,
                 context_id,
                 correlation_id,
@@ -425,7 +451,7 @@ fn query_graph_nodes(
                 CAST(NULL AS BIGINT) AS graph_exec_id
             FROM event_rows
             {where_sql}
-            GROUP BY device_id, context_id, correlation_id
+            GROUP BY process_id, device_id, context_id, correlation_id
         ),
         scoped AS (
             SELECT b.*
@@ -461,6 +487,7 @@ fn collect_replay_summaries(
 fn replay_summary_row(row: &duckdb::Row<'_>) -> Result<(ReplaySummary, i64), duckdb::Error> {
     Ok((
         ReplaySummary {
+            process_id: row.get("process_id")?,
             device_id: row.get("device_id")?,
             context_id: row.get("context_id")?,
             correlation_id: row.get("correlation_id")?,
@@ -483,11 +510,19 @@ fn replay_summary_row(row: &duckdb::Row<'_>) -> Result<(ReplaySummary, i64), duc
 fn node_event_subqueries(trace: &Trace) -> Vec<String> {
     let mut out = Vec::new();
     if trace.table_exists("CUPTI_ACTIVITY_KIND_KERNEL") {
-        out.push(
+        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+            trace,
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            "t",
+            "proc",
+            "t.start",
+        );
+        out.push(format!(
             r#"
             SELECT
                 'kernel' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
+                proc.process_id AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -499,6 +534,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
                 COALESCE(s.value, CONCAT('kernel:', CAST(t.shortName AS VARCHAR)), '<unnamed>') AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL t
             LEFT JOIN nsight.StringIds s ON t.shortName = s.id
+            {process_join}
             WHERE t.graphNodeId IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
@@ -506,15 +542,22 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
             "#
-            .to_string(),
-        );
+        ));
     }
     if trace.table_exists("CUPTI_ACTIVITY_KIND_MEMCPY") {
-        out.push(
+        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+            trace,
+            "CUPTI_ACTIVITY_KIND_MEMCPY",
+            "t",
+            "proc",
+            "t.start",
+        );
+        out.push(format!(
             r#"
             SELECT
                 'memcpy' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
+                proc.process_id AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -525,6 +568,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
                 CAST(t.graphNodeId AS BIGINT) AS graph_node_id,
                 CONCAT('memcpy:', CAST(COALESCE(t.copyKind, -1) AS VARCHAR)) AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_MEMCPY t
+            {process_join}
             WHERE t.graphNodeId IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
@@ -532,15 +576,22 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
             "#
-            .to_string(),
-        );
+        ));
     }
     if trace.table_exists("CUPTI_ACTIVITY_KIND_MEMSET") {
-        out.push(
+        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+            trace,
+            "CUPTI_ACTIVITY_KIND_MEMSET",
+            "t",
+            "proc",
+            "t.start",
+        );
+        out.push(format!(
             r#"
             SELECT
                 'memset' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
+                proc.process_id AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -551,6 +602,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
                 CAST(t.graphNodeId AS BIGINT) AS graph_node_id,
                 'memset' AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_MEMSET t
+            {process_join}
             WHERE t.graphNodeId IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
@@ -558,8 +610,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
             "#
-            .to_string(),
-        );
+        ));
     }
     out
 }
@@ -568,6 +619,7 @@ fn append_scope_filters(
     where_parts: &mut Vec<String>,
     params: &mut Vec<Value>,
     abs_window: Option<(i64, i64)>,
+    process_id: Option<i64>,
     device: Option<i32>,
 ) {
     if let Some((start, end)) = abs_window {
@@ -576,6 +628,7 @@ fn append_scope_filters(
         params.push(Value::BigInt(end));
     }
     crate::kind_policy::LocationFilter {
+        process_id,
         device,
         stream: None,
     }
@@ -607,6 +660,7 @@ fn launch_scope_sql(
         r#"
         matched_launches AS MATERIALIZED (
             SELECT DISTINCT
+                CAST(((r.globalTid >> 24) & 16777215) AS BIGINT) AS process_id,
                 CAST(c.deviceId AS INTEGER) AS device_id,
                 CAST(c.contextId AS BIGINT) AS context_id,
                 CAST(r.correlationId AS BIGINT) AS correlation_id
@@ -645,7 +699,8 @@ fn launch_scope_sql(
     );
     Ok((
         cte,
-        "JOIN matched_launches ml USING (device_id, context_id, correlation_id)".to_string(),
+        "JOIN matched_launches ml USING (process_id, device_id, context_id, correlation_id)"
+            .to_string(),
     ))
 }
 
@@ -682,7 +737,8 @@ fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Optio
         LEFT JOIN nsight.StringIds s ON r.nameId = s.id
         JOIN nsight.TARGET_INFO_CUDA_CONTEXT_INFO c
           ON CAST(c.processId AS BIGINT) = CAST(((r.globalTid >> 24) & 16777215) AS BIGINT)
-        WHERE CAST(c.deviceId AS INTEGER) = ?
+        WHERE CAST(c.processId AS BIGINT) = ?
+          AND CAST(c.deviceId AS INTEGER) = ?
           AND CAST(c.contextId AS BIGINT) = ?
           AND CAST(r.correlationId AS BIGINT) = ?
         ORDER BY
@@ -693,6 +749,7 @@ fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Optio
         LIMIT 1
         "#;
     let params = [
+        Value::BigInt(replay.process_id),
         Value::Int(replay.device_id),
         Value::BigInt(replay.context_id),
         Value::BigInt(replay.correlation_id),
@@ -728,6 +785,7 @@ fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Ve
         SELECT kind, name, graph_node_id, stream_id, start_ns, end_ns
         FROM event_rows
         WHERE device_id = ?
+          AND process_id = ?
           AND context_id = ?
           AND correlation_id = ?
         ORDER BY start_ns ASC, end_ns ASC, rowid ASC
@@ -735,6 +793,7 @@ fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Ve
     );
     let params = [
         Value::Int(replay.device_id),
+        Value::BigInt(replay.process_id),
         Value::BigInt(replay.context_id),
         Value::BigInt(replay.correlation_id),
     ];

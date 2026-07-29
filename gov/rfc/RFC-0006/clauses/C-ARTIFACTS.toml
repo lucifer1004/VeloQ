@@ -13,7 +13,7 @@ NSys generated artifacts MUST live under the VeloQ artifact root for the resolve
 
 An NSys command that accepts a generated `parquetdir/` alias MUST resolve generated artifacts under the owning `.nsys-rep` artifact root.
 
-The registered NSys sidecar inventory for source version `v3` MUST include `meta-cache` and `gpu-work-events`.
+The registered NSys sidecar inventory for source version `v4` MUST include `meta-cache` and `gpu-work-events`.
 
 A registered NSys sidecar id MUST be a stable lowercase ASCII identifier.
 
@@ -27,7 +27,7 @@ NSys `prep --status` MUST report registered NSys sidecar state without creating,
 
 NSys `prep` and `prep --status` MUST emit the same canonical list response shape defined by [[RFC-0003:C-LIST-SHAPE]].
 
-NSys `prep` response `data.rows[]` MUST report one row per registered NSys sidecar id in source version `v3`.
+NSys `prep` response `data.rows[]` MUST report one row per registered NSys sidecar id in source version `v4`.
 
 Each NSys `prep` response `data.rows[]` row `key` MUST be a string using the `sidecar|<sidecar-id>` format defined by [[RFC-0006:C-ROW-KEYS]].
 

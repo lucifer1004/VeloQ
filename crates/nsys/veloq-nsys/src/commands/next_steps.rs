@@ -1,15 +1,18 @@
 use veloq_core::NextStep;
 use veloq_nsys_data::scope::ResolvedScope;
 
-/// Append `--device N` to a hint command when the resolver locked in a
-/// concrete device. On single-device traces the user didn't type the
-/// flag; the suggestion includes it anyway so the agent can copy-paste
-/// without forgetting the scope on a multi-device follow-up.
-fn device_suffix(scope: &ResolvedScope) -> String {
-    match scope.applied.device {
-        Some(d) => format!(" --device {d}"),
-        None => String::new(),
+/// Append the exact process-local CUDA scope to a follow-up command.
+/// Process and device are both propagated so a successful scoped query
+/// never suggests a command that becomes ambiguous on the next hop.
+fn location_suffix(scope: &ResolvedScope) -> String {
+    let mut suffix = String::new();
+    if let Some(pid) = scope.applied.native_pid {
+        suffix.push_str(&format!(" --process {pid}"));
     }
+    if let Some(device) = scope.applied.device {
+        suffix.push_str(&format!(" --device {device}"));
+    }
+    suffix
 }
 
 /// Top-row follow-up for `slices` in instance view: inspect the NVTX
@@ -54,7 +57,7 @@ pub(super) fn slices_aggregate_next_steps(
         command: format!(
             "veloq slices <trace> --name '{}'{}",
             top.name,
-            device_suffix(scope)
+            location_suffix(scope)
         ),
     }]
 }
@@ -82,7 +85,7 @@ pub(super) fn stats_next_steps(
             "veloq search <trace> --type {}{}{}",
             top.kind,
             name_clause,
-            device_suffix(scope)
+            location_suffix(scope)
         ),
     }]
 }

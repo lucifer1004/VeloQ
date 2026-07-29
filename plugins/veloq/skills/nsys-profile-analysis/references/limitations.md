@@ -64,10 +64,17 @@ Source Domain 8b | TID 16b]`. Native TID is 16 bits, not 24.
   `PROCESSES.globalPid` to `ThreadNames.globalTid` across domains
   needs the `>> 24` PID-only mask, otherwise you get a constant
   offset. VeloQ's `decode_global_tid` helper handles this.
-- **Synthetic correlation id**: raw `correlationId` isn't globally
-  unique — it resets per (device, context). VeloQ packs
-  `(device, context, raw_corr)` into a 64-bit synthetic id;
-  `correlate.synthetic_id` is the rendered form.
+- **CUDA identity is process-local**: `deviceId`, `contextId`,
+  `streamId`, and raw `correlationId` can all repeat in another rank.
+  VeloQ uses the lossless `(process, device, context, raw_corr)`
+  correlation identity; `correlate.synthetic_id` renders all four
+  axes.
+- **Selecting a rank-private CUDA device**: `--device 0` refuses when
+  multiple processes expose logical ordinal 0. Use
+  `--process <native-pid> --device 0` for the exact process/device
+  scope, or `--all-devices` for an explicit aggregate. If the ordinal
+  matches exactly one process, bare `--device <ordinal>` remains valid
+  and VeloQ resolves the PID automatically.
 - **`CUPTI_ACTIVITY_KIND_RUNTIME.start` can equal `end`** for
   enqueue-only API calls. Treat duration as a lower bound.
 - **`NVTX_EVENTS.end` can be `NULL`** for instant markers
@@ -122,8 +129,9 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   `kernel_ns + memcpy_ns + memset_ns + graph_ns` as the per-bucket
   GPU busy total.
 - **`slices --stream` needs a device parent**: stream ids are
-  device-local. Use `--device D --stream S` for one lane, or keep
-  the query all-device and read the per-(device, stream)
+  process/device-local. Use `--process P --device D --stream S` for
+  one lane, or keep the query all-device and read the
+  per-(process, device, stream)
   `gpu_attributed` breakdown for comparison.
 - **`metrics --type gpu --bucket` aggregator**: `mean` by default;
   `sum` for `[Cycles Active]` / `[Requests]` tally counters only.
@@ -179,7 +187,7 @@ cpu-sampling`'s `truncated_stack_share` counts samples whose
   `trace_span`.
 - **`source.version`** is per-source and bumps independently on
   any breaking shape change to that source's payloads. Currently
-  `"v3"` for NSys, `"v1"` for NCU, and `"v0"` for PyTorch;
+  `"v4"` for NSys, `"v1"` for NCU, and `"v0"` for PyTorch;
   source versions are independent.
 - **Agents should ignore unknown JSON keys**. VeloQ adds fields
   forward-compatibly between schema bumps; consumers that

@@ -23,12 +23,11 @@
 //!
 //! - **Runtime kind**: lookup by `rt_rowid` directly.
 //! - **Kernel / Memcpy / Memset / Sync**: one small SQL fetches
-//!   `(rowid, deviceId, contextId, correlationId)` for the batch
-//!   and feeds the trio straight into
+//!   `(rowid, native_pid, deviceId, contextId, correlationId)` for the batch
+//!   and feeds the tuple straight into
 //!   `RuntimeNvtxParent::get_by_correlation`. The sidecar's
 //!   key is the documented disambiguator
-//!   `(device_id, context_id, correlation_id)`, so the GPU row's
-//!   own columns are enough — no `ctx_for_pid` bridge at query time.
+//!   `(native_pid, device_id, context_id, correlation_id)`.
 //!
 //! The sidecar reduces reverse attribution to one read of the parquet
 //! sidecar plus an in-memory hashmap lookup, reusing the attribution
@@ -36,9 +35,9 @@
 //!
 //! ## Why we still issue a small SQL for GPU kinds
 //!
-//! The sidecar is keyed by `(device_id, context_id, correlation_id)`
+//! The sidecar is keyed by `(native_pid, device_id, context_id, correlation_id)`
 //! while the caller has a CUPTI rowid. We need the rowid's
-//! `(deviceId, contextId, correlationId)` to do the lookup — one
+//! process-aware CUDA tuple to do the lookup — one
 //! small `SELECT … WHERE rowid IN (?, ?, …)` against the GPU
 //! activity table fetches those three columns for the batch.
 
@@ -252,8 +251,8 @@ fn lookup_runtime(
 }
 
 /// GPU kinds (Kernel/Memcpy/Memset/Sync): one small SQL to map each
-/// rowid to `(correlationId, native_pid)` via the `ctx_for_pid`
-/// bridge, then in-memory lookup into the sidecar's `by_correlation`
+/// rowid to `(native_pid, deviceId, contextId, correlationId)`, then
+/// in-memory lookup into the sidecar's `by_correlation`
 /// map.
 fn lookup_gpu_kind(
     trace: &Trace,
@@ -269,15 +268,16 @@ fn lookup_gpu_kind(
         .join(", ");
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let ctx_expr = crate::kind_sql::GPU_CONTEXT_ID_EXPR;
-    // Sidecar is keyed by `(device_id, context_id, correlation_id)`
-    // per the documented correlation model, and the GPU row brings the
-    // full trio directly — no `ctx_for_pid` bridge needed here.
+    let process_join =
+        veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
     let sql = format!(
         r#"SELECT t.rowid,
+                  proc.process_id AS process_id,
                   {dev}         AS device_id,
                   {ctx_expr}    AS context_id,
                   t.correlationId
            FROM nsight.{table} t
+           {process_join}
            WHERE t.rowid IN ({placeholders})
              AND t.correlationId IS NOT NULL"#
     );
@@ -303,9 +303,12 @@ fn lookup_gpu_kind_with_sql(
 
     let mut out: HashMap<i64, NvtxContext> = HashMap::with_capacity(rowids.len());
     for row in rows {
-        let Some(entry) =
-            index.get_by_correlation(row.device_id, row.context_id, row.correlation_id)
-        else {
+        let Some(entry) = index.get_by_correlation(
+            row.process_id,
+            row.device_id,
+            row.context_id,
+            row.correlation_id,
+        ) else {
             continue;
         };
         if let Some(ctx) = innermost_to_nvtx_context(entry, nesting) {
@@ -317,6 +320,7 @@ fn lookup_gpu_kind_with_sql(
 
 struct GpuLookupSqlRow {
     event_rowid: i64,
+    process_id: i64,
     device_id: i32,
     context_id: i64,
     correlation_id: i64,
@@ -325,9 +329,10 @@ struct GpuLookupSqlRow {
 fn gpu_lookup_sql_row(row: &duckdb::Row<'_>) -> Result<GpuLookupSqlRow, duckdb::Error> {
     Ok(GpuLookupSqlRow {
         event_rowid: row.get(0)?,
-        device_id: row.get(1)?,
-        context_id: row.get(2)?,
-        correlation_id: row.get(3)?,
+        process_id: row.get(1)?,
+        device_id: row.get(2)?,
+        context_id: row.get(3)?,
+        correlation_id: row.get(4)?,
     })
 }
 
@@ -421,21 +426,20 @@ fn cold_fallback(
         Source::Kernel | Source::Memcpy | Source::Memset | Source::Sync => {
             let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
             let ctx_expr = crate::kind_sql::GPU_CONTEXT_ID_EXPR;
+            let process_join =
+                veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
+            let runtime_pid = veloq_nsys_data::native_pid_sql("r.globalTid");
             format!(
                 r#"WITH event_ctx AS (
                        SELECT t.rowid          AS event_rowid,
+                              proc.process_id  AS process_id,
                               {dev}            AS device_id,
                               {ctx_expr}       AS context_id,
                               t.correlationId  AS correlationId
                        FROM nsight.{table} t
+                       {process_join}
                        WHERE t.rowid IN ({placeholders})
                          AND t.correlationId IS NOT NULL
-                   ),
-                   ctx_for_pid AS (
-                       SELECT CAST(deviceId  AS INTEGER) AS device_id,
-                              CAST(contextId AS BIGINT)  AS context_id,
-                              CAST(processId AS BIGINT)  AS process_id
-                       FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO
                    ),
                    event_runtime AS (
                        SELECT ec.event_rowid,
@@ -443,12 +447,9 @@ fn cold_fallback(
                               r."end"                                              AS launch_end,
                               r.globalTid                                          AS tid
                        FROM event_ctx ec
-                       JOIN ctx_for_pid cp
-                         ON cp.device_id  = ec.device_id
-                        AND cp.context_id = ec.context_id
                        JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r
                          ON r.correlationId                                  = ec.correlationId
-                        AND CAST(((r.globalTid >> 24) & 16777215) AS BIGINT) = cp.process_id
+                        AND {runtime_pid} = ec.process_id
                    ),{CANDIDATES_AND_PICK}"#
             )
         }

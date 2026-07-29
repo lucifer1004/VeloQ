@@ -2,7 +2,7 @@
 //!
 //! `<trace>.veloq/gpu-work-events.parquet` contains the minimal
 //! kernel / memcpy / memset / graph-trace interval surface shared by
-//! gap planning: event kind, source row id, device, stream, start, and
+//! gap planning: event kind, source row id, process, device, stream, start, and
 //! end. It does not store display names; query crates hydrate names
 //! from the source tables after applying LIMIT so name semantics stay
 //! centralized.
@@ -23,13 +23,14 @@ use veloq_core::SourceFingerprint;
 
 /// Bump on every breaking schema change to the parquet sidecar.
 /// Mismatched versions rebuild silently on next use.
-pub const GPU_WORK_EVENTS_VERSION: u32 = 1;
+pub const GPU_WORK_EVENTS_VERSION: u32 = 2;
 
 /// One duration-bearing GPU work interval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuWorkEventRecord {
     pub kind: String,
     pub row_id: i64,
+    pub process_id: i64,
     pub device_id: i32,
     pub stream_id: i64,
     pub start_ns: i64,
@@ -149,12 +150,14 @@ pub fn view_sql_for(sidecar_path: &Path) -> Option<String> {
 
 fn compute(trace: &Trace) -> NsysDataResult<Vec<GpuWorkEventRecord>> {
     let mut records = Vec::new();
+    let resolver = crate::CudaProcessResolver::build(trace)?;
     for kind in GPU_WORK_INTERVAL_KINDS {
-        collect_kind(trace, kind, &mut records)?;
+        collect_kind(trace, &resolver, kind, &mut records)?;
     }
     records.sort_by(|a, b| {
         a.start_ns
             .cmp(&b.start_ns)
+            .then(a.process_id.cmp(&b.process_id))
             .then(a.device_id.cmp(&b.device_id))
             .then(a.stream_id.cmp(&b.stream_id))
             .then(a.kind.cmp(&b.kind))
@@ -165,6 +168,7 @@ fn compute(trace: &Trace) -> NsysDataResult<Vec<GpuWorkEventRecord>> {
 
 fn collect_kind(
     trace: &Trace,
+    resolver: &crate::CudaProcessResolver,
     kind: &GpuWorkKind,
     out: &mut Vec<GpuWorkEventRecord>,
 ) -> NsysDataResult<()> {
@@ -176,11 +180,29 @@ fn collect_kind(
     let end_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.end_ns);
     let device_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.device_id);
     let stream_col = crate::quote_sql_identifier(GPU_WORK_INTERVAL_COLUMNS.stream_id);
+    let context_expr = if trace.table_has_column(kind.table, "contextId") {
+        "CAST(t.contextId AS BIGINT)"
+    } else {
+        "0::BIGINT"
+    };
+    let correlation_expr = if trace.table_has_column(kind.table, "correlationId") {
+        "CAST(t.correlationId AS BIGINT)"
+    } else {
+        "CAST(NULL AS BIGINT)"
+    };
+    let global_pid_expr = if trace.table_has_column(kind.table, "globalPid") {
+        "CAST(t.globalPid AS BIGINT)"
+    } else {
+        "CAST(NULL AS BIGINT)"
+    };
     let sql = format!(
         r#"
         SELECT
             t.rowid AS row_id,
             CAST(t.{device_col} AS INTEGER) AS device_id,
+            {context_expr} AS context_id,
+            {correlation_expr} AS correlation_id,
+            {global_pid_expr} AS global_pid,
             CAST(COALESCE(t.{stream_col}, 0) AS BIGINT) AS stream_id,
             t.{start_col} AS start_ns,
             t.{end_col} AS end_ns
@@ -204,16 +226,34 @@ fn collect_kind(
             row_id: row.get(0).map_err(|source| {
                 crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
             })?,
+            process_id: resolver.resolve_required(
+                kind.table,
+                row.get(1).map_err(|source| {
+                    crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
+                })?,
+                row.get(2).map_err(|source| {
+                    crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
+                })?,
+                row.get(3).map_err(|source| {
+                    crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
+                })?,
+                row.get(6).map_err(|source| {
+                    crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
+                })?,
+                row.get(4).map_err(|source| {
+                    crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
+                })?,
+            )?,
             device_id: row.get(1).map_err(|source| {
                 crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
             })?,
-            stream_id: row.get(2).map_err(|source| {
+            stream_id: row.get(5).map_err(|source| {
                 crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
             })?,
-            start_ns: row.get(3).map_err(|source| {
+            start_ns: row.get(6).map_err(|source| {
                 crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
             })?,
-            end_ns: row.get(4).map_err(|source| {
+            end_ns: row.get(7).map_err(|source| {
                 crate::NsysDataError::gpu_work_events_rows_read(kind.table, source)
             })?,
         });
@@ -233,45 +273,54 @@ mod tests {
             (
                 "CUPTI_ACTIVITY_KIND_KERNEL",
                 r#"CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (
-                    start BIGINT, "end" BIGINT, deviceId BIGINT, streamId BIGINT
+                    start BIGINT, "end" BIGINT, deviceId BIGINT, contextId BIGINT, streamId BIGINT
                 )"#,
                 vec![
                     r#"INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL
-                       (start, "end", deviceId, streamId)
-                       VALUES (100, 110, 0, 7)"#,
+                       (start, "end", deviceId, contextId, streamId)
+                       VALUES (100, 110, 0, 0, 7)"#,
                 ],
             ),
             (
                 "CUPTI_ACTIVITY_KIND_MEMCPY",
                 r#"CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY (
-                    start BIGINT, "end" BIGINT, deviceId BIGINT, streamId BIGINT
+                    start BIGINT, "end" BIGINT, deviceId BIGINT, contextId BIGINT, streamId BIGINT
                 )"#,
                 vec![
                     r#"INSERT INTO CUPTI_ACTIVITY_KIND_MEMCPY
-                       (start, "end", deviceId, streamId)
-                       VALUES (120, 130, 0, NULL)"#,
+                       (start, "end", deviceId, contextId, streamId)
+                       VALUES (120, 130, 0, 0, NULL)"#,
                 ],
             ),
             (
                 "CUPTI_ACTIVITY_KIND_MEMSET",
                 r#"CREATE TABLE CUPTI_ACTIVITY_KIND_MEMSET (
-                    start BIGINT, "end" BIGINT, deviceId BIGINT, streamId BIGINT
+                    start BIGINT, "end" BIGINT, deviceId BIGINT, contextId BIGINT, streamId BIGINT
                 )"#,
                 vec![
                     r#"INSERT INTO CUPTI_ACTIVITY_KIND_MEMSET
-                       (start, "end", deviceId, streamId)
-                       VALUES (90, 95, 1, 9)"#,
+                       (start, "end", deviceId, contextId, streamId)
+                       VALUES (90, 95, 1, 0, 9)"#,
                 ],
             ),
             (
                 "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
                 r#"CREATE TABLE CUPTI_ACTIVITY_KIND_GRAPH_TRACE (
-                    start BIGINT, "end" BIGINT, deviceId BIGINT, streamId BIGINT
+                    start BIGINT, "end" BIGINT, deviceId BIGINT, contextId BIGINT, streamId BIGINT
                 )"#,
                 vec![
                     r#"INSERT INTO CUPTI_ACTIVITY_KIND_GRAPH_TRACE
-                       (start, "end", deviceId, streamId)
-                       VALUES (140, 150, 0, 23)"#,
+                       (start, "end", deviceId, contextId, streamId)
+                       VALUES (140, 150, 0, 0, 23)"#,
+                ],
+            ),
+            (
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (\
+                    deviceId BIGINT, contextId BIGINT, processId BIGINT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 0, 42)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (1, 0, 42)",
                 ],
             ),
         ])
