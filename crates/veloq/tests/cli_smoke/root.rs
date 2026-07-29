@@ -371,6 +371,202 @@ exit 0
 
 #[cfg(unix)]
 #[test]
+fn agent_update_codex_from_checkout_readds_local_marketplace() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent update tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+exit 0
+"#,
+    )?;
+    let repo = repo_root()?;
+    let canonical_repo = repo
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", repo.display()))?;
+    let out = run_veloq_with_env(
+        [
+            "agent",
+            "update",
+            "codex",
+            "--from-checkout",
+            repo.to_string_lossy().as_ref(),
+        ],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent update codex failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent update stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing update row: {v}"))?;
+    assert_eq!(row.get("status").and_then(Value::as_str), Some("updated"));
+    assert_eq!(
+        row.get("checkout").and_then(Value::as_str),
+        Some(repo.to_string_lossy().as_ref())
+    );
+    let commands = row
+        .get("commands")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing commands: {row}"))?;
+    assert_eq!(
+        commands,
+        &vec![
+            Value::String(format!(
+                "codex plugin marketplace add {}",
+                canonical_repo.display()
+            )),
+            Value::String("codex plugin add veloq@veloq".to_string()),
+        ]
+    );
+
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        log.contains("plugin marketplace add --help"),
+        "source-aware marketplace preflight missing: {log}"
+    );
+    assert!(
+        log.contains("plugin add --help"),
+        "source-aware plugin preflight missing: {log}"
+    );
+    let expected_marketplace = format!("plugin marketplace add {}", canonical_repo.display());
+    assert!(
+        log.contains(&expected_marketplace),
+        "local marketplace was not re-added; expected {expected_marketplace}; got: {log}"
+    );
+    assert!(
+        log.contains("plugin add veloq@veloq"),
+        "qualified plugin refresh missing: {log}"
+    );
+    assert!(
+        !log.contains("plugin marketplace upgrade"),
+        "local update must not invoke Git-only marketplace upgrade: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_update_codex_without_checkout_preserves_named_marketplace() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent update tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+exit 0
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "update", "codex"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent update codex failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        log.contains("plugin marketplace upgrade --help"),
+        "named marketplace preflight missing: {log}"
+    );
+    assert!(
+        log.contains("plugin marketplace upgrade veloq"),
+        "named marketplace update missing: {log}"
+    );
+    assert!(
+        log.contains("plugin add veloq@veloq"),
+        "qualified plugin refresh missing: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line == "plugin marketplace add"),
+        "legacy update unexpectedly selected the local source path: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_claude_update_and_uninstall_use_qualified_selector() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent lifecycle tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("claude.log");
+    let fake_claude = bin_dir.join("claude");
+    write_executable(
+        &fake_claude,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CLAUDE_LOG"
+exit 0
+"#,
+    )?;
+    let env = [
+        ("PATH", bin_dir.to_string_lossy().to_string()),
+        ("VELOQ_FAKE_CLAUDE_LOG", log.to_string_lossy().to_string()),
+    ];
+    let update = run_veloq_with_env(["agent", "update", "claude"], env.clone())?;
+    assert!(
+        update.status.success(),
+        "agent update claude failed: stderr={}",
+        String::from_utf8_lossy(&update.stderr)
+    );
+    let uninstall = run_veloq_with_env(["agent", "uninstall", "claude"], env)?;
+    assert!(
+        uninstall.status.success(),
+        "agent uninstall claude failed: stderr={}",
+        String::from_utf8_lossy(&uninstall.stderr)
+    );
+
+    let log = std::fs::read_to_string(&log).context("read fake claude log")?;
+    assert!(
+        log.contains("plugin marketplace update veloq"),
+        "Claude marketplace update missing: {log}"
+    );
+    assert!(
+        log.contains("plugin update veloq@veloq"),
+        "Claude update did not use the qualified selector: {log}"
+    );
+    assert!(
+        log.contains("plugin uninstall veloq@veloq"),
+        "Claude uninstall did not use the qualified selector: {log}"
+    );
+    assert!(
+        !log.lines()
+            .any(|line| line == "plugin update veloq" || line == "plugin uninstall veloq"),
+        "Claude lifecycle fell back to an ambiguous bare name: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn agent_uninstall_codex_uses_native_cli_without_leaking_child_stdout() -> Result<()> {
     let temp = tempfile::tempdir().context("create agent uninstall tempdir")?;
     let bin_dir = temp.path().join("bin");

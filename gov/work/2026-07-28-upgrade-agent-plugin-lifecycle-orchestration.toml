@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-28-002"
+title = "Upgrade agent plugin lifecycle orchestration"
+status = "done"
+created = "2026-07-28"
+started = "2026-07-28"
+completed = "2026-07-28"
+refs = [
+    "RFC-0010:C-COMMAND-SURFACE",
+    "RFC-0010:C-SUPPORTED-AGENTS",
+    "RFC-0010:C-NATIVE-CLI-ORCHESTRATION",
+    "RFC-0010:C-PACKAGE-SOURCE",
+]
+
+[content]
+description = "Upgrade VeloQ to the current agent-plugin-installer lifecycle API, preserving existing Git-marketplace updates while enabling explicit local-checkout refreshes for installed Codex and Claude plugins and retaining unambiguous qualified plugin identity."
+
+[[content.acceptance_criteria]]
+text = "Claude update and uninstall target the qualified veloq@veloq plugin identity"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Agent update accepts an explicit local checkout and refreshes the selected runtime from that durable marketplace source"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Agent update without a checkout preserves the existing named Git-marketplace behavior"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "CLI contract tests and user documentation cover local-checkout and legacy update paths"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-CLI-IO-CONTRACT"]

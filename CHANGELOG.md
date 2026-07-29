@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-28
+
+### Added
+
+- **Local agent plugin updates** — `veloq agent update` accepts
+  `--from-checkout <path>` to re-register a durable local marketplace source
+  before refreshing the selected Codex or Claude plugin.
+
+### Fixed
+
+- **Agent plugin lifecycle targeting** — upgrade `agent-plugin-installer` to
+  use qualified `veloq@veloq` identities for Claude update and uninstall while
+  preserving the existing named Git-marketplace update behavior when no local
+  checkout is supplied.
+
 ## [0.5.0] - 2026-07-28
 
 ### Changed

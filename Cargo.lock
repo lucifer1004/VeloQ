@@ -10,9 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-plugin-installer"
-version = "0.2.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7be1e6ceddc0fd911eafaeeb860706b43cc95d1ae4a8b96d2cde7faa4aa0543d"
+checksum = "e90821b0c5b490bbc138406ec0aad75c4da794543351d74ff72f1f4d03d62418"
 dependencies = [
  "thiserror",
 ]
@@ -3390,7 +3390,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "veloq"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "agent-plugin-installer",
  "anyhow",
@@ -3413,7 +3413,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3433,7 +3433,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-data"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arrow",
  "flate2",
@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-ncu"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3464,7 +3464,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3485,7 +3485,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys-data"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -3505,7 +3505,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-nsys-query"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "duckdb",
@@ -3523,7 +3523,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -3539,7 +3539,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch-data"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "arrow",
  "flate2",
@@ -3555,7 +3555,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-pytorch-query"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "duckdb",
  "regex",
@@ -3571,7 +3571,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-query"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "duckdb",
@@ -3580,7 +3580,7 @@ dependencies = [
 
 [[package]]
 name = "veloq-vis"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "schemars",
