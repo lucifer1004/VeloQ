@@ -1,6 +1,6 @@
 {
   "name": "veloq",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Agent Skills for Nsight Systems, Nsight Compute, and PyTorch/Kineto profile analysis with the VeloQ CLI.",
   "author": {
     "name": "Zihua Wu"

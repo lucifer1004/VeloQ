@@ -12,7 +12,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.89"
@@ -30,17 +30,17 @@ homepage = "https://github.com/lucifer1004/veloq"
 # stripped from the published manifest (consumers resolve the dep from
 # crates.io at this version). `scripts/bump-version.sh` keeps these in
 # lock-step with `[workspace.package].version` on every bump.
-veloq-core = { path = "crates/veloq-core", version = "0.4.1" }
-veloq-data = { path = "crates/veloq-data", version = "0.4.1" }
-veloq-query = { path = "crates/veloq-query", version = "0.4.1" }
-veloq-vis = { path = "crates/veloq-vis", version = "0.4.1" }
-veloq-nsys = { path = "crates/nsys/veloq-nsys", version = "0.4.1" }
-veloq-nsys-data = { path = "crates/nsys/veloq-nsys-data", version = "0.4.1" }
-veloq-nsys-query = { path = "crates/nsys/veloq-nsys-query", version = "0.4.1" }
-veloq-ncu = { path = "crates/ncu/veloq-ncu", version = "0.4.1" }
-veloq-pytorch = { path = "crates/pytorch/veloq-pytorch", version = "0.4.1" }
-veloq-pytorch-data = { path = "crates/pytorch/veloq-pytorch-data", version = "0.4.1" }
-veloq-pytorch-query = { path = "crates/pytorch/veloq-pytorch-query", version = "0.4.1" }
+veloq-core = { path = "crates/veloq-core", version = "0.5.0" }
+veloq-data = { path = "crates/veloq-data", version = "0.5.0" }
+veloq-query = { path = "crates/veloq-query", version = "0.5.0" }
+veloq-vis = { path = "crates/veloq-vis", version = "0.5.0" }
+veloq-nsys = { path = "crates/nsys/veloq-nsys", version = "0.5.0" }
+veloq-nsys-data = { path = "crates/nsys/veloq-nsys-data", version = "0.5.0" }
+veloq-nsys-query = { path = "crates/nsys/veloq-nsys-query", version = "0.5.0" }
+veloq-ncu = { path = "crates/ncu/veloq-ncu", version = "0.5.0" }
+veloq-pytorch = { path = "crates/pytorch/veloq-pytorch", version = "0.5.0" }
+veloq-pytorch-data = { path = "crates/pytorch/veloq-pytorch-data", version = "0.5.0" }
+veloq-pytorch-query = { path = "crates/pytorch/veloq-pytorch-query", version = "0.5.0" }
 
 # Shared external helpers.
 agent-plugin-installer = "0.2"
