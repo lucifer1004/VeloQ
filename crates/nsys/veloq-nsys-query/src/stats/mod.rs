@@ -18,7 +18,7 @@ use duckdb::types::Value;
 use group_by::{GroupBySql, HistSql, resolve_name_axis, stats_sort_sql};
 use hydrate::{build_bucket_schema, hydrate_stats_rows};
 use serde::Serialize;
-use sql::{NVTX_STYLE_EXPR, per_kind_subquery};
+use sql::{NVTX_STYLE_EXPR, PerKindSubqueryOptions, per_kind_subquery};
 use std::path::Path;
 use veloq_core::{SortSpec, time::TimeWindow};
 
@@ -600,17 +600,16 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
 
     let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
     let mut per_kind_params: Vec<Value> = Vec::new();
+    let subquery_options = PerKindSubqueryOptions {
+        abs_window,
+        nvtx_scope,
+        collapse_versioned: req.collapse_versioned,
+        columns: &columns,
+        nvtx_parent_sidecar: nvtx_parent_sidecar.as_deref(),
+        include_nvtx_path: req.group_by.nvtx_path,
+    };
     for kind in &kinds {
-        let (sql, params) = per_kind_subquery(
-            &trace,
-            *kind,
-            abs_window,
-            nvtx_scope,
-            req.collapse_versioned,
-            &columns,
-            nvtx_parent_sidecar.as_deref(),
-            req.group_by.nvtx_path,
-        )?;
+        let (sql, params) = per_kind_subquery(&trace, *kind, &subquery_options)?;
         subqueries.push(sql);
         per_kind_params.extend(params);
     }

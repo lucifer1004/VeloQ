@@ -552,11 +552,13 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     })
 }
 
+type RankedSurvivor = (EventKind, i64, Option<i64>);
+
 fn hydrate_ranked_survivors(
     conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-) -> NsysQueryResult<(Vec<(EventKind, i64, Option<i64>)>, i64)> {
+) -> NsysQueryResult<(Vec<RankedSurvivor>, i64)> {
     let rows = query_rows(
         conn,
         sql,

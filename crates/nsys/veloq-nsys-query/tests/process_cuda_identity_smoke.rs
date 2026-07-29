@@ -43,7 +43,10 @@ fn graph_replays_do_not_merge_process_private_device_zero() -> Result<()> {
                 .contains(&format!("p{:x}-d0-c1-r2a", row.process_id))
         );
     }
-    assert_ne!(response.rows[0].synthetic_id, response.rows[1].synthetic_id);
+    let [first, second] = response.rows.as_slice() else {
+        anyhow::bail!("expected exactly two graph replay rows");
+    };
+    assert_ne!(first.synthetic_id, second.synthetic_id);
     Ok(())
 }
 

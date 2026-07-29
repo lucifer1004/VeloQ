@@ -226,11 +226,9 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
         let fragment = per_kind_select(
             &trace,
             *kind,
+            &req,
             abs_window,
             nvtx_scope,
-            req.process_id,
-            req.device,
-            req.stream,
             kind_policy.allowed(),
         )?;
         subqueries.push(fragment.sql);
@@ -393,11 +391,9 @@ fn timeline_sql_row(row: &duckdb::Row<'_>) -> Result<TimelineSqlRow, duckdb::Err
 fn per_kind_select(
     trace: &Trace,
     kind: EventKind,
+    req: &TimelineRequest,
     abs_window: Option<(i64, i64)>,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
-    process_id: Option<i64>,
-    device: Option<i32>,
-    stream: Option<i64>,
     allowed_kinds: &[EventKind],
 ) -> NsysQueryResult<SqlFragment> {
     if matches!(kind, EventKind::Runtime | EventKind::Osrt | EventKind::Nvtx) {
@@ -421,8 +417,8 @@ fn per_kind_select(
         sem,
         EventScanFilterOptions {
             abs_window,
-            device,
-            stream,
+            device: req.device,
+            stream: req.stream,
             nvtx_scope,
             nvtx_policy: NvtxFilterPolicy::ErrorUnlessKindIn {
                 verb: "timeline",
@@ -433,7 +429,7 @@ fn per_kind_select(
     )?;
     let process =
         veloq_nsys_data::process_sql_projection(trace, sem.table(), "t", "event_proc", "t.start");
-    if let Some(process_id) = process_id {
+    if let Some(process_id) = req.process_id {
         filter.push_predicate(format!("{} = ?", process.expr));
         filter.push_param(Value::BigInt(process_id));
     }
@@ -524,14 +520,13 @@ mod tests {
             EventKind::Graph,
         ];
         let (_dir, trace) = minimal_trace()?;
+        let req = TimelineRequest::default();
         let fragment = per_kind_select(
             &trace,
             EventKind::Kernel,
+            &req,
             Some((10, 20)),
             crate::nvtx_attribution::NvtxScope::None,
-            None,
-            None,
-            None,
             &allowed,
         )?;
         assert_eq!(
