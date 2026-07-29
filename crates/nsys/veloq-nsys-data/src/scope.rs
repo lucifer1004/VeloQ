@@ -153,6 +153,9 @@ pub fn resolve_scope(
         .map(|(pid, _)| *pid)
         .collect::<HashSet<_>>()
         .len();
+    let mut matching_scopes = matching.iter().copied();
+    let first_matching_scope = matching_scopes.next();
+    let has_multiple_matching_scopes = matching_scopes.next().is_some();
 
     let (native_pid, resolved_device, aggregated_over): (Option<i64>, Option<i32>, Vec<String>) =
         if req.all_devices {
@@ -162,13 +165,10 @@ pub fn resolve_scope(
             }
             (req.process, None, axes)
         } else {
-            match matching.len() {
-                0 => (req.process, req.device, Vec::new()),
-                1 => {
-                    let (pid, device) = matching.into_iter().next().expect("one scope");
-                    (Some(pid), Some(device), Vec::new())
-                }
-                _ => {
+            match (first_matching_scope, has_multiple_matching_scopes) {
+                (None, _) => (req.process, req.device, Vec::new()),
+                (Some((pid, device)), false) => (Some(pid), Some(device), Vec::new()),
+                (Some(_), true) => {
                     if let Some(err) = stream_parent_error(req.stream, NO_AXES) {
                         return Err(ResolveError::probe(err));
                     }
