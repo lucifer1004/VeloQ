@@ -1,0 +1,50 @@
+#:schema ../../schema/rfc.schema.json
+
+[govctl]
+id = "RFC-0011"
+title = "Optional local query daemon"
+version = "0.1.0"
+status = "normative"
+phase = "impl"
+owners = ["@Zihua Wu"]
+created = "2026-07-29"
+updated = "2026-07-29"
+refs = [
+    "RFC-0001",
+    "RFC-0002",
+    "RFC-0003",
+    "RFC-0004",
+    "RFC-0005",
+    "RFC-0006",
+    "RFC-0007",
+    "RFC-0008",
+]
+signature = "d2ac6abaccac7afa0e75a6696d8091452b8b91b9b0bf793e954339c286445a86"
+
+[[sections]]
+title = "Summary"
+clauses = ["clauses/C-SUMMARY.toml"]
+
+[[sections]]
+title = "Specification"
+clauses = [
+    "clauses/C-LOCAL-BOUNDARY.toml",
+    "clauses/C-LIFECYCLE.toml",
+    "clauses/C-ROUTING.toml",
+    "clauses/C-EQUIVALENCE.toml",
+    "clauses/C-PROTOCOL.toml",
+    "clauses/C-SESSION-FRESHNESS.toml",
+    "clauses/C-ACCELERATION.toml",
+    "clauses/C-EVICTION.toml",
+    "clauses/C-CONCURRENCY.toml",
+    "clauses/C-OBSERVABILITY.toml",
+    "clauses/C-SOURCE-CAPABILITY.toml",
+    "clauses/C-NON-GOALS.toml",
+    "clauses/C-RESOURCE-CONFIG.toml",
+    "clauses/C-DIAGNOSTICS.toml",
+]
+
+[[changelog]]
+version = "0.1.0"
+date = "2026-07-29"
+notes = "Initial draft"

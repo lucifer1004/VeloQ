@@ -120,7 +120,8 @@ pub fn compute(trace: &Trace) -> NsysDataResult<NvtxNesting> {
         return Ok(HashMap::new());
     }
 
-    Ok(compute_from_rows(rows))
+    let pool = trace.build_query_worker_pool()?;
+    Ok(pool.install(|| compute_from_rows(rows)))
 }
 
 fn trace_has_nvtx(trace: &Trace) -> NsysDataResult<bool> {

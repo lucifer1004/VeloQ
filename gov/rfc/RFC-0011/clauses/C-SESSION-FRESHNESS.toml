@@ -1,0 +1,32 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SESSION-FRESHNESS"
+title = "Session identity and freshness"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MAY reuse resident state only when it can prove that the requested profile resolves to equivalent source evidence, the source kind and wire version match, every documented query-affecting configuration input is equivalent, and the applicable source and generated-artifact freshness rules still hold.
+
+Profile path aliasing, input identity, artifact fingerprinting, and freshness MUST use [[RFC-0005]] and the applicable source RFC rather than daemon-specific weaker rules.
+
+Before reuse, the daemon MUST revalidate every input whose change would invalidate the equivalent one-shot query or its generated artifacts.
+
+A detectable identity, version, configuration, or freshness mismatch MUST prevent reuse of the resident state and every memory-cached response derived from it.
+
+The daemon MUST NOT return a memory-cached response unless the command arguments and all documented invocation inputs that can change response meaning are equivalent to those that produced the response.
+
+When reuse eligibility or freshness cannot be proven, the daemon MUST discard or bypass the affected memory state and execute through a correctness-preserving path.
+
+Daemon memory state MUST remain disposable and MUST NOT become the authoritative copy of reusable profile evidence.
+
+Persistent acceleration artifacts MUST follow the ownership, freshness, atomic publication, concurrency, and cleanup requirements in [[RFC-0005]].
+
+An operation that replaces or removes persistent artifacts MUST coordinate with resident sessions so later requests cannot reuse stale open handles or cached responses.
+
+The private representation of session identities, fingerprints, and cache keys is an implementation decision.
+
+**Rationale:** A long-lived process extends the lifetime of open handles and decoded state. Behavioral reuse eligibility preserves source freshness without turning one cache-key encoding into a public contract."""

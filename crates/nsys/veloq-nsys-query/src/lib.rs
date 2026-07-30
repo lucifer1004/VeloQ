@@ -23,6 +23,7 @@ pub mod nvtx_parent;
 pub mod nvtx_projection;
 pub mod nvtx_reverse;
 mod query_sql;
+pub mod resident_intervals;
 pub mod row_id;
 pub mod search;
 pub mod slices;

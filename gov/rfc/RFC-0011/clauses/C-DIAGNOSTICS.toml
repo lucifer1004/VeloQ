@@ -1,0 +1,37 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-DIAGNOSTICS"
+title = "Daemon diagnostics"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Every daemon-specific handled failure covered by this RFC MUST populate `error.code` with one of these stable codes:
+
+- `daemon.absent`: `--daemon required` found no live current-user daemon.
+- `daemon.unresponsive`: `--daemon required` safely identified a live owner but the pre-request compatibility and capability exchange did not finish by the connection deadline.
+- `daemon.incompatible`: a live daemon exists but the client and daemon cannot establish compatible query execution.
+- `daemon.unsupported`: the selected source or command does not support daemon execution.
+- `daemon.resource-pressure`: a compatible supported request was accepted but could not enter active execution within the configured admission limits and deadline.
+- `daemon.cancelled`: an accepted request was cancelled and no completed query response is returned.
+- `daemon.execution-indeterminate`: an execution request was transmitted and the client cannot prove pre-acceptance rejection or obtain a terminal outcome.
+- `daemon.config-conflict`: `daemon start` found a compatible starting or ready daemon whose effective setting conflicts with an explicitly requested setting.
+- `daemon.invalid-config`: a daemon resource, routing, or lifecycle setting is malformed, overflows, or violates its stated integer domain.
+- `daemon.lifecycle-failed`: a lifecycle operation cannot safely establish, inspect, stop, or release current-user singleton ownership and no narrower code applies.
+
+The meanings of these codes MUST NOT be reused for a different failure category.
+
+Absence, unresponsiveness, incompatibility, and unsupported capability in `auto` mode are routing outcomes rather than errors when safe one-shot fallback occurs.
+
+A successful `daemon status` row with state `unresponsive` reports observed lifecycle state and MUST NOT be encoded as `daemon.lifecycle-failed`. `daemon.lifecycle-failed` remains the error for a requested lifecycle mutation or bounded transition that cannot be completed safely.
+
+A daemon lifecycle error MUST use source `{"kind":"veloq","version":"v1"}`, where `v1` is the daemon-lifecycle meta-source wire version, command `daemon`, and MUST omit `trace` and `trace_span`.
+
+A daemon-routed trace-query error MUST preserve the equivalent one-shot source, command, and trace context as required by [[RFC-0011:C-EQUIVALENCE]].
+
+A diagnostic hint MAY recommend an explicit `--daemon off` invocation, but the client MUST NOT perform that replay after acceptance or indeterminate ownership.
+
+**Rationale:** Stable error codes let agents distinguish safe routing fallback, a live-but-unresponsive endpoint, unsupported capability, pressure, cancellation, unsafe replay, and lifecycle repair without parsing human messages."""

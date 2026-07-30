@@ -1,0 +1,44 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-LIFECYCLE"
+title = "Daemon lifecycle"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+VeloQ MUST expose explicit `daemon start`, `daemon stop`, and `daemon status` lifecycle commands.
+
+Each lifecycle command MUST accept `--timeout-ms <N>` as its maximum elapsed wait for a control response or requested state transition. `N` MUST be a decimal integer from 1 through 600,000 inclusive, and the default MUST be 30,000 milliseconds.
+
+A query invocation MUST NOT start a daemon process, replace a daemon process, or create a daemon endpoint.
+
+At most one live VeloQ daemon MAY own the current user's daemon endpoint at a time, regardless of client, daemon, or private-protocol version.
+
+`daemon start` MUST acquire singleton ownership atomically before creating a daemon. Simultaneous compatible starts with equivalent requested daemon resource configuration MUST converge on one daemon and MUST each return success only after that daemon is ready.
+
+When a compatible daemon is already ready, `daemon start` with no explicitly conflicting daemon resource configuration MUST be idempotent and return success describing the existing daemon.
+
+When a compatible daemon is `starting`, a start with equivalent or unspecified daemon resource settings MUST wait for `ready` until its lifecycle deadline. It MUST return success if readiness is reached and `daemon.lifecycle-failed` if the deadline expires first.
+
+When any explicitly supplied daemon resource setting differs from a compatible `starting` or `ready` daemon's effective setting, `daemon start` MUST leave the daemon unchanged and return `daemon.config-conflict`.
+
+When the singleton is `stopping`, `daemon start` MUST wait for ownership release, then MAY acquire ownership and create the requested daemon. It MUST return success only if the new daemon becomes `ready` before the same lifecycle deadline; otherwise it MUST return `daemon.lifecycle-failed` and MUST NOT create a second owner.
+
+When a live daemon is incompatible with the invoking client, `daemon start` MUST NOT start or replace another daemon and MUST return `daemon.incompatible`.
+
+When singleton ownership belongs to a live daemon that cannot be queried before the lifecycle deadline, `daemon start` MUST NOT create another daemon and MUST return `daemon.lifecycle-failed`.
+
+`daemon stop` MUST be idempotent: it MUST return success with state `stopped` when no live daemon owns the endpoint.
+
+For a live current-user daemon, `daemon stop` MUST stop admission of new requests, allow active requests to finish for no longer than the lesser of the configured shutdown grace and the remaining lifecycle deadline, request cancellation after that grace, and return success only after singleton ownership has been released. If release cannot be confirmed before the lifecycle deadline, it MUST return `daemon.lifecycle-failed` and MUST NOT report state `stopped`. This lifecycle operation MUST remain possible when the query protocol is incompatible, without accepting query requests across that incompatibility.
+
+VeloQ MUST NOT signal a process, replace an endpoint, or remove a stale endpoint unless it has established current-user ownership and protected against process-identity reuse. If it cannot establish those facts, the lifecycle operation MUST fail without that unsafe mutation.
+
+`daemon status` MUST return a successful structured response for stopped, starting, ready, stopping, incompatible, and unresponsive states and MUST NOT mutate daemon state. A safely identified live owner that does not complete status control exchange before the lifecycle deadline MUST be reported as `unresponsive`, not as a lifecycle error.
+
+Lifecycle command responses MUST follow [[RFC-0011:C-OBSERVABILITY]], [[RFC-0002]], and [[RFC-0003]].
+
+**Rationale:** Explicit manual lifecycle keeps long-lived resource use intentional. A version-independent singleton, bounded transitions, and fully defined idempotent outcomes prevent upgrades, races, and stale endpoints from creating multiple daemons or unsafe process replacement."""

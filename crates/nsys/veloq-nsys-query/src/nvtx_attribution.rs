@@ -226,7 +226,7 @@ pub fn build(pattern: &str, kinds: &[EventKind], trace: &Trace) -> NsysQueryResu
 }
 
 fn gpu_attributed_rowids_cte(trace: &Trace, view: &str, table: &str, alias: &str) -> String {
-    let process_join = veloq_nsys_data::process_lateral_join_sql(
+    let process = veloq_nsys_data::process_sql_projection(
         trace,
         table,
         alias,
@@ -243,8 +243,10 @@ fn gpu_attributed_rowids_cte(trace: &Trace, view: &str, table: &str, alias: &str
              AND CAST({alias}.deviceId  AS INTEGER) = mr.device_id
              AND CAST({alias}.contextId AS BIGINT)  = mr.context_id
             {process_join}
-            WHERE proc.process_id = mr.native_pid
-        )"#
+            WHERE {process_expr} = mr.native_pid
+        )"#,
+        process_expr = process.expr,
+        process_join = process.join,
     )
 }
 

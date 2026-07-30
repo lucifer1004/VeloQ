@@ -1,0 +1,22 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ACCELERATION"
+title = "Query acceleration layers"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MAY accelerate a query by reusing open profile context, prepared query state, decoded source models, exact query responses, or source-specific reusable query structures.
+
+A supported query MUST retain a correctness-preserving raw or existing sidecar query path when an optional accelerator is absent, stale, discarded, or does not cover the request.
+
+An optimization MUST NOT bypass validation, guards, truncation reporting, response metadata, or source-specific evidence semantics that apply to the equivalent one-shot query.
+
+A source-specific persistent accelerator MUST follow [[RFC-0005]]. If it creates a new user-visible artifact or changes source-visible freshness, cleanup, or readiness behavior, the applicable source RFC MUST specify that artifact before release.
+
+This RFC establishes no numeric latency or throughput guarantee. Any VeloQ-authored or project-published performance claim MUST define the workload class, cold or warm state, dataset characteristics, statistic, and measurement method using reproducible leak-safe evidence under [[RFC-0001:C-PERFORMANCE-CENTER]]. Claims for repeated drill workflows and scan-dominated workflows MUST be reported separately.
+
+**Rationale:** Resident reuse and persistent evidence address different costs, but both must remain behind the same correctness contract. Measurable release claims require representative evidence rather than adjectives such as “interactive” or “fast.”"""

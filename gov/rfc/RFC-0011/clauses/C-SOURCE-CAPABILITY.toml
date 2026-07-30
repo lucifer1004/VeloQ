@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SOURCE-CAPABILITY"
+title = "Source and command capability"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Daemon routing and lifecycle MUST remain source-neutral under the shared source model in [[RFC-0004]].
+
+A source or individual command MAY support daemon execution, resident reuse, exact-response caching, and persistent scan acceleration independently.
+
+Execution support MUST be determined by the private compatibility and capability exchange in [[RFC-0011:C-PROTOCOL]]. This RFC defines no public capability-list command or stable capability vocabulary.
+
+Unsupported source or command execution MUST follow the `auto` or `required` behavior in [[RFC-0011:C-ROUTING]] and use `daemon.unsupported` when a diagnostic is required.
+
+Adding daemon execution or memory-only acceleration to a source or command MUST NOT by itself change that source's wire version.
+
+A source-specific persistent accelerator that creates user-visible artifacts or changes source payload semantics MUST be governed by [[RFC-0005]] and an amendment to the applicable source RFC.
+
+The set of supported sources and commands MAY expand by release. A release-specific minimum rollout and its verification belong to a governed Work Item unless a later RFC makes that set a durable product guarantee.
+
+**Rationale:** Private capability negotiation permits staged NSys, PyTorch, NCU, and future-source adoption without creating another public discovery schema or forcing unrelated source-version changes."""

@@ -81,17 +81,22 @@ fn flatten_row(prefix: &str, value: &serde_json::Value, out: &mut BTreeMap<Strin
     }
 }
 
-pub fn emit_tabular<T: serde::Serialize>(
+pub fn render_tabular<T: serde::Serialize>(
     response: &T,
     command: &str,
     trace: &str,
     fmt: veloq_core::OutputFormat,
+    output: &mut veloq_core::SourceExecution,
 ) -> TabularResult<()> {
     let view = generic_rows_view(response);
     match fmt {
         veloq_core::OutputFormat::Json => {}
-        veloq_core::OutputFormat::Csv => veloq_core::tabular::emit_csv(&view, command, trace)?,
-        veloq_core::OutputFormat::Table => veloq_core::tabular::emit_table(&view, command, trace)?,
+        veloq_core::OutputFormat::Csv => {
+            output.write_stdout(veloq_core::tabular::render_csv(&view, command, trace)?);
+        }
+        veloq_core::OutputFormat::Table => {
+            output.write_stdout(veloq_core::tabular::render_table(&view, command, trace));
+        }
     }
     Ok(())
 }

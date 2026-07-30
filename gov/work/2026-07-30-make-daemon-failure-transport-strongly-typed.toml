@@ -1,0 +1,39 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-002"
+title = "Make daemon failure transport strongly typed"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011:C-PROTOCOL",
+    "RFC-0011:C-DIAGNOSTICS",
+    "RFC-0011:C-ROUTING",
+]
+
+[content]
+description = "Replace stringly typed daemon failure codes in the version-coupled local IPC protocol with a private serialized enum so server rejection/terminal failure construction and client handling remain typed until the final public diagnostic envelope projection."
+notes = ["DaemonError is serialized directly in private Rejected and Failed frames. Parallel transport-only failure enums were removed because they duplicated the same variants and added conversion without information."]
+
+[[content.acceptance_criteria]]
+text = "Daemon pre-acceptance rejection and terminal failure frames carry a strongly typed private failure enum rather than a diagnostic-code string"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Client-side string-to-error parsing and unknown-code fallback are removed; exhaustive typed matching preserves ownership and routing semantics"
+status = "done"
+category = "removed"
+
+[[content.acceptance_criteria]]
+text = "Stable daemon.* strings are produced only by the public diagnostic-envelope boundary, with auto fallback and required-mode diagnostics unchanged"
+status = "done"
+category = "changed"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+]

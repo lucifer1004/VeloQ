@@ -47,6 +47,24 @@ pub enum NsysDataError {
         source: duckdb::Error,
     },
 
+    #[error("query worker pool could not be created")]
+    QueryWorkerPoolBuild {
+        #[source]
+        source: rayon::ThreadPoolBuildError,
+    },
+
+    #[error("duckdb memory limit could not be configured")]
+    DuckdbMemoryConfig {
+        #[source]
+        source: duckdb::Error,
+    },
+
+    #[error("duckdb resident memory could not be read")]
+    DuckdbResidentMemoryRead {
+        #[source]
+        source: duckdb::Error,
+    },
+
     #[error("duckdb in-memory connection could not be opened")]
     DuckdbOpenInMemory {
         #[source]
@@ -627,6 +645,18 @@ impl NsysDataError {
 
     pub fn duckdb_thread_config(source: duckdb::Error) -> Self {
         Self::DuckdbThreadConfig { source }
+    }
+
+    pub fn query_worker_pool_build(source: rayon::ThreadPoolBuildError) -> Self {
+        Self::QueryWorkerPoolBuild { source }
+    }
+
+    pub fn duckdb_memory_config(source: duckdb::Error) -> Self {
+        Self::DuckdbMemoryConfig { source }
+    }
+
+    pub fn duckdb_resident_memory_read(source: duckdb::Error) -> Self {
+        Self::DuckdbResidentMemoryRead { source }
     }
 
     pub fn duckdb_open_in_memory(source: duckdb::Error) -> Self {
@@ -1538,6 +1568,13 @@ impl VeloqDiagnostic for NsysDataError {
             }
             Self::ParquetdirNotFound { .. } => ErrorCode::new("nsys.data.parquetdir-not-found"),
             Self::DuckdbThreadConfig { .. } => ErrorCode::new("nsys.data.duckdb-thread-config"),
+            Self::QueryWorkerPoolBuild { .. } => {
+                ErrorCode::new("nsys.data.query-worker-pool-build")
+            }
+            Self::DuckdbMemoryConfig { .. } => ErrorCode::new("nsys.data.duckdb-memory-config"),
+            Self::DuckdbResidentMemoryRead { .. } => {
+                ErrorCode::new("nsys.data.duckdb-resident-memory-read")
+            }
             Self::DuckdbOpenInMemory { .. } => ErrorCode::new("nsys.data.duckdb-open-in-memory"),
             Self::DuckdbSchemaCreate { .. } => ErrorCode::new("nsys.data.duckdb-schema-create"),
             Self::ParquetdirRead { .. } => ErrorCode::new("nsys.data.parquetdir-read"),

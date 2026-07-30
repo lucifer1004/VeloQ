@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-012"
+title = "Parallelize NSys GPU-work sidecar construction"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "RFC-0005:C-FRESHNESS",
+]
+
+[content]
+description = "Reduce cold NSys prep latency for the normalized GPU-work sidecar by retaining one authoritative global ordering pass, executing that pass within the trace's machine-adaptive worker budget, and preserving sidecar rows, ordering, freshness, and query results."
+
+[[content.acceptance_criteria]]
+text = "GPU-work sidecar construction removes redundant per-kind SQL ordering and retains the existing deterministic global row order."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "The authoritative global ordering pass uses the trace's machine-adaptive query worker budget rather than an unbounded global pool or fixed thread count."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Cold and warm prep preserve sidecar schema, freshness, row content, and downstream gaps behavior on synthetic and real profiles."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Prof-profile measurements on a representative large multi-process profile demonstrate the latency and CPU effects of the change."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

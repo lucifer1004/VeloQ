@@ -1,0 +1,45 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-011"
+title = "Eliminate redundant NSys gaps query passes"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "RFC-0006:C-CUDA-IDENTITY",
+    "ADR-0004",
+]
+
+[content]
+description = "Reduce full-trace NSys gaps latency without reducing DuckDB window parallelism by omitting window state for neighbor fields already supplied by post-query name hydration or fixed by the stream partition key, while preserving process-qualified device, stream, trace, filter, ordering, neighbor, auxiliary, and one-shot/resident semantics."
+
+[[content.acceptance_criteria]]
+text = "Device, stream, and trace responses preserve process-qualified keys, half-open windows, filters, ordering, limiting, neighbors, totals, and stream activity for one-shot and resident sources."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Focused differential tests and prof-profile measurements on a representative large multi-process trace demonstrate reduced latency without changing the NSys wire or persistent artifacts."
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Sidecar and resident gaps queries do not carry empty neighbor names through full-trace window states and continue to batch-hydrate the selected neighbor names exactly."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Stream-scope sequencing reuses its stream partition key for the next neighbor instead of maintaining a redundant LEAD stream state."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "GPU-work kind crosses full-trace gaps windows as a compact boundary code and is converted once back to the existing EventKind without introducing a duplicate domain enum."
+status = "done"
+category = "fixed"
+
+[verification]
+required_guards = ["GUARD-NSYS-WIRE-CONTRACT"]

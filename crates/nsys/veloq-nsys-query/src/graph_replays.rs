@@ -191,6 +191,27 @@ struct ReplaySummary {
     graph_exec_id: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ReplaySelection {
+    process_id: i64,
+    device_id: i32,
+    context_id: i64,
+    correlation_id: i64,
+    start_ns: i64,
+}
+
+impl ReplaySummary {
+    fn selection(&self) -> ReplaySelection {
+        ReplaySelection {
+            process_id: self.process_id,
+            device_id: self.device_id,
+            context_id: self.context_id,
+            correlation_id: self.correlation_id,
+            start_ns: self.start_ns,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct NodeEvent {
     kind: String,
@@ -224,9 +245,19 @@ pub fn run<P: AsRef<Path>>(
 
     let total_matched = total_matched::<i64, _>(&rows, TotalCarrier::First, |(_, total)| *total)
         .map_err(infallible_count_error)?;
+    let summaries = rows
+        .iter()
+        .map(|(summary, _)| summary.clone())
+        .collect::<Vec<_>>();
+    let launchers = find_launchers(&trace, &summaries)?;
+    let mut node_events = match mode {
+        CaptureMode::GraphNodes => load_node_events(&trace, &summaries)?,
+        CaptureMode::GraphTrace | CaptureMode::None => HashMap::new(),
+    };
     let mut out_rows = Vec::with_capacity(rows.len());
     for (summary, _) in rows.drain(..) {
-        let launcher = find_launcher(&trace, &summary)?;
+        let selection = summary.selection();
+        let launcher = launchers.get(&selection).copied();
         let synthetic = SyntheticId::pack(
             summary.process_id as u64,
             summary.device_id as u64,
@@ -241,7 +272,7 @@ pub fn run<P: AsRef<Path>>(
         let (busy_ns, top_nodes, decomposition_available) = match mode {
             CaptureMode::GraphTrace => (summary.end_ns - summary.start_ns, Vec::new(), false),
             CaptureMode::GraphNodes => {
-                let events = load_node_events(&trace, &summary)?;
+                let events = node_events.remove(&selection).unwrap_or_default();
                 let busy = busy_ns(events.iter().map(|e| (e.start_ns, e.end_ns)).collect());
                 let nodes = top_nodes(
                     &events,
@@ -328,6 +359,13 @@ fn query_graph_trace(
 ) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
     let mut params = Vec::new();
     let (scope_cte, scoped_join) = launch_scope_sql(trace, req.nvtx.as_deref(), &mut params)?;
+    let process = veloq_nsys_data::process_sql_projection(
+        trace,
+        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
+        "t",
+        "proc",
+        "t.start",
+    );
     let mut where_parts = vec![
         "t.correlationId IS NOT NULL".to_string(),
         "t.start IS NOT NULL".to_string(),
@@ -339,7 +377,7 @@ fn query_graph_trace(
         params.push(Value::BigInt(end));
     }
     if let Some(process_id) = req.process_id {
-        where_parts.push("proc.process_id = ?".to_string());
+        where_parts.push(format!("{} = ?", process.expr));
         params.push(Value::BigInt(process_id));
     }
     if let Some(device) = req.device {
@@ -350,19 +388,12 @@ fn query_graph_trace(
     let order_by = order_by_sql(req.sort.as_ref())?;
     params.push(Value::BigInt(req.limit as i64));
 
-    let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
-        trace,
-        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
-        "t",
-        "proc",
-        "t.start",
-    );
     let sql = format!(
         r#"
         WITH {scope_cte}
         base AS (
             SELECT
-                proc.process_id AS process_id,
+                {process_expr} AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.correlationId AS BIGINT) AS correlation_id,
@@ -393,6 +424,8 @@ fn query_graph_trace(
         ORDER BY {order_by}
         LIMIT ?
         "#,
+        process_expr = process.expr,
+        process_join = process.join,
         total_matched = total_matched_bigint_expr(),
     );
 
@@ -510,7 +543,7 @@ fn replay_summary_row(row: &duckdb::Row<'_>) -> Result<(ReplaySummary, i64), duc
 fn node_event_subqueries(trace: &Trace) -> Vec<String> {
     let mut out = Vec::new();
     if trace.table_exists("CUPTI_ACTIVITY_KIND_KERNEL") {
-        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+        let process = veloq_nsys_data::process_sql_projection(
             trace,
             "CUPTI_ACTIVITY_KIND_KERNEL",
             "t",
@@ -522,7 +555,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
             SELECT
                 'kernel' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
-                proc.process_id AS process_id,
+                {process_expr} AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -541,11 +574,13 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.contextId IS NOT NULL
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
-            "#
+            "#,
+            process_expr = process.expr,
+            process_join = process.join,
         ));
     }
     if trace.table_exists("CUPTI_ACTIVITY_KIND_MEMCPY") {
-        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+        let process = veloq_nsys_data::process_sql_projection(
             trace,
             "CUPTI_ACTIVITY_KIND_MEMCPY",
             "t",
@@ -557,7 +592,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
             SELECT
                 'memcpy' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
-                proc.process_id AS process_id,
+                {process_expr} AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -575,11 +610,13 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.contextId IS NOT NULL
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
-            "#
+            "#,
+            process_expr = process.expr,
+            process_join = process.join,
         ));
     }
     if trace.table_exists("CUPTI_ACTIVITY_KIND_MEMSET") {
-        let process_join = veloq_nsys_data::cuda_identity::process_lateral_join_sql(
+        let process = veloq_nsys_data::process_sql_projection(
             trace,
             "CUPTI_ACTIVITY_KIND_MEMSET",
             "t",
@@ -591,7 +628,7 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
             SELECT
                 'memset' AS kind,
                 CAST(t.rowid AS BIGINT) AS rowid,
-                proc.process_id AS process_id,
+                {process_expr} AS process_id,
                 CAST(t.deviceId AS INTEGER) AS device_id,
                 CAST(t.contextId AS BIGINT) AS context_id,
                 CAST(t.streamId AS BIGINT) AS stream_id,
@@ -609,7 +646,9 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
               AND t.contextId IS NOT NULL
               AND t.start IS NOT NULL
               AND t."end" IS NOT NULL
-            "#
+            "#,
+            process_expr = process.expr,
+            process_join = process.join,
         ));
     }
     out
@@ -725,78 +764,156 @@ fn order_by_sql(sort: Option<&SortSpec>) -> NsysQueryResult<String> {
     ))
 }
 
-fn find_launcher(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Option<RowId>> {
-    if !trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
-        || !trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO")
-    {
-        return Ok(None);
+fn selected_replays_cte(replays: &[ReplaySummary]) -> (String, Vec<Value>) {
+    let values = std::iter::repeat_n("(?, ?, ?, ?, ?)", replays.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut params = Vec::with_capacity(replays.len() * 5);
+    for replay in replays {
+        params.extend([
+            Value::BigInt(replay.process_id),
+            Value::Int(replay.device_id),
+            Value::BigInt(replay.context_id),
+            Value::BigInt(replay.correlation_id),
+            Value::BigInt(replay.start_ns),
+        ]);
     }
-    let sql = r#"
-        SELECT CAST(r.rowid AS BIGINT) AS rowid
-        FROM nsight.CUPTI_ACTIVITY_KIND_RUNTIME r
-        LEFT JOIN nsight.StringIds s ON r.nameId = s.id
-        JOIN nsight.TARGET_INFO_CUDA_CONTEXT_INFO c
-          ON CAST(c.processId AS BIGINT) = CAST(((r.globalTid >> 24) & 16777215) AS BIGINT)
-        WHERE CAST(c.processId AS BIGINT) = ?
-          AND CAST(c.deviceId AS INTEGER) = ?
-          AND CAST(c.contextId AS BIGINT) = ?
-          AND CAST(r.correlationId AS BIGINT) = ?
-        ORDER BY
-          CASE WHEN COALESCE(s.value, '') LIKE 'cudaGraphLaunch%' THEN 0 ELSE 1 END ASC,
-          CASE WHEN r.start <= ? THEN 0 ELSE 1 END ASC,
-          ABS(r.start - ?) ASC,
-          r.rowid ASC
-        LIMIT 1
-        "#;
-    let params = [
-        Value::BigInt(replay.process_id),
-        Value::Int(replay.device_id),
-        Value::BigInt(replay.context_id),
-        Value::BigInt(replay.correlation_id),
-        Value::BigInt(replay.start_ns),
-        Value::BigInt(replay.start_ns),
-    ];
-    lookup_launcher_row(trace.conn(), sql, &params)
+    (
+        format!(
+            "selected_replays(\
+                process_id, device_id, context_id, correlation_id, replay_start_ns\
+             ) AS (VALUES {values})"
+        ),
+        params,
+    )
 }
 
-fn lookup_launcher_row(
+fn find_launchers(
+    trace: &Trace,
+    replays: &[ReplaySummary],
+) -> NsysQueryResult<HashMap<ReplaySelection, RowId>> {
+    if replays.is_empty()
+        || !trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
+        || !trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO")
+    {
+        return Ok(HashMap::new());
+    }
+    let (selected_replays, params) = selected_replays_cte(replays);
+    let sql = format!(
+        r#"
+        WITH {selected_replays},
+        ranked AS (
+            SELECT
+                q.process_id,
+                q.device_id,
+                q.context_id,
+                q.correlation_id,
+                q.replay_start_ns,
+                CAST(r.rowid AS BIGINT) AS launcher_rowid,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        q.process_id,
+                        q.device_id,
+                        q.context_id,
+                        q.correlation_id,
+                        q.replay_start_ns
+                    ORDER BY
+                        CASE WHEN COALESCE(s.value, '') LIKE 'cudaGraphLaunch%'
+                             THEN 0 ELSE 1 END ASC,
+                        CASE WHEN r.start <= q.replay_start_ns THEN 0 ELSE 1 END ASC,
+                        ABS(r.start - q.replay_start_ns) ASC,
+                        r.rowid ASC
+                ) AS candidate_rank
+            FROM selected_replays q
+            JOIN nsight.TARGET_INFO_CUDA_CONTEXT_INFO c
+              ON CAST(c.processId AS BIGINT) = q.process_id
+             AND CAST(c.deviceId AS INTEGER) = q.device_id
+             AND CAST(c.contextId AS BIGINT) = q.context_id
+            JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r
+              ON CAST(((r.globalTid >> 24) & 16777215) AS BIGINT) = q.process_id
+             AND CAST(r.correlationId AS BIGINT) = q.correlation_id
+            LEFT JOIN nsight.StringIds s ON r.nameId = s.id
+        )
+        SELECT
+            process_id,
+            device_id,
+            context_id,
+            correlation_id,
+            replay_start_ns,
+            launcher_rowid
+        FROM ranked
+        WHERE candidate_rank = 1
+        "#,
+    );
+    hydrate_launchers(trace.conn(), &sql, &params)
+}
+
+fn hydrate_launchers(
     conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-) -> NsysQueryResult<Option<RowId>> {
-    crate::query_sql::exec::query_optional_row(
+) -> NsysQueryResult<HashMap<ReplaySelection, RowId>> {
+    let rows = crate::query_sql::exec::query_rows(
         conn,
         sql,
         params,
         crate::query_sql::exec::GRAPH_REPLAYS_LAUNCHER_LOOKUP,
-        |row| Ok(RowId::new(crate::EventKind::Runtime, row.get("rowid")?)),
-    )
+        |row| {
+            Ok((
+                replay_selection_row(row)?,
+                RowId::new(crate::EventKind::Runtime, row.get("launcher_rowid")?),
+            ))
+        },
+    )?;
+    Ok(rows.into_iter().collect())
 }
 
-fn load_node_events(trace: &Trace, replay: &ReplaySummary) -> NsysQueryResult<Vec<NodeEvent>> {
+fn load_node_events(
+    trace: &Trace,
+    replays: &[ReplaySummary],
+) -> NsysQueryResult<HashMap<ReplaySelection, Vec<NodeEvent>>> {
+    if replays.is_empty() {
+        return Ok(HashMap::new());
+    }
     let subqueries = node_event_subqueries(trace);
     if subqueries.is_empty() {
-        return Ok(Vec::new());
+        return Ok(HashMap::new());
     }
     let union = subqueries.join(" UNION ALL ");
+    let (selected_replays, params) = selected_replays_cte(replays);
     let sql = format!(
         r#"
-        WITH event_rows AS ({union})
-        SELECT kind, name, graph_node_id, stream_id, start_ns, end_ns
-        FROM event_rows
-        WHERE device_id = ?
-          AND process_id = ?
-          AND context_id = ?
-          AND correlation_id = ?
-        ORDER BY start_ns ASC, end_ns ASC, rowid ASC
+        WITH {selected_replays},
+        event_rows AS ({union})
+        SELECT
+            q.process_id,
+            q.device_id,
+            q.context_id,
+            q.correlation_id,
+            q.replay_start_ns,
+            e.kind,
+            e.name,
+            e.graph_node_id,
+            e.stream_id,
+            e.start_ns,
+            e.end_ns
+        FROM selected_replays q
+        JOIN event_rows e
+          ON e.process_id = q.process_id
+         AND e.device_id = q.device_id
+         AND e.context_id = q.context_id
+         AND e.correlation_id = q.correlation_id
+        ORDER BY
+            q.process_id,
+            q.device_id,
+            q.context_id,
+            q.correlation_id,
+            q.replay_start_ns,
+            e.start_ns,
+            e.end_ns,
+            e.rowid
         "#
     );
-    let params = [
-        Value::Int(replay.device_id),
-        Value::BigInt(replay.process_id),
-        Value::BigInt(replay.context_id),
-        Value::BigInt(replay.correlation_id),
-    ];
     hydrate_node_events(trace.conn(), &sql, &params)
 }
 
@@ -804,14 +921,29 @@ fn hydrate_node_events(
     conn: &duckdb::Connection,
     sql: &str,
     params: &[Value],
-) -> NsysQueryResult<Vec<NodeEvent>> {
-    crate::query_sql::exec::query_rows(
+) -> NsysQueryResult<HashMap<ReplaySelection, Vec<NodeEvent>>> {
+    let rows = crate::query_sql::exec::query_rows(
         conn,
         sql,
         params,
         crate::query_sql::exec::GRAPH_REPLAYS_NODE_EVENT,
-        node_event_row,
-    )
+        |row| Ok((replay_selection_row(row)?, node_event_row(row)?)),
+    )?;
+    let mut by_replay = HashMap::new();
+    for (replay, event) in rows {
+        by_replay.entry(replay).or_insert_with(Vec::new).push(event);
+    }
+    Ok(by_replay)
+}
+
+fn replay_selection_row(row: &duckdb::Row<'_>) -> Result<ReplaySelection, duckdb::Error> {
+    Ok(ReplaySelection {
+        process_id: row.get("process_id")?,
+        device_id: row.get("device_id")?,
+        context_id: row.get("context_id")?,
+        correlation_id: row.get("correlation_id")?,
+        start_ns: row.get("replay_start_ns")?,
+    })
 }
 
 fn node_event_row(row: &duckdb::Row<'_>) -> Result<NodeEvent, duckdb::Error> {
@@ -917,6 +1049,7 @@ mod tests {
     fn replay_summary_hydration_sql(sum_expr: &str) -> String {
         format!(
             "SELECT \
+             12345::BIGINT AS process_id, \
              0::INTEGER AS device_id, \
              1::BIGINT AS context_id, \
              2::BIGINT AS correlation_id, \
@@ -938,12 +1071,29 @@ mod tests {
     fn node_event_hydration_sql(graph_node_expr: &str) -> String {
         format!(
             "SELECT \
+             12345::BIGINT AS process_id, \
+             0::INTEGER AS device_id, \
+             1::BIGINT AS context_id, \
+             2::BIGINT AS correlation_id, \
+             10::BIGINT AS replay_start_ns, \
              'kernel' AS kind, \
              'node' AS name, \
              {graph_node_expr} AS graph_node_id, \
              7::BIGINT AS stream_id, \
              10::BIGINT AS start_ns, \
              20::BIGINT AS end_ns"
+        )
+    }
+
+    fn launcher_hydration_sql(rowid_expr: &str) -> String {
+        format!(
+            "SELECT \
+             12345::BIGINT AS process_id, \
+             0::INTEGER AS device_id, \
+             1::BIGINT AS context_id, \
+             2::BIGINT AS correlation_id, \
+             10::BIGINT AS replay_start_ns, \
+             {rowid_expr} AS launcher_rowid"
         )
     }
 
@@ -1059,11 +1209,11 @@ mod tests {
     }
 
     #[test]
-    fn lookup_launcher_row_prepare_error_is_typed() -> Result<()> {
+    fn hydrate_launchers_prepare_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
 
-        let err = match lookup_launcher_row(&conn, "SELECT * FROM", &[]) {
-            Ok(row) => anyhow::bail!("malformed launcher SQL should fail, got {row:?}"),
+        let err = match hydrate_launchers(&conn, "SELECT * FROM", &[]) {
+            Ok(rows) => anyhow::bail!("malformed launcher SQL should fail, got {rows:?}"),
             Err(err) => err,
         };
 
@@ -1079,11 +1229,11 @@ mod tests {
     }
 
     #[test]
-    fn lookup_launcher_row_query_error_is_typed() -> Result<()> {
+    fn hydrate_launchers_query_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
 
-        let err = match lookup_launcher_row(&conn, "SELECT ? AS rowid", &[]) {
-            Ok(row) => anyhow::bail!("unbound launcher SQL parameter should fail, got {row:?}"),
+        let err = match hydrate_launchers(&conn, "SELECT ? AS launcher_rowid", &[]) {
+            Ok(rows) => anyhow::bail!("unbound launcher SQL parameter should fail, got {rows:?}"),
             Err(err) => err,
         };
 
@@ -1099,11 +1249,12 @@ mod tests {
     }
 
     #[test]
-    fn lookup_launcher_row_read_error_is_typed() -> Result<()> {
+    fn hydrate_launchers_read_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
+        let sql = launcher_hydration_sql("'not-rowid'");
 
-        let err = match lookup_launcher_row(&conn, "SELECT 'not-rowid' AS rowid", &[]) {
-            Ok(row) => anyhow::bail!("malformed launcher row should fail, got {row:?}"),
+        let err = match hydrate_launchers(&conn, &sql, &[]) {
+            Ok(rows) => anyhow::bail!("malformed launcher row should fail, got {rows:?}"),
             Err(err) => err,
         };
 

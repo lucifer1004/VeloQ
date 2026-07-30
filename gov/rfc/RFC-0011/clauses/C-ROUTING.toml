@@ -1,0 +1,34 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-ROUTING"
+title = "Client routing modes"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Every source-owned command that accepts a profile input path and is enumerated by an applicable source RFC MUST accept `--daemon <auto|off|required>` as a per-invocation routing selector. Source `schema` commands and source-neutral meta commands are not trace-query commands and MUST NOT be routed through the daemon.
+
+Every such trace-query invocation MUST also accept `--daemon-connect-timeout-ms <N>`, where `N` is a decimal integer from 1 through 600,000 inclusive and the default is 1,000 milliseconds. It bounds endpoint connection plus compatibility and capability exchange before any execution request is transmitted. It has no effect in `off` mode.
+
+`--daemon auto` MUST be the default when the selector is omitted.
+
+These selectors apply only to that invocation. This RFC defines no environment-variable or configuration-file source for query routing, so there is no lower-precedence routing setting.
+
+In `auto` mode, a client MUST route through a compatible active daemon when the private capability exchange reports that the selected source and command support daemon execution.
+
+In `auto` mode, a client MUST execute through the one-shot path when no daemon is active, the live daemon is incompatible, the selected source or command is unsupported, or a safely identified live owner does not complete the pre-request exchange by the connection deadline, provided that no execution request has been transmitted.
+
+In `off` mode, a client MUST execute through the one-shot path without contacting the daemon.
+
+In `required` mode, daemon absence, incompatibility, unsupported source or command capability, or failure to complete the pre-request exchange by the connection deadline MUST produce the corresponding handled diagnostic in [[RFC-0011:C-DIAGNOSTICS]].
+
+A client MAY fall back to one-shot execution after transmitting an execution request only when it receives a positive protocol response that the daemon rejected the request before acceptance.
+
+A client MUST NOT replay through the one-shot path after daemon acceptance or when a transport failure leaves execution ownership indeterminate. Indeterminate ownership MUST return `daemon.execution-indeterminate`.
+
+A trace-query command that cannot execute one-shot independently MUST NOT be described as daemon-capable under this RFC.
+
+**Rationale:** Explicit invocation flags are deterministic for agents and preserve the independently usable one-shot workflow. A bounded pre-request exchange keeps an unresponsive optional daemon from taking away default-mode availability, while positive pre-acceptance rejection remains the only safe fallback point after transmission."""

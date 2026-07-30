@@ -26,7 +26,7 @@ mod scope;
 
 use std::path::Path;
 use veloq_core::time::{TimePoint, TimeWindow};
-use veloq_core::{OutputFormat, SortKeyDef, TraceSpan, guards};
+use veloq_core::{OutputFormat, SortKeyDef, SourceExecution, TraceSpan, guards};
 use veloq_nsys_query::search::SearchRequest;
 use veloq_nsys_query::stats::{ALLOWED_KINDS as STATS_ALLOWED_KINDS, GroupBy, StatsRequest};
 use veloq_nsys_query::{EventKind, RowId};
@@ -34,7 +34,7 @@ use veloq_vis::{VizAggregation, VizLabelMode};
 
 use crate::cli::{Cmd, VizCmd};
 use crate::error::{NsysSourceError, NsysSourceResult};
-use crate::output::{emit, emit_meta, render, render_with_meta};
+use crate::output::{RenderContext, emit_meta, emit_with_evidence};
 use crate::payloads::{CorrelationStatsPayload, SchemaPayload};
 use crate::schema::schema_value_for;
 use crate::views;
@@ -49,6 +49,16 @@ use scope::{
     resolve_or_refuse, scope_request_from, scope_request_from_device,
     scope_request_from_device_with_implicit_all,
 };
+
+fn render_context<'a>(
+    fmt: OutputFormat,
+    trace: &'a Path,
+    evidence_trace: &'a Path,
+    trace_span: Option<TraceSpan>,
+    verb: &'a str,
+) -> RenderContext<'a> {
+    RenderContext::new(fmt, trace, trace_span, verb).with_evidence_trace(evidence_trace)
+}
 
 /// Gate for hidden flags. Returns `Ok(())` only when `VELOQ_UNSTABLE=1`
 /// is present in the process environment; otherwise an error with the
@@ -114,7 +124,10 @@ pub fn run(
     cmd: Cmd,
     fmt: OutputFormat,
     trace: Option<&Path>,
+    resolved_trace: Option<&Path>,
+    resident_trace: Option<&veloq_nsys_data::Trace>,
     trace_span: Option<TraceSpan>,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<i32> {
     // Return contract: `Ok(0)` on success, `Ok(1)` when this dispatch
     // already wrote a structured error envelope to stdout (the
@@ -129,14 +142,30 @@ pub fn run(
         // CSV / table N/A for this verb — JSON-only meta endpoint.
         let _ = fmt;
         let schema = schema_value_for(&target)?;
-        emit_meta("schema", SchemaPayload { target, schema })?;
+        emit_meta("schema", SchemaPayload { target, schema }, output)?;
         return Ok(0);
     }
     let trace = trace.ok_or(NsysSourceError::MissingTracePath)?;
+    let query_trace = resolved_trace.unwrap_or(trace);
     match cmd {
         Cmd::Summary { .. } => {
-            let data = veloq_nsys_query::summary::run(trace)?;
-            render(fmt, trace, trace_span, "summary", data, views::summary_view)?;
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::summary::run_with_trace(trace)?,
+                None => veloq_nsys_query::summary::run(query_trace)?,
+            };
+            let trace_span = trace_span.or_else(|| {
+                resident_trace
+                    .and_then(|trace| trace.meta_cache().ok())
+                    .map(|cache| TraceSpan {
+                        origin_ns: cache.origins.primary.start_ns,
+                        span_ns: cache.origins.primary.duration_ns(),
+                    })
+            });
+            render_context(fmt, trace, query_trace, trace_span, "summary").render(
+                data,
+                views::summary_view,
+                output,
+            )?;
         }
 
         Cmd::Stats {
@@ -162,11 +191,13 @@ pub fn run(
                     // EnvelopeError with `meta.warnings[multi-device-ambiguous]`
                     // and we return without running the query.
                     let scope = match resolve_or_refuse(
-                        trace,
+                        query_trace,
+                        resident_trace,
                         fmt,
                         "stats",
                         trace_span,
                         scope_request_from(&location),
+                        output,
                     )? {
                         Some(s) => s,
                         None => return Ok(1),
@@ -176,25 +207,26 @@ pub fn run(
                     let kind_echo = kinds_csv(&kinds);
                     let sort = parse_sort_spec(&sort)?;
                     let time_window = common.time_window()?;
-                    let data = veloq_nsys_query::stats::run(
-                        trace,
-                        StatsRequest {
-                            kinds,
-                            group_by,
-                            time_window,
-                            nvtx: gpu.nvtx.clone(),
-                            process_id: scope.applied.native_pid,
-                            // Use the resolver-locked device (handles
-                            // single-device auto-resolve) over the raw
-                            // CLI value.
-                            device: scope.applied.device,
-                            stream: scope.applied.stream,
-                            hist,
-                            sort,
-                            limit: common.limit_or(50)?,
-                            collapse_versioned,
-                        },
-                    )?;
+                    let request = StatsRequest {
+                        kinds,
+                        group_by,
+                        time_window,
+                        nvtx: gpu.nvtx.clone(),
+                        process_id: scope.applied.native_pid,
+                        // Use the resolver-locked device (handles
+                        // single-device auto-resolve) over the raw
+                        // CLI value.
+                        device: scope.applied.device,
+                        stream: scope.applied.stream,
+                        hist,
+                        sort,
+                        limit: common.limit_or(50)?,
+                        collapse_versioned,
+                    };
+                    let data = match resident_trace {
+                        Some(trace) => veloq_nsys_query::stats::run_with_trace(trace, request)?,
+                        None => veloq_nsys_query::stats::run(query_trace, request)?,
+                    };
                     let next_steps = stats_next_steps(&data.rows, &scope);
                     let projected = projected_scope(
                         &scope,
@@ -202,7 +234,7 @@ pub fn run(
                         gpu.nvtx.as_deref(),
                         data.time_window_ns,
                     );
-                    let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+                    let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
                     let meta = meta_with_scope(
                         &scope,
                         kind_echo,
@@ -211,15 +243,9 @@ pub fn run(
                         next_steps,
                         warnings,
                     );
-                    render_with_meta(
-                        fmt,
-                        trace,
-                        trace_span,
-                        "stats",
-                        meta,
-                        data,
-                        views::stats_view,
-                    )?;
+                    render_context(fmt, trace, query_trace, trace_span, "stats")
+                        .with_meta(meta)
+                        .render(data, views::stats_view, output)?;
                 }
                 crate::cli::StatsBy::Size => {
                     require_unstable("--by size")?;
@@ -272,17 +298,19 @@ pub fn run(
                         )
                     };
                     let scope = match resolve_or_refuse(
-                        trace,
+                        query_trace,
+                        resident_trace,
                         fmt,
                         "stats-by-size",
                         trace_span,
                         scope_request_from(&location),
+                        output,
                     )? {
                         Some(s) => s,
                         None => return Ok(1),
                     };
                     let data = veloq_nsys_query::stats_by_size::run(
-                        trace,
+                        query_trace,
                         veloq_nsys_query::stats_by_size::StatsBySizeRequest {
                             kinds,
                             group_by,
@@ -294,13 +322,10 @@ pub fn run(
                             limit: common.limit_or(50)?,
                         },
                     )?;
-                    render(
-                        fmt,
-                        trace,
-                        trace_span,
-                        "stats-by-size",
+                    render_context(fmt, trace, query_trace, trace_span, "stats-by-size").render(
                         data,
                         views::stats_by_size_view,
+                        output,
                     )?;
                 }
             }
@@ -318,11 +343,13 @@ pub fn run(
             ..
         } => {
             let scope = match resolve_or_refuse(
-                trace,
+                query_trace,
+                resident_trace,
                 fmt,
                 "search",
                 trace_span,
                 scope_request_from(&location),
+                output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
@@ -334,23 +361,24 @@ pub fn run(
                 None => None,
             };
             let sort = parse_sort_spec(&sort)?;
-            let data = veloq_nsys_query::search::run(
-                trace,
-                SearchRequest {
-                    kinds,
-                    name_glob: name,
-                    name_regex,
-                    duration,
-                    time_window: common.time_window()?,
-                    nvtx: gpu.nvtx.clone(),
-                    process_id: scope.applied.native_pid,
-                    device: scope.applied.device,
-                    stream: scope.applied.stream,
-                    sort,
-                    limit: common.limit_or(100)?,
-                    with_nvtx,
-                },
-            )?;
+            let request = SearchRequest {
+                kinds,
+                name_glob: name,
+                name_regex,
+                duration,
+                time_window: common.time_window()?,
+                nvtx: gpu.nvtx.clone(),
+                process_id: scope.applied.native_pid,
+                device: scope.applied.device,
+                stream: scope.applied.stream,
+                sort,
+                limit: common.limit_or(100)?,
+                with_nvtx,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::search::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::search::run(query_trace, request)?,
+            };
             let next_steps = search_next_steps(&data.rows, &scope);
             let projected = projected_scope(
                 &scope,
@@ -358,7 +386,7 @@ pub fn run(
                 gpu.nvtx.as_deref(),
                 data.time_window_ns,
             );
-            let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+            let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta = meta_with_scope(
                 &scope,
                 kind_echo,
@@ -367,15 +395,9 @@ pub fn run(
                 next_steps,
                 warnings,
             );
-            render_with_meta(
-                fmt,
-                trace,
-                trace_span,
-                "search",
-                meta,
-                data,
-                views::search_view,
-            )?;
+            render_context(fmt, trace, query_trace, trace_span, "search")
+                .with_meta(meta)
+                .render(data, views::search_view, output)?;
         }
 
         Cmd::Inspect { row_ids, .. } => {
@@ -383,8 +405,15 @@ pub fn run(
                 .iter()
                 .map(|s| parse_row_id(s))
                 .collect::<NsysSourceResult<_>>()?;
-            let data = veloq_nsys_query::inspect::run(trace, &parsed)?;
-            render(fmt, trace, trace_span, "inspect", data, views::inspect_view)?;
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::inspect::run_with_trace(trace, &parsed)?,
+                None => veloq_nsys_query::inspect::run(query_trace, &parsed)?,
+            };
+            render_context(fmt, trace, query_trace, trace_span, "inspect").render(
+                data,
+                views::inspect_view,
+                output,
+            )?;
         }
 
         Cmd::Correlate { row_ids, .. } => {
@@ -392,14 +421,14 @@ pub fn run(
                 .iter()
                 .map(|s| parse_row_id(s))
                 .collect::<NsysSourceResult<_>>()?;
-            let data = veloq_nsys_query::correlate::run(trace, &parsed)?;
-            render(
-                fmt,
-                trace,
-                trace_span,
-                "correlate",
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::correlate::run_with_trace(trace, &parsed)?,
+                None => veloq_nsys_query::correlate::run(query_trace, &parsed)?,
+            };
+            render_context(fmt, trace, query_trace, trace_span, "correlate").render(
                 data,
                 views::correlate_view,
+                output,
             )?;
         }
 
@@ -412,18 +441,20 @@ pub fn run(
             ..
         } => {
             let scope = match resolve_or_refuse(
-                trace,
+                query_trace,
+                resident_trace,
                 fmt,
                 "graph-replays",
                 trace_span,
                 scope_request_from_device(&location),
+                output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
             };
             let sort = parse_sort_spec(&sort)?;
             let data = veloq_nsys_query::graph_replays::run(
-                trace,
+                query_trace,
                 veloq_nsys_query::graph_replays::GraphReplaysRequest {
                     time_window: common.time_window()?,
                     nvtx: nvtx.clone(),
@@ -435,7 +466,7 @@ pub fn run(
                 },
             )?;
             let projected = projected_scope(&scope, None, nvtx.as_deref(), data.time_window_ns);
-            let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+            let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta = meta_with_scope(
                 &scope,
                 None,
@@ -444,15 +475,9 @@ pub fn run(
                 Vec::new(),
                 warnings,
             );
-            render_with_meta(
-                fmt,
-                trace,
-                trace_span,
-                "graph-replays",
-                meta,
-                data,
-                views::graph_replays_view,
-            )?;
+            render_context(fmt, trace, query_trace, trace_span, "graph-replays")
+                .with_meta(meta)
+                .render(data, views::graph_replays_view, output)?;
         }
 
         Cmd::NcuCommand {
@@ -461,16 +486,16 @@ pub fn run(
             let row_id = parse_row_id(&row_id)?;
             let env_policy = veloq_nsys_query::ncu_command::EnvPolicy::parse(&env)?;
             let data = veloq_nsys_query::ncu_command::run(
-                trace,
+                query_trace,
                 veloq_nsys_query::ncu_command::NcuCommandRequest { row_id, env_policy },
             )?;
             if print {
-                print!("{}", data.script);
+                output.write_stdout(data.script);
             } else {
                 if fmt != OutputFormat::Json {
                     return Err(NsysSourceError::ncu_command_unsupported_format(fmt));
                 }
-                emit(trace, trace_span, "ncu-command", data)?;
+                emit_with_evidence(trace, query_trace, trace_span, "ncu-command", data, output)?;
             }
         }
 
@@ -478,37 +503,34 @@ pub fn run(
             location, common, ..
         } => {
             let resolved = match resolve_or_refuse(
-                trace,
+                query_trace,
+                resident_trace,
                 fmt,
                 "concurrency",
                 trace_span,
                 scope_request_from_device_with_implicit_all(&location),
+                output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
             };
-            let data = veloq_nsys_query::concurrency::run(
-                trace,
-                veloq_nsys_query::concurrency::ConcurrencyRequest {
-                    process_id: resolved.applied.native_pid,
-                    device: resolved.applied.device,
-                    time_window: common.time_window()?,
-                    limit: common.limit_or(100)?,
-                },
-            )?;
+            let request = veloq_nsys_query::concurrency::ConcurrencyRequest {
+                process_id: resolved.applied.native_pid,
+                device: resolved.applied.device,
+                time_window: common.time_window()?,
+                limit: common.limit_or(100)?,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::concurrency::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::concurrency::run(query_trace, request)?,
+            };
             let projected = projected_scope(&resolved, None, None, data.time_window_ns);
-            let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+            let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta =
                 meta_with_scope(&resolved, None, None, data.time_window_ns, vec![], warnings);
-            render_with_meta(
-                fmt,
-                trace,
-                trace_span,
-                "concurrency",
-                meta,
-                data,
-                views::concurrency_view,
-            )?;
+            render_context(fmt, trace, query_trace, trace_span, "concurrency")
+                .with_meta(meta)
+                .render(data, views::concurrency_view, output)?;
         }
 
         Cmd::Gaps {
@@ -528,26 +550,35 @@ pub fn run(
             if gap_scope == veloq_nsys_query::gaps::GapScope::Trace {
                 scope_req.implicit_all_devices = true;
             }
-            let resolved = match resolve_or_refuse(trace, fmt, "gaps", trace_span, scope_req)? {
+            let resolved = match resolve_or_refuse(
+                query_trace,
+                resident_trace,
+                fmt,
+                "gaps",
+                trace_span,
+                scope_req,
+                output,
+            )? {
                 Some(s) => s,
                 None => return Ok(1),
             };
-            let data = veloq_nsys_query::gaps::run(
-                trace,
-                veloq_nsys_query::gaps::GapsRequest {
-                    min_ns,
-                    scope: gap_scope,
-                    process_id: resolved.applied.native_pid,
-                    device: resolved.applied.device,
-                    stream: resolved.applied.stream,
-                    time_window: common.time_window()?,
-                    sort,
-                    limit: common.limit_or(100)?,
-                },
-            )?;
+            let request = veloq_nsys_query::gaps::GapsRequest {
+                min_ns,
+                scope: gap_scope,
+                process_id: resolved.applied.native_pid,
+                device: resolved.applied.device,
+                stream: resolved.applied.stream,
+                time_window: common.time_window()?,
+                sort,
+                limit: common.limit_or(100)?,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::gaps::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::gaps::run(query_trace, request)?,
+            };
             let next_steps = gaps_next_steps(&data.rows);
             let projected = projected_scope(&resolved, None, None, data.time_window_ns);
-            let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+            let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta = meta_with_scope(
                 &resolved,
                 None,
@@ -556,7 +587,9 @@ pub fn run(
                 next_steps,
                 warnings,
             );
-            render_with_meta(fmt, trace, trace_span, "gaps", meta, data, views::gaps_view)?;
+            render_context(fmt, trace, query_trace, trace_span, "gaps")
+                .with_meta(meta)
+                .render(data, views::gaps_view, output)?;
         }
 
         Cmd::Timeline {
@@ -567,11 +600,13 @@ pub fn run(
             ..
         } => {
             let scope = match resolve_or_refuse(
-                trace,
+                query_trace,
+                resident_trace,
                 fmt,
                 "timeline",
                 trace_span,
                 scope_request_from(&location),
+                output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
@@ -582,19 +617,20 @@ pub fn run(
                 veloq_nsys_query::timeline::TimelineKindPolicy::from_gpu_work_definition()?;
             let kinds = gpu.kinds(kind_policy.allowed())?;
             let kind_echo = kinds_csv(&kinds);
-            let data = veloq_nsys_query::timeline::run(
-                trace,
-                veloq_nsys_query::timeline::TimelineRequest {
-                    interval_ns,
-                    kinds,
-                    time_window: common.time_window()?,
-                    nvtx: gpu.nvtx.clone(),
-                    process_id: scope.applied.native_pid,
-                    device: scope.applied.device,
-                    stream: scope.applied.stream,
-                    limit: common.limit_or(1000)?,
-                },
-            )?;
+            let request = veloq_nsys_query::timeline::TimelineRequest {
+                interval_ns,
+                kinds,
+                time_window: common.time_window()?,
+                nvtx: gpu.nvtx.clone(),
+                process_id: scope.applied.native_pid,
+                device: scope.applied.device,
+                stream: scope.applied.stream,
+                limit: common.limit_or(1000)?,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::timeline::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::timeline::run(query_trace, request)?,
+            };
             let projected = projected_scope(
                 &scope,
                 kind_echo.as_deref(),
@@ -607,7 +643,7 @@ pub fn run(
             // read the trace span from the sidecar in case the pre-
             // dispatch hook returned None.
             let span_ns = trace_span
-                .or_else(|| veloq_nsys_data::meta_cache::trace_span_for_path(trace))
+                .or_else(|| veloq_nsys_data::meta_cache::trace_span_for_path(query_trace))
                 .map(|s| s.span_ns);
             let warnings =
                 if let Some(w) = guards::check_time_window(projected.time_window_ns, span_ns) {
@@ -623,15 +659,9 @@ pub fn run(
                 Vec::new(),
                 warnings,
             );
-            render_with_meta(
-                fmt,
-                trace,
-                trace_span,
-                "timeline",
-                timeline_meta,
-                data,
-                views::timeline_view,
-            )?;
+            render_context(fmt, trace, query_trace, trace_span, "timeline")
+                .with_meta(timeline_meta)
+                .render(data, views::timeline_view, output)?;
         }
 
         Cmd::Viz {
@@ -663,7 +693,7 @@ pub fn run(
                 VizAggregation::DensityBins
             };
             let data = veloq_nsys_query::viz_timeline::run(
-                trace,
+                query_trace,
                 veloq_nsys_query::viz_timeline::VizTimelineRequest {
                     time_window: viz_time_window(from.as_deref(), to.as_deref())?,
                     tracks,
@@ -682,13 +712,10 @@ pub fn run(
                     },
                 },
             )?;
-            render(
-                fmt,
-                trace,
-                trace_span,
-                "viz.timeline",
+            render_context(fmt, trace, query_trace, trace_span, "viz.timeline").render(
                 data,
                 views::viz_timeline_view,
+                output,
             )?;
         }
 
@@ -703,11 +730,13 @@ pub fn run(
             ..
         } => {
             let scope = match resolve_or_refuse(
-                trace,
+                query_trace,
+                resident_trace,
                 fmt,
                 "slices",
                 trace_span,
                 scope_request_from(&location),
+                output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
@@ -724,21 +753,22 @@ pub fn run(
                 }
                 veloq_nsys_query::slices::SlicesView::Instance
             };
-            let data = veloq_nsys_query::slices::run(
-                trace,
-                veloq_nsys_query::slices::SlicesRequest {
-                    name,
-                    name_regex,
-                    view,
-                    group_by,
-                    time_window: common.time_window()?,
-                    sort,
-                    limit: common.limit_or(100)?,
-                    device: scope.applied.device,
-                    stream: scope.applied.stream,
-                    native_pid: scope.applied.native_pid,
-                },
-            )?;
+            let request = veloq_nsys_query::slices::SlicesRequest {
+                name,
+                name_regex,
+                view,
+                group_by,
+                time_window: common.time_window()?,
+                sort,
+                limit: common.limit_or(100)?,
+                device: scope.applied.device,
+                stream: scope.applied.stream,
+                native_pid: scope.applied.native_pid,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::slices::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::slices::run(query_trace, request)?,
+            };
             let next_steps = match view {
                 veloq_nsys_query::slices::SlicesView::Instance => {
                     slices_instance_next_steps(&data.rows)
@@ -748,7 +778,7 @@ pub fn run(
                 }
             };
             let projected = projected_scope(&scope, None, None, data.time_window_ns);
-            let warnings = run_guards(data.rows.len(), &projected, trace, trace_span);
+            let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta = meta_with_scope(
                 &scope,
                 None,
@@ -757,41 +787,43 @@ pub fn run(
                 next_steps,
                 warnings,
             );
-            render_with_meta(
-                fmt,
-                trace,
-                trace_span,
-                "slices",
-                meta,
-                data,
-                views::slices_view,
-            )?;
+            render_context(fmt, trace, query_trace, trace_span, "slices")
+                .with_meta(meta)
+                .render(data, views::slices_view, output)?;
         }
 
         Cmd::Prep { status, .. } => {
             let started = std::time::Instant::now();
             if status {
-                let data =
-                    collect_prep_response(trace, false, started.elapsed().as_millis() as u64)?;
-                render(fmt, trace, trace_span, "prep", data, views::prep_view)?;
+                let data = collect_prep_response(
+                    query_trace,
+                    false,
+                    started.elapsed().as_millis() as u64,
+                )?;
+                render_context(fmt, trace, query_trace, trace_span, "prep").render(
+                    data,
+                    views::prep_view,
+                    output,
+                )?;
             } else {
-                let trace_handle = veloq_nsys_data::Trace::open(trace)?;
+                let trace_handle = veloq_nsys_data::Trace::open(query_trace)?;
                 veloq_nsys_data::sidecar_registry::ensure_prep_sidecars(&trace_handle)?;
                 let elapsed_ms = started.elapsed().as_millis() as u64;
                 let data = collect_prep_response(trace_handle.path(), true, elapsed_ms)?;
-                render(fmt, trace, trace_span, "prep", data, views::prep_view)?;
+                render_context(fmt, trace, query_trace, trace_span, "prep").render(
+                    data,
+                    views::prep_view,
+                    output,
+                )?;
             }
         }
 
         Cmd::Hardware { .. } => {
-            let data = veloq_nsys_query::hardware::run(trace)?;
-            render(
-                fmt,
-                trace,
-                trace_span,
-                "hardware",
+            let data = veloq_nsys_query::hardware::run(query_trace)?;
+            render_context(fmt, trace, query_trace, trace_span, "hardware").render(
                 data,
                 views::hardware_view,
+                output,
             )?;
         }
 
@@ -888,8 +920,12 @@ pub fn run(
                     })
                 }
             };
-            let data = veloq_nsys_query::metrics::run(trace, req)?;
-            render(fmt, trace, trace_span, "metrics", data, views::metrics_view)?;
+            let data = veloq_nsys_query::metrics::run(query_trace, req)?;
+            render_context(fmt, trace, query_trace, trace_span, "metrics").render(
+                data,
+                views::metrics_view,
+                output,
+            )?;
         }
 
         Cmd::Schema { .. } => {
@@ -900,17 +936,13 @@ pub fn run(
 
         Cmd::CorrelationStats { .. } => {
             let started = std::time::Instant::now();
-            let trace_handle = veloq_nsys_data::Trace::open(trace)?;
+            let trace_handle = veloq_nsys_data::Trace::open(query_trace)?;
             let index = trace_handle.correlation_index()?;
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let stats = index.stats();
             let cache_present =
                 veloq_nsys_data::correlation::path_for(trace_handle.path()).exists();
-            render(
-                fmt,
-                trace,
-                trace_span,
-                "correlation-stats",
+            render_context(fmt, trace, query_trace, trace_span, "correlation-stats").render(
                 CorrelationStatsPayload {
                     elapsed_ms,
                     cache_present_after: cache_present,
@@ -925,6 +957,7 @@ pub fn run(
                     graph_rows: stats.graph_rows,
                 },
                 views::key_value_view,
+                output,
             )?;
         }
     }
@@ -973,11 +1006,15 @@ mod tests {
             },
         };
 
+        let mut output = SourceExecution::new();
         let err = run(
             cmd,
             OutputFormat::Json,
             Some(Path::new("missing.nsys-rep")),
             None,
+            None,
+            None,
+            &mut output,
         );
 
         assert!(matches!(

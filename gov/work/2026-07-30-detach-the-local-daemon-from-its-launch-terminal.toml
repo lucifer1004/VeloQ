@@ -1,0 +1,37 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-004"
+title = "Detach the local daemon from its launch terminal"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Ensure a manually started current-user daemon survives termination of the invoking terminal process group, and validate daemon equivalence and reuse against representative real local NSys profiles."
+
+[[content.acceptance_criteria]]
+text = "A successful daemon start creates a service process outside the invoking terminal process group on Unix so terminal teardown does not stop it."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Daemon lifecycle contract tests prove the service remains queryable after the launcher process group terminates and can still stop cleanly."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Representative real NSys profiles produce equivalent one-shot and daemon-routed responses, including warm reuse and a multi-process profile."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+]

@@ -5,8 +5,8 @@ use clap::{ArgMatches, Command, FromArgMatches, Subcommand};
 use std::path::Path;
 use veloq_core::{
     EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta,
-    SourceRef, SourceRunResult, TraceSpan, Warning, WarningCode, WarningSeverity, shell_quote,
-    write_diagnostic_error_envelope,
+    SourceExecution, SourceQueryContext, SourceRef, SourceRunResult, TraceSpan, Warning,
+    WarningCode, WarningSeverity, shell_quote,
 };
 use veloq_pytorch_query::PytorchQueryError;
 
@@ -56,18 +56,32 @@ impl ProfileSource for PytorchSource {
         crate::help::inject_long_about(Cmd::augment_subcommands(parent))
     }
 
-    fn run(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<i32> {
+    fn query_context(&self, matches: &ArgMatches) -> SourceRunResult<SourceQueryContext> {
+        let cmd = Cmd::from_arg_matches(matches)?;
+        Ok(SourceQueryContext {
+            command: format!("{}.{}", Self::KIND, cmd.name()),
+            trace_path: cmd.trace_path().map(Path::to_path_buf),
+            raw_stdout: false,
+        })
+    }
+
+    fn execute(&self, matches: &ArgMatches, fmt: OutputFormat) -> SourceRunResult<SourceExecution> {
         let cmd = Cmd::from_arg_matches(matches)?;
         let verb = cmd.name();
         let trace_path = cmd.trace_path().map(Path::to_path_buf);
-        match commands::run(cmd, trace_path.as_deref(), fmt) {
-            Ok(code) => Ok(code),
+        let mut output = SourceExecution::new();
+        match commands::run(cmd, trace_path.as_deref(), fmt, &mut output) {
+            Ok(code) => {
+                output.set_exit_code(code);
+                Ok(output)
+            }
             Err(err) => {
                 let span = trace_path
                     .as_deref()
                     .and_then(|path| self.compute_trace_span(path));
-                emit_err(verb, trace_path.as_deref(), span, &err, fmt);
-                Ok(1)
+                emit_err(verb, trace_path.as_deref(), span, &err, fmt, &mut output);
+                output.set_exit_code(1);
+                Ok(output)
             }
         }
     }
@@ -79,17 +93,24 @@ fn emit_err(
     trace_span: Option<TraceSpan>,
     err: &PytorchSourceError,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) {
     match err {
-        PytorchSourceError::Command(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
-        PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
-        PytorchSourceError::Query(rank_err @ PytorchQueryError::MultiRankRequiresScope) => {
-            emit_rank_scope_error(verb, trace, trace_span, rank_err, fmt);
+        PytorchSourceError::Command(err) => {
+            emit_diagnostic(verb, trace, trace_span, err, fmt, output)
         }
-        PytorchSourceError::Query(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
-        PytorchSourceError::Tabular(err) => emit_diagnostic(verb, trace, trace_span, err, fmt),
+        PytorchSourceError::Data(err) => emit_diagnostic(verb, trace, trace_span, err, fmt, output),
+        PytorchSourceError::Query(rank_err @ PytorchQueryError::MultiRankRequiresScope) => {
+            emit_rank_scope_error(verb, trace, trace_span, rank_err, fmt, output);
+        }
+        PytorchSourceError::Query(err) => {
+            emit_diagnostic(verb, trace, trace_span, err, fmt, output)
+        }
+        PytorchSourceError::Tabular(err) => {
+            emit_diagnostic(verb, trace, trace_span, err, fmt, output)
+        }
         PytorchSourceError::SerializeEnvelope { .. } => {
-            emit_diagnostic(verb, trace, trace_span, err, fmt);
+            emit_diagnostic(verb, trace, trace_span, err, fmt, output);
         }
     }
 }
@@ -100,6 +121,7 @@ fn emit_rank_scope_error(
     trace_span: Option<TraceSpan>,
     err: &PytorchQueryError,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) {
     use veloq_core::VeloqDiagnostic;
     // Source the message, code, and hint from the typed error's
@@ -138,10 +160,10 @@ fn emit_rank_scope_error(
     env.error.code = Some(err.code());
     env.error.hint = err.hint().map(|hint| hint.into_owned());
     if !matches!(fmt, OutputFormat::Json) {
-        eprintln!("veloq: {message}");
+        output.write_stderr_line(format!("veloq: {message}"));
     }
     if let Ok(s) = env.to_json_pretty() {
-        println!("{s}");
+        output.write_stdout_line(s);
     }
 }
 
@@ -151,15 +173,21 @@ fn emit_diagnostic<E>(
     trace_span: Option<TraceSpan>,
     err: &E,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) where
     E: veloq_core::VeloqDiagnostic,
 {
-    write_diagnostic_error_envelope(
-        PytorchSource::source_ref(),
-        verb,
+    let envelope = EnvelopeError::from_diagnostic(
+        Some(PytorchSource::source_ref()),
+        Some(format!("{}.{verb}", PytorchSource::KIND)),
         trace.map(PytorchSource::trace_ref),
         trace_span,
         err,
-        fmt,
     );
+    if !matches!(fmt, OutputFormat::Json) {
+        output.write_stderr_line(format!("veloq: {err}"));
+    }
+    if let Ok(rendered) = envelope.to_json_pretty() {
+        output.write_stdout_line(rendered);
+    }
 }

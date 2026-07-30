@@ -8,18 +8,20 @@
 //!   available under `veloq nsys …`; NCU under `veloq ncu …`;
 //!   PyTorch/Kineto under `veloq pytorch …`);
 //! - dispatch from the parsed `ArgMatches` to the matching source's
-//!   `run()`.
+//!   shared execution boundary.
 //!
 //! Everything else — per-verb arg parsing, query execution, envelope
 //! emit, CSV/table rendering, error envelope writing — lives in the
 //! source's own crate.
 
+mod daemon;
 mod error;
 mod meta;
 
 use clap::{Arg, ArgMatches, Command};
 use error::{CliError, CliResult};
-use veloq_core::{EnvelopeError, OutputFormat, ProfileSource, VeloqDiagnostic};
+use std::sync::Arc;
+use veloq_core::{EnvelopeError, OutputFormat, ProfileSource, SourceExecution, VeloqDiagnostic};
 use veloq_ncu::NcuSource;
 use veloq_nsys::NsysSource;
 use veloq_pytorch::PytorchSource;
@@ -34,7 +36,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// top level so users can keep typing `veloq stats <trace>` without
 /// the `nsys` namespace prefix. Every non-default source contributes
 /// a `veloq <kind> <verb>` namespace.
-const DEFAULT_SOURCE: &str = "nsys";
+const DEFAULT_SOURCE: &str = daemon::DEFAULT_SOURCE;
 
 fn main() {
     let sources = registered_sources();
@@ -108,11 +110,11 @@ fn main() {
 /// configured default (hoisted to top level) and still has an
 /// explicit `veloq nsys ...` namespace; NCU gets `veloq ncu ...` and
 /// PyTorch gets `veloq pytorch ...`.
-fn registered_sources() -> Vec<Box<dyn ProfileSource>> {
+fn registered_sources() -> Vec<Arc<dyn ProfileSource>> {
     vec![
-        Box::new(NsysSource),
-        Box::new(NcuSource),
-        Box::new(PytorchSource),
+        Arc::new(NsysSource),
+        Arc::new(NcuSource),
+        Arc::new(PytorchSource),
     ]
 }
 
@@ -120,13 +122,24 @@ fn emit_cli_diagnostic_error<E>(err: &E, fmt: OutputFormat)
 where
     E: VeloqDiagnostic,
 {
+    let execution = render_cli_diagnostic_execution(err, fmt);
+    let _ = execution.write_to_process();
+}
+
+pub(crate) fn render_cli_diagnostic_execution<E>(err: &E, fmt: OutputFormat) -> SourceExecution
+where
+    E: VeloqDiagnostic,
+{
     let env = EnvelopeError::from_diagnostic(None, None, None, None, err);
+    let mut execution = SourceExecution::new();
+    execution.set_exit_code(1);
     if !matches!(fmt, OutputFormat::Json) {
-        eprintln!("veloq: {err}");
+        execution.write_stderr_line(format!("veloq: {err}"));
     }
     if let Ok(s) = env.to_json_pretty() {
-        println!("{s}");
+        execution.write_stdout_line(s);
     }
+    execution
 }
 
 /// `veloq nsys ncu-command --print` is explicitly pipe-oriented:
@@ -194,7 +207,7 @@ fn parse_error_output_format() -> OutputFormat {
 /// The configured default source's verbs are hoisted to the top
 /// level so they don't require a namespace prefix; every source also
 /// ends up under `veloq <kind> <verb>`.
-fn build_parser(sources: &[Box<dyn ProfileSource>]) -> Command {
+fn build_parser(sources: &[Arc<dyn ProfileSource>]) -> Command {
     let mut root = Command::new("veloq")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Agent-friendly profile-query CLI (JSON on stdout)")
@@ -212,17 +225,7 @@ fn build_parser(sources: &[Box<dyn ProfileSource>]) -> Command {
         .subcommand_required(true)
         .arg_required_else_help(true);
 
-    for source in sources {
-        let sub = source.cli();
-        if source.kind() == DEFAULT_SOURCE {
-            // Hoist the default source's verbs into the root so
-            // `veloq stats <trace>` keeps working without `nsys`.
-            for inner in sub.get_subcommands() {
-                root = root.subcommand(inner.clone());
-            }
-        }
-        root = root.subcommand(sub);
-    }
+    root = daemon::graft_source_commands(root, sources);
 
     // Meta verbs (`veloq info`, `veloq sources`) sit at the top
     // level alongside the hoisted default-source verbs. Adding a
@@ -230,20 +233,26 @@ fn build_parser(sources: &[Box<dyn ProfileSource>]) -> Command {
     for meta_cmd in meta::cli() {
         root = root.subcommand(meta_cmd);
     }
+    root = root.subcommand(daemon::cli());
 
     root
 }
 
-/// Route the parsed `ArgMatches` to the matching source's `run()`.
+/// Route the parsed `ArgMatches` through the matching source's shared
+/// execution boundary, then project the result onto one-shot process I/O.
 /// For source namespaces we expect `veloq <kind> <verb>` (two levels
 /// deep). For the default source's hoisted aliases we look up the
 /// verb name as the subcommand at the root.
 fn dispatch(
-    sources: &[Box<dyn ProfileSource>],
+    sources: &[Arc<dyn ProfileSource>],
     matches: &ArgMatches,
     fmt: OutputFormat,
 ) -> CliResult<i32> {
     let (sub_name, sub_matches) = matches.subcommand().ok_or(CliError::NoSubcommand)?;
+
+    if sub_name == "daemon" {
+        return daemon::run(sub_matches, fmt, sources).map_err(CliError::daemon);
+    }
 
     // Meta verbs come first — they're owned by the binary, not by
     // any profile source. Success responses are JSON-only; `--format`
@@ -255,7 +264,9 @@ fn dispatch(
     // Source namespace: `veloq <kind> <verb>` (two levels deep).
     for source in sources {
         if source.kind() == sub_name {
-            return source.run(sub_matches, fmt).map_err(CliError::source_run);
+            let execution = daemon::routing::execute_selected(source.as_ref(), sub_matches, fmt)
+                .map_err(CliError::source_run)?;
+            return project_source_execution(execution);
         }
     }
 
@@ -266,7 +277,17 @@ fn dispatch(
             kind: DEFAULT_SOURCE,
         },
     )?;
-    default.run(matches, fmt).map_err(CliError::source_run)
+    let execution = daemon::routing::execute_selected(default.as_ref(), matches, fmt)
+        .map_err(CliError::source_run)?;
+    project_source_execution(execution)
+}
+
+fn project_source_execution(execution: SourceExecution) -> CliResult<i32> {
+    let exit_code = execution.exit_code();
+    execution
+        .write_to_process()
+        .map_err(CliError::source_output)?;
+    Ok(exit_code)
 }
 
 #[cfg(test)]

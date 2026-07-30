@@ -162,15 +162,27 @@ pub struct Bucket {
 }
 
 pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<TimelineResponse> {
+    validate_request(&req)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_after_validation(&trace, req)
+}
+
+pub fn run_with_trace(trace: &Trace, req: TimelineRequest) -> NsysQueryResult<TimelineResponse> {
+    validate_request(&req)?;
+    run_after_validation(trace, req)
+}
+
+fn validate_request(req: &TimelineRequest) -> NsysQueryResult<()> {
     crate::check_limit(req.limit)?;
     if req.interval_ns <= 0 {
         return Err(NsysQueryError::TimelineIntervalTooSmall {
             interval_ns: req.interval_ns,
         });
     }
+    Ok(())
+}
 
-    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
-
+fn run_after_validation(trace: &Trace, req: TimelineRequest) -> NsysQueryResult<TimelineResponse> {
     let abs_window = trace
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
@@ -182,7 +194,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     // implicitly to the attributable set, and missing tables drop
     // out silently.
     let kind_policy = TimelineKindPolicy::from_gpu_work_definition()?;
-    let kinds = kind_policy.resolve(&req.kinds, req.nvtx.as_deref(), &trace)?;
+    let kinds = kind_policy.resolve(&req.kinds, req.nvtx.as_deref(), trace)?;
     if kinds.is_empty() {
         return Ok(TimelineResponse {
             interval_ns: req.interval_ns,
@@ -210,7 +222,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     };
 
     let attribution = match req.nvtx.as_deref() {
-        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, &trace)?),
+        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, trace)?),
         None => None,
     };
     let nvtx_scope = if attribution.is_some() {
@@ -219,21 +231,30 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
         crate::nvtx_attribution::NvtxScope::None
     };
 
-    // Per-kind event SELECTs feeding the UNION ALL.
-    let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
-    let mut per_kind_params: Vec<Value> = Vec::new();
-    for kind in &kinds {
-        let fragment = per_kind_select(
-            &trace,
-            *kind,
-            &req,
-            abs_window,
-            nvtx_scope,
-            kind_policy.allowed(),
-        )?;
-        subqueries.push(fragment.sql);
-        per_kind_params.extend(fragment.params);
-    }
+    // Per-kind event SELECTs feeding the UNION ALL. A daemon session's
+    // normalized TEMP view already contains the same process-qualified
+    // interval axes, so non-NVTX queries can scan it directly.
+    let (subqueries, per_kind_params) =
+        if attribution.is_none() && crate::resident_intervals::available(trace) {
+            let fragment = resident_select(&kinds, &req, abs_window);
+            (vec![fragment.sql], fragment.params)
+        } else {
+            let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
+            let mut per_kind_params: Vec<Value> = Vec::new();
+            for kind in &kinds {
+                let fragment = per_kind_select(
+                    trace,
+                    *kind,
+                    &req,
+                    abs_window,
+                    nvtx_scope,
+                    kind_policy.allowed(),
+                )?;
+                subqueries.push(fragment.sql);
+                per_kind_params.extend(fragment.params);
+            }
+            (subqueries, per_kind_params)
+        };
     let union = subqueries.join(" UNION ALL ");
 
     let attribution_prefix = match &attribution {
@@ -323,7 +344,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: TimelineRequest) -> NsysQueryResult<Tim
     params.extend(per_kind_params);
     params.push(Value::BigInt(req.limit as i64));
 
-    let (buckets, total_matched) = hydrate_timeline_rows(&trace, &sql, &params)?;
+    let (buckets, total_matched) = hydrate_timeline_rows(trace, &sql, &params)?;
 
     Ok(TimelineResponse {
         interval_ns: req.interval_ns,
@@ -444,6 +465,55 @@ fn per_kind_select(
         process_join = process.join,
     );
     Ok(SqlFragment::new(sql, params))
+}
+
+fn resident_select(
+    kinds: &[EventKind],
+    req: &TimelineRequest,
+    abs_window: Option<(i64, i64)>,
+) -> SqlFragment {
+    let table = crate::resident_intervals::table_name();
+    let labels = kinds
+        .iter()
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (start_expr, end_expr, mut where_parts, mut params): (&str, &str, Vec<String>, Vec<Value>) =
+        match abs_window {
+            Some((s, e)) => (
+                "GREATEST(start_ns, ?)",
+                "LEAST(end_ns, ?)",
+                vec!["start_ns < ? AND end_ns > ?".to_string()],
+                vec![
+                    Value::BigInt(s),
+                    Value::BigInt(e),
+                    Value::BigInt(e),
+                    Value::BigInt(s),
+                ],
+            ),
+            None => ("start_ns", "end_ns", Vec::new(), Vec::new()),
+        };
+    where_parts.push(format!("kind IN ({labels})"));
+    if let Some(process_id) = req.process_id {
+        where_parts.push("process_id = ?".to_string());
+        params.push(Value::BigInt(process_id));
+    }
+    if let Some(device) = req.device {
+        where_parts.push("device_id = ?".to_string());
+        params.push(Value::Int(device));
+    }
+    if let Some(stream) = req.stream {
+        where_parts.push("stream_id = ?".to_string());
+        params.push(Value::BigInt(stream));
+    }
+    let where_clause = where_parts.join(" AND ");
+    SqlFragment::new(
+        format!(
+            "SELECT kind, {start_expr} AS start_ns, {end_expr} AS end_ns \
+             FROM {table} WHERE {where_clause}"
+        ),
+        params,
+    )
 }
 
 #[cfg(test)]

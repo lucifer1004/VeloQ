@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-NON-GOALS"
+title = "Non-goals and boundaries"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MUST NOT replace the one-shot CLI as VeloQ's primary independent query workflow.
+
+The one-shot path MUST remain independently executable and stateless across invocations; daemon-routed execution MUST NOT make a previous daemon request a prerequisite for interpreting or executing a later one-shot invocation.
+
+The daemon MUST NOT require an entire input profile to remain resident in memory.
+
+The daemon MUST NOT make memory-resident state the sole copy of reusable evidence required for correctness.
+
+The daemon MUST NOT weaken generated-artifact freshness or cleanup behavior in order to retain a warm session.
+
+The private daemon protocol MUST NOT be presented as a stable remote, multi-user, or third-party service API.
+
+Daemon adoption MUST NOT require every registered source or command to provide the same acceleration level in one release.
+
+Remote transport, cross-user sharing, automatic query-triggered daemon startup, stable third-party IPC compatibility, and mandatory daemon execution are outside this RFC.
+
+**Rationale:** These external boundaries keep the feature focused on local query iteration speed without turning VeloQ into a memory database, hosted service, or daemon-dependent query product."""

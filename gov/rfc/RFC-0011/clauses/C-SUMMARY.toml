@@ -1,0 +1,18 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-SUMMARY"
+title = "Summary"
+kind = "informative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+This RFC defines an optional per-user local daemon that accelerates repeated VeloQ queries over large profiler artifacts while preserving the one-shot CLI as the independent correctness and compatibility path defined by [[RFC-0001:C-QUERY-EXECUTION]].
+
+The contract covers the local security boundary, explicit lifecycle, per-invocation routing, semantic equivalence, protocol compatibility, reuse freshness, bounded resources, stable diagnostics, lifecycle and session observability, and staged source support. It refines [[RFC-0001:C-PERFORMANCE-CENTER]], [[RFC-0002]], [[RFC-0003]], [[RFC-0004]], and [[RFC-0005]].
+
+This RFC does not prescribe IPC framing, language types, private query-engine structure, DuckDB schema layout, source-specific accelerator names, cache admission or eviction algorithms, or numeric default resource limits.
+
+**Rationale:** A resident process can remove repeated setup work and retain reusable query state, but only if it remains an optional acceleration layer whose loss cannot change the meaning or availability of the primary CLI workflow."""

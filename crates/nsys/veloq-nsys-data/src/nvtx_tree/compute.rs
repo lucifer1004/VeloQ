@@ -141,7 +141,8 @@ pub(super) fn compute(trace: &Trace) -> NsysDataResult<Vec<NvtxTreeRecord>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(compute_from_rows(rows))
+    let pool = trace.build_query_worker_pool()?;
+    Ok(pool.install(|| compute_from_rows(rows)))
 }
 
 /// Pure function over already-collected rows. Split out so unit tests

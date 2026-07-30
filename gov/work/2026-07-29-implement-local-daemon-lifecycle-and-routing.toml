@@ -1,0 +1,59 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-002"
+title = "Implement local daemon lifecycle and routing"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-29"
+refs = [
+    "RFC-0011:C-LOCAL-BOUNDARY",
+    "RFC-0011:C-LIFECYCLE",
+    "RFC-0011:C-ROUTING",
+    "RFC-0011:C-PROTOCOL",
+    "RFC-0011:C-OBSERVABILITY",
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "RFC-0011:C-DIAGNOSTICS",
+    "ADR-0002",
+]
+depends_on = ["WI-2026-07-29-001"]
+
+[content]
+description = "Implement the same-user local daemon control plane and private client transport, including explicit lifecycle, singleton ownership, capability exchange, per-invocation routing, safe fallback, and stable lifecycle diagnostics."
+
+[[content.acceptance_criteria]]
+text = "Daemon start, stop, and status implement bounded idempotent lifecycle transitions and atomic per-user singleton ownership"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "The daemon accepts requests only through a current-user local IPC endpoint and refuses unsafe ownership, stale-endpoint, and process-identity-reuse mutations"
+status = "done"
+category = "security"
+
+[[content.acceptance_criteria]]
+text = "Every source-owned profile query exposes daemon auto, off, and required routing with the governed connection and lifecycle timeout behavior"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Protocol tests distinguish pre-acceptance rejection, accepted execution, completion, cancellation, and indeterminate ownership and prove that accepted or indeterminate requests are never replayed one-shot"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Lifecycle commands emit the v1 canonical list response and every governed daemon diagnostic code with the required source, command, trace, stdout, stderr, and exit-status behavior"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "CLI help and contract fixtures cover lifecycle resource settings, routing selectors, timeout domains, compatible and incompatible owners, and auto fallback"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+]

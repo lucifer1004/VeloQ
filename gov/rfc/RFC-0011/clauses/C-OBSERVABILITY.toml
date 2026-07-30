@@ -1,0 +1,52 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-OBSERVABILITY"
+title = "Lifecycle and session observability"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+Successful `daemon start`, `daemon stop`, and `daemon status` responses MUST use the current envelope schema, source `{"kind":"veloq","version":"v1"}`, command `"daemon"`, and MUST omit `trace` and `trace_span`.
+
+For these lifecycle responses, `source.version = "v1"` is the daemon-lifecycle meta-source wire version. It is independent of the Cargo package version. It MUST change for a breaking lifecycle payload change. It SHOULD remain unchanged for an additive lifecycle payload change. The daemon package version is reported separately in the row's `veloq_version`.
+
+These lifecycle commands MUST use JSON output and the canonical list shape. A successful response MUST contain `data.count = 1`, `data.total_matched = 1`, and exactly one primary row.
+
+The primary row MUST contain:
+
+- `key`: the constant string `"daemon|local"`.
+- `operation`: one of `"start"`, `"stop"`, or `"status"`.
+- `state`: one of `"stopped"`, `"starting"`, `"ready"`, `"stopping"`, `"incompatible"`, or `"unresponsive"`.
+- `compatible`: a boolean when compatibility is known, otherwise null; it MUST be false for `incompatible`, true for compatible `starting`, `ready`, or `stopping`, and null for `stopped` or `unresponsive`.
+- `process_id`: the daemon operating-system process identifier as an unsigned integer when a live owner is safely identified, otherwise null.
+- `veloq_version`: the daemon Cargo package version string when safely available, otherwise null.
+- `protocol_version`: the private protocol version string when safely available, otherwise null.
+- `limits`: the effective-limits object when a compatible daemon reports it, otherwise null.
+- `usage`: the aggregate-usage object when a compatible daemon reports it, otherwise null.
+
+The `limits` object MUST contain unsigned integers `max_sessions`, `max_resident_memory_bytes`, `max_concurrent_requests`, `max_query_workers`, `max_queued_requests`, `admission_timeout_ms`, `idle_timeout_ms`, and `shutdown_grace_ms`. It MUST also contain `max_query_memory_bytes`, which MUST be an unsigned integer for an explicit query-memory ceiling and null when source-managed automatic query memory is active. The byte fields MUST equal their configured mebibyte values multiplied by 1,048,576.
+
+The `usage` object MUST contain unsigned integers `resident_sessions`, `resident_memory_estimate_bytes`, `active_requests`, `queued_requests`, `query_workers_reserved`, `query_memory_reserved_bytes`, `exact_response_entries`, `cache_hits`, and `cache_misses`. It MUST also contain `process_resident_memory_bytes`, which is an unsigned integer when the operating system supplies a meaningful value and null otherwise.
+
+A successful `daemon status` response MUST include `data.auxiliary = {"sessions":[...],"evictions":<object-or-null>}`. The sessions array MUST be empty when session details cannot be obtained. `evictions` MUST be null when daemon counters cannot be obtained; otherwise it MUST contain unsigned lifetime counters `result_entries`, `sessions`, `freshness_invalidations`, `idle_timeout_sessions`, `session_limit_sessions`, `resident_memory_sessions`, and `other_sessions`. Every discarded session MUST increment `sessions` and exactly one session-reason counter.
+
+Each item in `auxiliary.sessions` MUST contain:
+
+- `key`: `daemon-session|<opaque-id>`.
+- `session_id`: the same non-empty opaque identifier used in the key.
+- `source`: an object with string `kind` and `version`.
+- `trace`: an object with string `kind` and canonical resolved `path`.
+- `state`: one of `"idle"`, `"queued"`, `"active"`, or `"closing"`; when several conditions apply, precedence MUST be closing, active, queued, then idle.
+- unsigned integers `active_requests`, `queued_requests`, `resident_memory_estimate_bytes`, `exact_response_entries`, `exact_response_bytes_estimate`, `cache_hits`, and `cache_misses`.
+- `idle_ms`: an unsigned integer only for `idle`, otherwise null.
+
+A session identifier MUST be unique within one daemon process, MUST remain stable for that session's lifetime, and MUST NOT be reused by that daemon process. Session rows MUST be ordered lexicographically by `key`.
+
+Successful `daemon start` and `daemon stop` responses MUST omit `data.auxiliary`. Status inspection MUST NOT open a profile, create a resident session, refresh session recency, or consume query-admission capacity.
+
+Errors MUST follow [[RFC-0011:C-DIAGNOSTICS]] and [[RFC-0002:C-ERROR-RESPONSE]].
+
+**Rationale:** A dedicated lifecycle wire version and complete schema give agents stable lifecycle, capacity, pressure, and per-session evidence while keeping package release numbering and profile sessions in their proper fields."""

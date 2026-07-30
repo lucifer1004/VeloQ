@@ -1,0 +1,37 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-005"
+title = "Repair default daemon budgets for large queries"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Remove the default assumption that every configured concurrency slot is simultaneously occupied, so an ordinary single-user daemon query receives a practical DuckDB worker and memory budget on large local profiles while explicit concurrency tuning remains available."
+
+[[content.acceptance_criteria]]
+text = "The default daemon admits one active query and gives it the full default query-memory budget instead of pre-dividing capacity across idle concurrency slots."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "The default query-worker budget follows the host's available parallelism up to the established one-shot DuckDB cap, while explicit start-time resource settings remain authoritative."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "A large real multi-process NSys scan remains output-equivalent across one-shot, cold daemon, and warm daemon execution, with the corrected defaults materially reducing the cold-path regression."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

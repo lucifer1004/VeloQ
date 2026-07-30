@@ -24,6 +24,7 @@
 use clap::{Arg, ArgMatches, Command};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use veloq_core::{EnvelopeTraceRef, NextStep, OutputFormat, ProfileSource, ResponseMeta};
 use veloq_nsys::CapabilityFlags;
 use veloq_nsys::trace_map::{
@@ -150,7 +151,7 @@ pub fn cli() -> Command {
 
 pub fn run(
     matches: &ArgMatches,
-    sources: &[Box<dyn ProfileSource>],
+    sources: &[Arc<dyn ProfileSource>],
     fmt: OutputFormat,
 ) -> MetaResult<i32> {
     let trace_str = match matches.get_one::<String>("trace") {

@@ -268,18 +268,19 @@ fn lookup_gpu_kind(
         .join(", ");
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let ctx_expr = crate::kind_sql::GPU_CONTEXT_ID_EXPR;
-    let process_join =
-        veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
+    let process = veloq_nsys_data::process_sql_projection(trace, table, "t", "proc", "t.start");
     let sql = format!(
         r#"SELECT t.rowid,
-                  proc.process_id AS process_id,
+                  {process_expr} AS process_id,
                   {dev}         AS device_id,
                   {ctx_expr}    AS context_id,
                   t.correlationId
            FROM nsight.{table} t
            {process_join}
            WHERE t.rowid IN ({placeholders})
-             AND t.correlationId IS NOT NULL"#
+             AND t.correlationId IS NOT NULL"#,
+        process_expr = process.expr,
+        process_join = process.join,
     );
 
     lookup_gpu_kind_with_sql(trace.conn(), &sql, rowids, index, nesting)
@@ -426,13 +427,13 @@ fn cold_fallback(
         Source::Kernel | Source::Memcpy | Source::Memset | Source::Sync => {
             let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
             let ctx_expr = crate::kind_sql::GPU_CONTEXT_ID_EXPR;
-            let process_join =
-                veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
+            let process =
+                veloq_nsys_data::process_sql_projection(trace, table, "t", "proc", "t.start");
             let runtime_pid = veloq_nsys_data::native_pid_sql("r.globalTid");
             format!(
                 r#"WITH event_ctx AS (
                        SELECT t.rowid          AS event_rowid,
-                              proc.process_id  AS process_id,
+                              {process_expr}   AS process_id,
                               {dev}            AS device_id,
                               {ctx_expr}       AS context_id,
                               t.correlationId  AS correlationId
@@ -450,7 +451,9 @@ fn cold_fallback(
                        JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r
                          ON r.correlationId                                  = ec.correlationId
                         AND {runtime_pid} = ec.process_id
-                   ),{CANDIDATES_AND_PICK}"#
+                   ),{CANDIDATES_AND_PICK}"#,
+                process_expr = process.expr,
+                process_join = process.join,
             )
         }
     };

@@ -76,7 +76,10 @@ pub struct TableSummary {
 
 pub fn run<P: AsRef<Path>>(path: P) -> NsysQueryResult<Summary> {
     let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_with_trace(&trace)
+}
 
+pub fn run_with_trace(trace: &Trace) -> NsysQueryResult<Summary> {
     // Hot path: pull everything from the metadata sidecar. First
     // call against a trace runs the COUNT(*) / MIN/MAX scans
     // (single-digit ms beyond the existing open) and persists the

@@ -38,6 +38,8 @@ mod nsys_ncu_command;
 mod pytorch;
 #[path = "cli_smoke/root.rs"]
 mod root;
+#[path = "cli_smoke/shared_execution.rs"]
+mod shared_execution;
 
 /// COPY every user-created table in the in-memory DuckDB connection
 /// out to `<dir>/test_pqtdir/<TABLE>.parquet` and return the

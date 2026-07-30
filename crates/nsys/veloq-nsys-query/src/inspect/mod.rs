@@ -279,6 +279,10 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Inspec
     // inspect reads a few individual CUPTI/NVTX/graph rows; `Trace::open`
     // already exposes every `nsight.<TABLE>`, so no extra setup is needed.
     let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_with_trace(&trace, row_ids)
+}
+
+pub fn run_with_trace(trace: &Trace, row_ids: &[RowId]) -> NsysQueryResult<InspectResponse> {
     let columns = column_map::load_standard(trace.conn())?;
 
     // Compute NVTX nesting once when *any* requested row_id either is
@@ -309,7 +313,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Inspec
         row_ids.iter().any(|id| id.kind == EventKind::Nvtx) && trace.table_exists("NVTX_EVENTS");
     let nvtx_tree = if needs_nvtx_tree {
         Some(
-            veloq_nsys_data::nvtx_tree::build_or_load(&trace)
+            veloq_nsys_data::nvtx_tree::build_or_load(trace)
                 .map_err(NsysQueryError::nvtx_tree_load)?,
         )
     } else {
@@ -351,7 +355,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Inspec
     // enclosing NVTX range surfaced as `nvtx_context`. One SQL per
     // kind present, so a 100-row mixed batch fans out to ≤4 SQLs.
     if let Some(nesting_map) = nesting.as_ref() {
-        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, row_ids, nesting_map)?;
+        let contexts = crate::nvtx_reverse::lookup_for_row_ids(trace, row_ids, nesting_map)?;
         for event in &mut events {
             attach_nvtx_context(event, &contexts);
         }

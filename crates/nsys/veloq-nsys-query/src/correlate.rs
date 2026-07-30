@@ -98,6 +98,10 @@ pub struct CorrelateResultAuxiliary {
 
 pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<CorrelateResponse> {
     let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_with_trace(&trace, row_ids)
+}
+
+pub fn run_with_trace(trace: &Trace, row_ids: &[RowId]) -> NsysQueryResult<CorrelateResponse> {
     let index = trace
         .correlation_index()
         .map_err(NsysQueryError::correlation_index_load)?;
@@ -108,17 +112,11 @@ pub fn run<P: AsRef<Path>>(path: P, row_ids: &[RowId]) -> NsysQueryResult<Correl
     // same EventRef shape as search.rows[].
     let cols = crate::column_map::load_standard(trace.conn())?;
     let process_resolver =
-        CudaProcessResolver::build(&trace).map_err(NsysQueryError::correlation_index_load)?;
+        CudaProcessResolver::build(trace).map_err(NsysQueryError::correlation_index_load)?;
 
     let mut results = Vec::with_capacity(row_ids.len());
     for id in row_ids {
-        results.push(correlate_one(
-            &trace,
-            &index,
-            &process_resolver,
-            &cols,
-            *id,
-        )?);
+        results.push(correlate_one(trace, &index, &process_resolver, &cols, *id)?);
     }
     let count = results.len();
     Ok(CorrelateResponse {

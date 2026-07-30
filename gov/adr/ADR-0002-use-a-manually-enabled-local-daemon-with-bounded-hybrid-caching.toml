@@ -1,0 +1,151 @@
+#:schema ../schema/adr.schema.json
+
+[govctl]
+id = "ADR-0002"
+title = "Use a manually enabled local daemon with bounded hybrid caching"
+status = "accepted"
+date = "2026-07-29"
+refs = [
+    "RFC-0001",
+    "RFC-0005",
+    "RFC-0011",
+]
+
+[content]
+context = """
+VeloQ's primary workflow is a one-shot profile query backed by fresh generated artifacts. That model is reliable for agents and scripts, but repeated exploration of a large profile pays recurring process, source-open, query-engine, catalog, and decoded-model setup costs. Scan-heavy commands can also repeat expensive work when their request changes enough that an exact result cannot be reused.
+
+The feature is intended to improve both low-latency drill chains such as search, inspect, and correlate and repeated scan-heavy work such as stats, timeline, and gaps. A connection cache alone is therefore insufficient, while an unbounded in-memory copy of every large profile would create unacceptable resident-memory and recovery behavior.
+
+[[RFC-0011]] owns the externally visible constraints: the daemon is local to one operating-system user, is manually enabled, preserves one-shot fallback and evidence equivalence, and leaves persistent evidence under [[RFC-0005]]. Within those constraints, this ADR chooses how to combine resident query state with persistent scan acceleration and how to evict heterogeneous result entries and trace sessions under resource pressure."""
+decision = """
+Within the manual local lifecycle and opportunistic routing contract owned by [[RFC-0011:C-LOCAL-BOUNDARY]], [[RFC-0011:C-LIFECYCLE]], and [[RFC-0011:C-ROUTING]], choose a hybrid resident-query architecture shared by daemon and one-shot execution.
+
+Use resident source context, reusable query state, decoded models, and bounded exact-result caches for the hot process path. Keep reusable scan accelerators that need to survive eviction or restart as generated artifacts governed by [[RFC-0005]] and [[RFC-0011:C-SESSION-FRESHNESS]]. This combination addresses both fixed setup latency and repeated scan cost without making daemon memory authoritative.
+
+Use two eviction levels for heterogeneous state. Cached query results form the first pressure-release layer because they are individually disposable and do not provide the execution substrate for other requests. If result eviction is insufficient, select whole idle sessions using a score that combines recency with estimated resident cost. Recency protects a genuinely hot large working set; cost prevents a recently touched but disproportionately expensive session from dominating capacity. Active and queued session protection is owned by [[RFC-0011:C-EVICTION]].
+
+Keep source and command adoption capability-based under [[RFC-0011:C-SOURCE-CAPABILITY]] so the shared architecture does not require every backend to acquire identical acceleration at once."""
+consequences = """
+**Positive.** Repeated drill queries can reuse already opened and decoded profile context. Scan-heavy query families can reuse persistent indexes, partitions, summaries, or materialized evidence without tying their lifetime to one daemon process. Agents retain the same command and response model across daemon and one-shot routing, and users decide explicitly when a long-lived process exists.
+
+**Negative.** Query execution can no longer remain coupled to direct process stdout emission; a shared execution boundary is needed so daemon and one-shot projections cannot drift. The system also gains compatibility handshakes, session freshness checks, cancellation, scheduling, resource accounting, lifecycle commands, and pressure diagnostics. Estimated session cost will be imperfect. Alternating differently sized profiles can still cause cache thrashing and tail-latency variance when weighted recency repeatedly admits and evicts expensive sessions. Hard global limits, bounded admission, per-session hit and eviction observability, and separate result-first eviction make that behavior diagnosable and limit its impact, but do not eliminate it.
+
+**Neutral.** Persistent artifacts remain the cross-process acceleration and recovery boundary. The daemon does not make every source or verb equally fast, and source-specific accelerator formats continue to belong to their source RFCs. Numeric resource defaults and performance targets depend on leak-safe measurements from representative large profiles rather than this architectural choice."""
+
+[[content.alternatives]]
+text = "Manually enabled local daemon with persistent accelerators and bounded two-level weighted LRU"
+status = "accepted"
+pros = [
+    "Removes repeated process and source-open setup while retaining persistent scan accelerators across daemon restarts",
+    "Keeps daemon lifetime explicit and preserves one-shot fallback",
+    "Bounds memory through result-cache eviction followed by weighted LRU session eviction",
+]
+cons = [
+    "Requires query execution to be separated from CLI emission so daemon and one-shot share one engine",
+    "Adds freshness revalidation, scheduling, cancellation, resource accounting, and lifecycle observability",
+]
+
+[[content.alternatives]]
+text = "Keep one-shot execution and add only more persistent artifacts"
+status = "rejected"
+pros = [
+    "Preserves the current stateless process model and makes warm evidence available after restart",
+    "Keeps concurrency and failure isolation at operating-system process boundaries",
+]
+cons = [
+    "Continues to pay repeated binary startup, source-open, catalog, and decoded-model costs",
+    "Cannot retain bounded in-memory query results or coordinate interactive and scan-heavy scheduling",
+]
+rejection_reason = "persistent artifacts remain necessary but do not satisfy the interactive repeated-query latency goal by themselves"
+
+[[content.alternatives]]
+text = "Use a resident daemon only for connection and model reuse"
+status = "rejected"
+pros = [
+    "Eliminates much of the fixed setup cost with less cache and artifact complexity than the chosen hybrid",
+    "Keeps memory proportional to open query contexts rather than materialized full datasets",
+]
+cons = [
+    "Provides limited benefit when Parquet scanning and aggregation dominate elapsed time",
+    "Does not address the stated scan-heavy query goal",
+]
+rejection_reason = "the feature is expected to improve both drill-query setup and repeated scan-heavy work"
+
+[[content.alternatives]]
+text = "Automatically start a local hybrid-caching daemon from query commands"
+status = "rejected"
+pros = [
+    "Makes acceleration transparent on the first query without a separate lifecycle step",
+    "Could maximize adoption of the warm path",
+]
+cons = [
+    "Creates a hidden long-lived process and resource commitment from an ordinary query",
+    "Makes process ownership and troubleshooting less explicit for agents and humans",
+]
+rejection_reason = "manual enablement was chosen so daemon lifetime and resource use remain intentional"
+
+[[content.alternatives]]
+text = "Keep complete active profiles resident in daemon memory"
+status = "rejected"
+pros = [
+    "Can make repeated scans very fast while the complete working set remains resident",
+    "Avoids some repeated Parquet decoding and filesystem access",
+]
+cons = [
+    "Large profiles can make resident memory unbounded or duplicate the operating-system page cache",
+    "Restart and admission costs grow with full profile size",
+]
+rejection_reason = "large-dataset support requires persistent reusable evidence plus bounded disposable memory rather than full-profile residency"
+
+[[content.alternatives]]
+text = "Make a daemon mandatory or expose it as a remote multi-user service"
+status = "rejected"
+pros = [
+    "Could centralize profile access and share warmed state across users or machines",
+    "Could provide a single service endpoint for non-CLI clients",
+]
+cons = [
+    "Introduces network security, authentication, tenancy, service availability, and compatibility obligations",
+    "Conflicts with VeloQ's local CLI design center and independently usable one-shot workflow",
+]
+rejection_reason = "remote, cross-user, and mandatory-service operation are outside the agreed product boundary"
+
+[[content.alternatives]]
+text = "Use plain recency-only LRU for both result entries and sessions"
+status = "rejected"
+pros = [
+    "Uses a familiar deterministic policy with low bookkeeping cost",
+    "Directly favors recently used profiles and query results",
+]
+cons = [
+    "Treats a small cached result and an expensive large trace session as equivalent eviction units",
+    "Can retain a very large session while repeatedly discarding many cheaper reusable entries",
+]
+rejection_reason = "recency remains important, but heterogeneous resident costs need to influence whole-session eviction"
+
+[[content.alternatives]]
+text = "Use one unified weighted cache for results and sessions"
+status = "rejected"
+pros = [
+    "Provides one capacity and scoring mechanism for all resident state",
+    "Can compare reuse and size across cache entries in one admission model",
+]
+cons = [
+    "Result entries and open sessions have different teardown costs, dependencies, and active-use protection",
+    "A unified score can close an expensive session while cheaper disposable results from that session remain",
+]
+rejection_reason = "separate eviction levels preserve the session substrate until result eviction is insufficient to relieve pressure"
+
+[[content.alternatives]]
+text = "Evict sessions by estimated resident cost without recency"
+status = "rejected"
+pros = [
+    "Releases the most estimated memory with fewer whole-session evictions",
+    "Is simple to apply when resident cost dominates all other concerns",
+]
+cons = [
+    "Can repeatedly evict the largest profile even when it is the hottest working set",
+    "Makes reuse unstable when large and small profiles alternate",
+]
+rejection_reason = "resident cost should weight eviction, but recency is needed to protect an actively reused large working set"

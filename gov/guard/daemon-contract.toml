@@ -1,0 +1,22 @@
+#:schema ../schema/guard.schema.json
+
+[govctl]
+id = "GUARD-DAEMON-CONTRACT"
+title = "contract: daemon"
+refs = [
+    "RFC-0011:C-LIFECYCLE",
+    "RFC-0011:C-ROUTING",
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-PROTOCOL",
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-EVICTION",
+    "RFC-0011:C-CONCURRENCY",
+    "RFC-0011:C-OBSERVABILITY",
+    "RFC-0011:C-DIAGNOSTICS",
+    "RFC-0011:C-LOCAL-BOUNDARY",
+    "RFC-0011:C-RESOURCE-CONFIG",
+]
+
+[check]
+command = "cargo test --profile ci -p veloq --bin veloq daemon:: && cargo test --profile ci -p veloq --test daemon_contract"
+timeout_secs = 600

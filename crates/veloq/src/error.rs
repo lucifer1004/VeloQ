@@ -1,3 +1,4 @@
+use crate::daemon::DaemonError;
 use crate::meta::MetaError;
 use std::borrow::Cow;
 use thiserror::Error;
@@ -16,13 +17,30 @@ pub enum CliError {
     #[error("{source}")]
     SourceRun { source: SourceRunError },
 
+    #[error("writing source command output")]
+    SourceOutput {
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error(transparent)]
     Meta(#[from] MetaError),
+
+    #[error(transparent)]
+    Daemon(#[from] DaemonError),
 }
 
 impl CliError {
     pub fn source_run(source: SourceRunError) -> Self {
         Self::SourceRun { source }
+    }
+
+    pub fn source_output(source: std::io::Error) -> Self {
+        Self::SourceOutput { source }
+    }
+
+    pub fn daemon(source: DaemonError) -> Self {
+        Self::Daemon(source)
     }
 }
 
@@ -34,13 +52,16 @@ impl VeloqDiagnostic for CliError {
                 ErrorCode::new("cli.default-source-not-registered")
             }
             Self::SourceRun { .. } => ErrorCode::new("cli.source-run"),
+            Self::SourceOutput { .. } => ErrorCode::new("cli.source-output"),
             Self::Meta(err) => err.code(),
+            Self::Daemon(err) => err.code(),
         }
     }
 
     fn hint(&self) -> Option<Cow<'_, str>> {
         match self {
             Self::Meta(err) => err.hint(),
+            Self::Daemon(err) => err.hint(),
             _ => None,
         }
     }

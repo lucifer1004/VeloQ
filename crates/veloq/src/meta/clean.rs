@@ -11,6 +11,7 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use veloq_core::{
     ARTIFACT_DIR_SUFFIX, EnvelopeTraceRef, OutputFormat, ProfileSource, artifact_dir_for,
 };
@@ -64,7 +65,7 @@ pub fn cli() -> Command {
 
 pub fn run(
     matches: &ArgMatches,
-    sources: &[Box<dyn ProfileSource>],
+    sources: &[Arc<dyn ProfileSource>],
     fmt: OutputFormat,
 ) -> MetaResult<i32> {
     let trace_str = match matches.get_one::<String>("trace") {

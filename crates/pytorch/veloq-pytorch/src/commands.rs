@@ -7,15 +7,16 @@ use crate::cli::{Cmd, CommonArgs, EventArgs, ScopeArgs};
 use crate::error::{PytorchCommandError, PytorchCommandResult, PytorchSourceError};
 use crate::schema::{SchemaPayload, schema_value_for};
 use crate::source::PytorchSource;
-use crate::views::emit_tabular;
+use crate::views::render_tabular;
 use std::path::Path;
-use veloq_core::{Envelope, OutputFormat, TraceSpan};
+use veloq_core::{Envelope, OutputFormat, SourceExecution, TraceSpan};
 use veloq_pytorch_query::{EventFilterRequest, RankScope};
 
 pub(crate) fn run(
     cmd: Cmd,
     trace_path: Option<&Path>,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) -> crate::PytorchSourceResult<i32> {
     let verb = cmd.name();
     let qualified = format!("{}.{verb}", PytorchSource::KIND);
@@ -36,17 +37,16 @@ pub(crate) fn run(
                 schema,
             },
         );
-        println!(
-            "{}",
+        output.write_stdout_line(
             env.to_json_pretty()
-                .map_err(PytorchSourceError::serialize_envelope)?
+                .map_err(PytorchSourceError::serialize_envelope)?,
         );
         return Ok(0);
     }
 
     let trace_path = trace_path.ok_or(PytorchCommandError::MissingTracePath)?;
 
-    dispatch_trace_command(cmd, &qualified, trace_path, fmt)
+    dispatch_trace_command(cmd, &qualified, trace_path, fmt, output)
 }
 
 fn dispatch_trace_command(
@@ -54,6 +54,7 @@ fn dispatch_trace_command(
     qualified: &str,
     trace_path: &Path,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) -> crate::PytorchSourceResult<i32> {
     match cmd {
         Cmd::Summary { .. } => {
@@ -65,6 +66,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Search { filters, .. } => {
@@ -77,6 +79,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Inspect { row_ids, .. } => {
@@ -88,6 +91,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Stats {
@@ -103,6 +107,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Correlate { row_ids, .. } => {
@@ -114,6 +119,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Timeline {
@@ -130,6 +136,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Slices {
@@ -151,6 +158,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Collectives {
@@ -174,6 +182,7 @@ fn dispatch_trace_command(
                 trace.envelope_trace_span(),
                 fmt,
                 response,
+                output,
             )
         }
         Cmd::Prep { status, .. } => {
@@ -183,7 +192,7 @@ fn dispatch_trace_command(
             let state = veloq_pytorch_data::prep_state(trace_path)?;
             let response = veloq_pytorch_query::prep_response(state, !status);
             let span = veloq_pytorch_data::trace_span_for_path(trace_path);
-            emit_response(qualified, trace_path, span, fmt, response)
+            emit_response(qualified, trace_path, span, fmt, response, output)
         }
         Cmd::Schema { .. } => Err(PytorchCommandError::SchemaDispatchedAsTraceCommand.into()),
     }
@@ -267,6 +276,7 @@ fn emit_response<T: serde::Serialize>(
     trace_span: Option<TraceSpan>,
     fmt: OutputFormat,
     response: T,
+    output: &mut SourceExecution,
 ) -> crate::PytorchSourceResult<i32> {
     let trace_str = trace.display().to_string();
     match fmt {
@@ -279,14 +289,13 @@ fn emit_response<T: serde::Serialize>(
                 None,
                 response,
             );
-            println!(
-                "{}",
+            output.write_stdout_line(
                 env.to_json_pretty()
-                    .map_err(PytorchSourceError::serialize_envelope)?
+                    .map_err(PytorchSourceError::serialize_envelope)?,
             );
         }
         OutputFormat::Csv | OutputFormat::Table => {
-            emit_tabular(&response, qualified, &trace_str, fmt)?;
+            render_tabular(&response, qualified, &trace_str, fmt, output)?;
         }
     }
     Ok(0)

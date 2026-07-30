@@ -483,6 +483,18 @@ fn graph_replays_node_mode_groups_by_correlation_and_orders_top_nodes() -> Resul
     assert_eq!(first.busy_ns, 15_000_000);
     assert_eq!(first.idle_inside_replay_ns, 500_000);
     assert!(first.decomposition_available);
+    assert!(r.rows.iter().all(|row| {
+        row.launcher_row_id
+            .is_some_and(|id| id.kind == EventKind::Runtime)
+    }));
+    assert_eq!(
+        r.rows
+            .iter()
+            .filter_map(|row| row.launcher_row_id.map(|id| id.rowid))
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        3
+    );
     assert_eq!(first.top_nodes.len(), 2);
     let first_node = first
         .top_nodes

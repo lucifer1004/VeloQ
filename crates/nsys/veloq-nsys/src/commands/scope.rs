@@ -1,5 +1,5 @@
 use std::path::Path;
-use veloq_core::{OutputFormat, TraceSpan};
+use veloq_core::{OutputFormat, SourceExecution, TraceSpan};
 use veloq_nsys_data::scope::{ResolveError, ResolvedScope, ScopeRequest, resolve_scope};
 
 use crate::error::{NsysSourceError, NsysSourceResult};
@@ -22,17 +22,27 @@ use crate::output::emit_ambiguity_error;
 /// `meta.applied_scope` block and any SQL WHERE clauses it builds.
 pub(super) fn resolve_or_refuse(
     trace_path: &Path,
+    resident_trace: Option<&veloq_nsys_data::Trace>,
     fmt: OutputFormat,
     verb: &str,
     trace_span: Option<TraceSpan>,
     req: ScopeRequest,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<Option<ResolvedScope>> {
-    let trace_handle = veloq_nsys_data::Trace::open(trace_path)
-        .map_err(|source| NsysSourceError::scope_trace_open(trace_path.display(), source))?;
-    match resolve_scope(&trace_handle, req) {
+    let opened;
+    let trace_handle = match resident_trace {
+        Some(trace) => trace,
+        None => {
+            opened = veloq_nsys_data::Trace::open(trace_path).map_err(|source| {
+                NsysSourceError::scope_trace_open(trace_path.display(), source)
+            })?;
+            &opened
+        }
+    };
+    match resolve_scope(trace_handle, req) {
         Ok(scope) => Ok(Some(scope)),
         Err(ResolveError::Ambiguous(amb)) => {
-            emit_ambiguity_error(verb, trace_path, trace_span, &amb, fmt);
+            emit_ambiguity_error(verb, trace_path, trace_span, &amb, fmt, output);
             Ok(None)
         }
         Err(ResolveError::Probe(e)) => Err(NsysSourceError::from(*e)),

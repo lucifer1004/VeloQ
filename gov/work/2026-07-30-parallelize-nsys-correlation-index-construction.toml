@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-013"
+title = "Parallelize NSys correlation index construction"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-CUDA-IDENTITY",
+    "RFC-0005:C-FRESHNESS",
+]
+
+[content]
+description = "Reduce cold NSys correlation-index latency by sorting typed process/device/context/correlation items within the trace's machine-adaptive worker budget and merging each sorted identity run with one hash insertion, while preserving process-aware identity, cache freshness, and query results."
+
+[[content.acceptance_criteria]]
+text = "Correlation items retain the strongly typed process-aware SyntheticId and are ordered in the trace's bounded query worker pool with an explicit serial fallback."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Sorted items are merged with one groups-map insertion per synthetic identity rather than one hash lookup per item, preserving every per-kind row id."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Cold and warm correlation caches preserve process-aware stats and correlate behavior on synthetic and real profiles."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Prof-profile measurements on a representative large multi-process profile demonstrate reduced cold-build latency without changing the wire contract."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

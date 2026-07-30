@@ -1,0 +1,65 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-004"
+title = "Enable core NSys queries through the daemon"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-29"
+refs = [
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-SOURCE-CAPABILITY",
+    "RFC-0006:C-SOURCE-IDENTITY",
+    "RFC-0006:C-COMMAND-SURFACE",
+    "RFC-0006:C-ROW-KEYS",
+    "RFC-0006:C-EVENT-REF",
+    "RFC-0005:C-CACHE-REUSE",
+    "RFC-0005:C-FRESHNESS",
+    "ADR-0002",
+]
+depends_on = ["WI-2026-07-29-003"]
+
+[content]
+description = "Deliver the first source rollout by enabling daemon execution and resident reuse for the core NSys drill and scan query families, while preserving process-aware CUDA identity, source v4 wire semantics, freshness, and explicit unsupported behavior for commands outside the rollout."
+
+[[content.acceptance_criteria]]
+text = "NSys summary, search, inspect, correlate, stats, timeline, concurrency, gaps, and slices advertise and execute daemon capability; commands outside this rollout follow governed unsupported and auto-fallback behavior"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Warm NSys sessions reuse eligible metadata, correlation, NVTX, GPU-work, and query-engine state without creating a daemon-only evidence or source-wire contract"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Daemon-versus-off differential tests preserve rows, keys, ordering, totals, auxiliary evidence, truncation, output projections, and handled errors across the supported command set"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Multi-process fixtures keep rank-private logical device zero, context, stream, graph, and correlation identities separate and retain the same ambiguous-device rejection under daemon routing"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Source mutation, generated-parquet aliasing, sidecar replacement, and clean-and-rebuild scenarios invalidate resident NSys state before reuse"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "A leak-safe benchmark harness reports warm and cold daemon-versus-off statistics separately for drill and scan workloads without committing private trace identities or raw local output"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-ROW-WIRE-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+]

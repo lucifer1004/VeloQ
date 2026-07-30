@@ -34,6 +34,7 @@ use crate::nvtx_nesting::NvtxEntry;
 use crate::{NsysDataError, NsysDataResult, Trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::mem;
 use std::path::{Path, PathBuf};
 use veloq_core::{SidecarCache, SourceFingerprint};
 
@@ -84,6 +85,94 @@ pub struct PerTableEntry {
     pub row_count: i64,
     pub start_ns: i64,
     pub end_ns: i64,
+}
+
+impl TraceMetaCache {
+    /// Heap memory retained after this decoded model is installed in a
+    /// resident [`Trace`]. The struct itself lives inline in `Trace`'s
+    /// `OnceLock` and is already covered by the session's base estimate.
+    pub(crate) fn retained_heap_estimate_bytes(&self) -> u64 {
+        let mut bytes = option_string_capacity(&self.product_version);
+        bytes = add_vec_storage::<HostInfo>(bytes, self.hosts.capacity());
+        for host in &self.hosts {
+            bytes = bytes.saturating_add(host_retained_heap_bytes(host));
+        }
+        bytes = add_vec_storage::<String>(bytes, self.available_tables.capacity());
+        for table in &self.available_tables {
+            bytes = add_usize(bytes, table.capacity());
+        }
+        bytes = add_vec_storage::<PerTableEntry>(bytes, self.per_table.capacity());
+        for table in &self.per_table {
+            bytes = add_usize(bytes, table.name.capacity());
+        }
+        bytes = add_usize(
+            bytes,
+            self.nvtx_nesting
+                .capacity()
+                .saturating_mul(mem::size_of::<(i64, NvtxEntry)>()),
+        );
+        bytes
+    }
+}
+
+fn host_retained_heap_bytes(host: &HostInfo) -> u64 {
+    let mut bytes = add_usize(0, host.key.capacity());
+    if let Some(system) = &host.system {
+        for value in [
+            &system.hostname,
+            &system.system_uid,
+            &system.os_description,
+            &system.kernel_version,
+            &system.hardware_platform,
+            &system.software_platform,
+            &system.software_release_version,
+        ] {
+            bytes = bytes.saturating_add(option_string_capacity(value));
+        }
+    }
+    if let Some(drivers) = &host.drivers {
+        for value in [
+            &drivers.cuda_driver_version,
+            &drivers.nv_driver_version,
+            &drivers.ofed_driver_version,
+        ] {
+            bytes = bytes.saturating_add(option_string_capacity(value));
+        }
+    }
+    if let Some(cpu) = &host.cpu {
+        bytes = add_usize(bytes, cpu.model.capacity());
+        bytes = bytes.saturating_add(option_string_capacity(&cpu.architecture));
+    }
+    bytes = add_vec_storage::<crate::hardware::GpuInfo>(bytes, host.gpus.capacity());
+    for gpu in &host.gpus {
+        bytes = add_usize(bytes, gpu.name.capacity());
+        for value in [&gpu.uuid, &gpu.chip_name, &gpu.bus_location] {
+            bytes = bytes.saturating_add(option_string_capacity(value));
+        }
+    }
+    bytes = add_vec_storage::<crate::hardware::NicInfo>(bytes, host.nics.capacity());
+    for nic in &host.nics {
+        bytes = add_usize(bytes, nic.name.capacity());
+    }
+    bytes
+}
+
+fn option_string_capacity(value: &Option<String>) -> u64 {
+    value
+        .as_ref()
+        .map_or(0, |value| usize_to_u64(value.capacity()))
+}
+
+fn add_vec_storage<T>(bytes: u64, capacity: usize) -> u64 {
+    add_usize(bytes, capacity.saturating_mul(mem::size_of::<T>()))
+}
+
+fn add_usize(bytes: u64, additional: usize) -> u64 {
+    bytes.saturating_add(usize_to_u64(additional))
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 /// Build the [`SidecarCache`] handle for a trace's `meta.bin`. The

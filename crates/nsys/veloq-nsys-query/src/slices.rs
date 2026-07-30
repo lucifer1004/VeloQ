@@ -416,7 +416,15 @@ pub struct GpuStreamSpan {
 pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<SlicesResponse> {
     crate::check_limit(req.limit)?;
     let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_after_limit(&trace, req)
+}
 
+pub fn run_with_trace(trace: &Trace, req: SlicesRequest) -> NsysQueryResult<SlicesResponse> {
+    crate::check_limit(req.limit)?;
+    run_after_limit(trace, req)
+}
+
+fn run_after_limit(trace: &Trace, req: SlicesRequest) -> NsysQueryResult<SlicesResponse> {
     // NVTX_EVENTS / RUNTIME / CONTEXT_INFO are all required for the
     // attribution walk to make sense. They're each optional in the NSys
     // export schema; if any is missing, bail with a structured error
@@ -500,7 +508,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
 
     if req.view == SlicesView::Aggregate {
         return run_aggregate(
-            &trace,
+            trace,
             req,
             abs_window,
             &name_predicate,
@@ -533,7 +541,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     // `inspect`. The sidecar replaces a per-call containment join
     // against `CUPTI_ACTIVITY_KIND_RUNTIME` with a JOIN against
     // `read_parquet('<sidecar>')` UNNESTed by enclosing-rowid lists.
-    let sidecar_path = runtime_nvtx_parent::ensure_sidecar(&trace)
+    let sidecar_path = runtime_nvtx_parent::ensure_sidecar(trace)
         .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
     let sidecar_quoted = crate::nvtx_projection::quote_sidecar_path(&sidecar_path);
     let sidecar_expanded_cte =
@@ -559,7 +567,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     let mut gpu_event_unions: Vec<&str> = Vec::with_capacity(3);
     if has_kernel {
         gpu_event_ctes.push(gpu_kind_cte(
-            &trace,
+            trace,
             "gpu_kernels",
             "kernel",
             "CUPTI_ACTIVITY_KIND_KERNEL",
@@ -568,7 +576,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     }
     if has_memcpy {
         gpu_event_ctes.push(gpu_kind_cte(
-            &trace,
+            trace,
             "gpu_memcpys",
             "memcpy",
             "CUPTI_ACTIVITY_KIND_MEMCPY",
@@ -577,7 +585,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
     }
     if has_memset {
         gpu_event_ctes.push(gpu_kind_cte(
-            &trace,
+            trace,
             "gpu_memsets",
             "memset",
             "CUPTI_ACTIVITY_KIND_MEMSET",
@@ -685,7 +693,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SlicesRequest) -> NsysQueryResult<Slice
         "#
     );
 
-    let (slices, total_matched) = hydrate_slice_rows(&trace, &sql, &params)?;
+    let (slices, total_matched) = hydrate_slice_rows(trace, &sql, &params)?;
 
     Ok(SlicesResponse {
         attribution: "correlation",

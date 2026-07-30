@@ -1,0 +1,49 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-001"
+title = "Share query execution between one-shot and daemon"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-29"
+refs = [
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-NON-GOALS",
+    "RFC-0002:C-DEFAULT-MACHINE-OUTPUT",
+    "RFC-0002:C-STDOUT-STDERR",
+    "RFC-0004:C-SOURCE-EXCEPTIONS",
+    "ADR-0002",
+]
+
+[content]
+description = "Create a source-neutral query execution boundary shared by one-shot and daemon dispatch so every supported source preserves its existing output, error, and evidence semantics without coupling execution to process-owned stdout."
+
+[[content.acceptance_criteria]]
+text = "Registered source trace queries execute through a shared source-neutral boundary that does not write directly to process stdout"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "One-shot dispatch projects shared success and handled-error outcomes into the existing JSON, CSV, and table stdout, stderr, and exit-status contracts"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Differential fixtures preserve envelope, source, command, trace, row ordering, totals, auxiliary evidence, and handled-error context across representative NSys, NCU, and PyTorch commands"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Maintainer documentation identifies the shared execution boundary and keeps the independently executable stateless one-shot path explicit"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-ROW-WIRE-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-NCU-WIRE-CONTRACT",
+    "GUARD-PYTORCH-WIRE-CONTRACT",
+]

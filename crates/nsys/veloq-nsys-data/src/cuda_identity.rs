@@ -7,6 +7,7 @@
 //! those rows.
 
 use crate::{NsysDataResult, Trace};
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy)]
@@ -15,10 +16,16 @@ struct RuntimeAnchor {
     end_ns: i64,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum NativeProcessEvidence {
+    Unique(i64),
+    Ambiguous,
+}
+
 /// In-memory resolver shared by sidecar and correlation-index builders.
 #[derive(Debug, Default)]
 pub struct CudaProcessResolver {
-    global_to_native: HashMap<i64, i64>,
+    global_to_native: HashMap<i64, NativeProcessEvidence>,
     context_processes: HashMap<(i32, i64), Vec<i64>>,
     runtime_anchors: HashMap<(i64, i64), Vec<RuntimeAnchor>>,
     known_processes: HashSet<i64>,
@@ -52,8 +59,10 @@ impl CudaProcessResolver {
         global_pid: Option<i64>,
     ) -> Option<i64> {
         if let Some(global_pid) = global_pid {
-            if let Some(&native_pid) = self.global_to_native.get(&global_pid) {
-                return Some(native_pid);
+            match self.global_to_native.get(&global_pid) {
+                Some(NativeProcessEvidence::Unique(native_pid)) => return Some(*native_pid),
+                Some(NativeProcessEvidence::Ambiguous) => return None,
+                None => {}
             }
             // Some partial exports carry a native pid directly but omit
             // PROCESSES. Accept it only when another trace table confirms
@@ -170,7 +179,19 @@ impl CudaProcessResolver {
             let native_pid: i64 = row
                 .get(1)
                 .map_err(|source| crate::NsysDataError::correlation_scan_read(TABLE, source))?;
-            self.global_to_native.insert(global_pid, native_pid);
+            match self.global_to_native.entry(global_pid) {
+                Entry::Vacant(entry) => {
+                    entry.insert(NativeProcessEvidence::Unique(native_pid));
+                }
+                Entry::Occupied(mut entry) => {
+                    if matches!(
+                        entry.get(),
+                        NativeProcessEvidence::Unique(existing) if *existing != native_pid
+                    ) {
+                        entry.insert(NativeProcessEvidence::Ambiguous);
+                    }
+                }
+            }
             self.known_processes.insert(native_pid);
         }
         Ok(())
@@ -272,83 +293,119 @@ pub fn native_pid_from_global_tid(global_tid: i64) -> i64 {
     (global_tid >> 24) & 0xFF_FFFF
 }
 
-/// SQL `LEFT JOIN LATERAL` that resolves one `t`-aliased CUDA activity
-/// row to `join_alias.process_id`.
-///
-/// All identifiers are internal constants supplied by VeloQ; no user input is
-/// interpolated.
-pub fn process_lateral_join_sql(
+fn cuda_activity_process_projection(
     trace: &Trace,
     table: &str,
     event_alias: &str,
     join_alias: &str,
     start_expr: &str,
-) -> String {
-    let mut candidates = Vec::new();
-    if trace.table_has_column(table, "globalPid")
+) -> ProcessSqlProjection {
+    let direct_capable = trace.table_has_column(table, "globalPid")
         && trace.table_exists("PROCESSES")
         && trace.table_has_column("PROCESSES", "globalPid")
-        && trace.table_has_column("PROCESSES", "pid")
-    {
-        candidates.push(format!(
-            "SELECT CAST(p.pid AS BIGINT) AS process_id, 0 AS priority, \
-                    0 AS after_activity, 0::BIGINT AS distance \
-             FROM nsight.PROCESSES p \
-             WHERE p.globalPid = {event_alias}.globalPid"
+        && trace.table_has_column("PROCESSES", "pid");
+    let context_capable = trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO");
+    let runtime_capable = context_capable
+        && trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
+        && trace.table_has_column(table, "correlationId");
+
+    if !direct_capable && !context_capable {
+        return ProcessSqlProjection {
+            expr: "CAST(NULL AS BIGINT)".to_string(),
+            join: String::new(),
+        };
+    }
+
+    let direct_alias = format!("{join_alias}_direct");
+    let context_alias = format!("{join_alias}_context");
+    let runtime_alias = format!("{join_alias}_runtime");
+    let mut joins = String::new();
+
+    let direct_expr = if direct_capable {
+        joins.push_str(&format!(
+            "LEFT JOIN (\
+                 SELECT globalPid, \
+                        CASE WHEN COUNT(DISTINCT CAST(pid AS BIGINT)) = 1 \
+                             THEN MIN(CAST(pid AS BIGINT)) END AS process_id, \
+                        COUNT(DISTINCT CAST(pid AS BIGINT)) AS process_count \
+                 FROM nsight.PROCESSES \
+                 WHERE globalPid IS NOT NULL AND pid IS NOT NULL \
+                 GROUP BY globalPid\
+             ) {direct_alias} \
+               ON {direct_alias}.globalPid = {event_alias}.globalPid "
         ));
-    }
-    if trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO") {
-        if trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
-            && trace.table_has_column(table, "correlationId")
-        {
-            let runtime_pid = native_pid_sql("r.globalTid");
-            candidates.push(format!(
-                "SELECT CAST(c.processId AS BIGINT) AS process_id, 1 AS priority, \
-                        CASE WHEN COALESCE(r.\"end\", r.start) > {start_expr} \
-                             THEN 1 ELSE 0 END AS after_activity, \
-                        ABS(CAST(COALESCE(r.\"end\", r.start) AS BIGINT) \
-                            - CAST({start_expr} AS BIGINT)) AS distance \
-                 FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO c \
-                 JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r \
-                   ON r.correlationId = {event_alias}.correlationId \
-                  AND {runtime_pid} = CAST(c.processId AS BIGINT) \
-                 WHERE CAST(c.deviceId AS INTEGER) = CAST({event_alias}.deviceId AS INTEGER) \
-                   AND CAST(c.contextId AS BIGINT) = CAST({event_alias}.contextId AS BIGINT)"
-            ));
-        }
-        candidates.push(format!(
-            "SELECT MIN(CAST(c.processId AS BIGINT)) AS process_id, 2 AS priority, \
-                    0 AS after_activity, 0::BIGINT AS distance \
-             FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO c \
-             WHERE CAST(c.deviceId AS INTEGER) = CAST({event_alias}.deviceId AS INTEGER) \
-               AND CAST(c.contextId AS BIGINT) = CAST({event_alias}.contextId AS BIGINT) \
-             HAVING COUNT(DISTINCT CAST(c.processId AS BIGINT)) = 1"
+        format!("{direct_alias}.process_id")
+    } else {
+        "CAST(NULL AS BIGINT)".to_string()
+    };
+    let direct_missing = if direct_capable {
+        format!("{direct_alias}.process_count IS NULL")
+    } else {
+        "TRUE".to_string()
+    };
+
+    let context_expr = if context_capable {
+        joins.push_str(&format!(
+            "LEFT JOIN (\
+                 SELECT CAST(deviceId AS INTEGER) AS device_id, \
+                        CAST(contextId AS BIGINT) AS context_id, \
+                        MIN(CAST(processId AS BIGINT)) AS process_id \
+                 FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO \
+                 GROUP BY CAST(deviceId AS INTEGER), CAST(contextId AS BIGINT) \
+                 HAVING COUNT(DISTINCT CAST(processId AS BIGINT)) = 1\
+             ) {context_alias} \
+               ON {direct_missing} \
+              AND {context_alias}.device_id = CAST({event_alias}.deviceId AS INTEGER) \
+              AND {context_alias}.context_id = CAST({event_alias}.contextId AS BIGINT) "
         ));
+        format!("{context_alias}.process_id")
+    } else {
+        "CAST(NULL AS BIGINT)".to_string()
+    };
+
+    let runtime_expr = if runtime_capable {
+        let runtime_pid = native_pid_sql("r.globalTid");
+        joins.push_str(&format!(
+            "LEFT JOIN LATERAL (\
+                 WITH runtime_candidates AS (\
+                     SELECT CAST(c.processId AS BIGINT) AS process_id, \
+                            CASE WHEN COALESCE(r.\"end\", r.start) > {start_expr} \
+                                 THEN 1 ELSE 0 END AS after_activity, \
+                            ABS(CAST(COALESCE(r.\"end\", r.start) AS BIGINT) \
+                                - CAST({start_expr} AS BIGINT)) AS distance \
+                     FROM nsight.TARGET_INFO_CUDA_CONTEXT_INFO c \
+                     JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r \
+                       ON r.correlationId = {event_alias}.correlationId \
+                      AND {runtime_pid} = CAST(c.processId AS BIGINT) \
+                     WHERE {direct_missing} \
+                       AND {context_expr} IS NULL \
+                       AND CAST(c.deviceId AS INTEGER) \
+                           = CAST({event_alias}.deviceId AS INTEGER) \
+                       AND CAST(c.contextId AS BIGINT) \
+                           = CAST({event_alias}.contextId AS BIGINT)\
+                 ), \
+                 ranked AS (\
+                     SELECT process_id, \
+                            DENSE_RANK() OVER (\
+                                ORDER BY after_activity, distance\
+                            ) AS score_rank \
+                     FROM runtime_candidates\
+                 ) \
+                 SELECT MIN(process_id) AS process_id \
+                 FROM ranked \
+                 WHERE score_rank = 1 \
+                 HAVING COUNT(DISTINCT process_id) = 1\
+             ) {runtime_alias} ON TRUE "
+        ));
+        format!("{runtime_alias}.process_id")
+    } else {
+        "CAST(NULL AS BIGINT)".to_string()
+    };
+
+    ProcessSqlProjection {
+        expr: format!("COALESCE({direct_expr}, {context_expr}, {runtime_expr})"),
+        join: joins,
     }
-    let union = candidates.join(" UNION ALL ");
-    if union.is_empty() {
-        return format!(
-            "LEFT JOIN LATERAL (SELECT CAST(NULL AS BIGINT) AS process_id) \
-             {join_alias} ON TRUE"
-        );
-    }
-    format!(
-        "LEFT JOIN LATERAL (\
-             WITH process_candidates AS ({union}), \
-             ranked AS (\
-                 SELECT process_id, \
-                        DENSE_RANK() OVER (\
-                            ORDER BY priority, after_activity, distance\
-                        ) AS score_rank \
-                 FROM process_candidates \
-                 WHERE process_id IS NOT NULL\
-             ) \
-             SELECT MIN(process_id) AS process_id \
-             FROM ranked \
-             WHERE score_rank = 1 \
-             HAVING COUNT(DISTINCT process_id) = 1\
-         ) {join_alias} ON TRUE"
-    )
 }
 
 pub fn native_pid_sql(global_tid_expr: &str) -> String {
@@ -374,10 +431,7 @@ pub fn process_sql_projection(
     start_expr: &str,
 ) -> ProcessSqlProjection {
     if trace.table_has_column(table, "deviceId") && trace.table_has_column(table, "contextId") {
-        return ProcessSqlProjection {
-            expr: format!("{join_alias}.process_id"),
-            join: process_lateral_join_sql(trace, table, event_alias, join_alias, start_expr),
-        };
+        return cuda_activity_process_projection(trace, table, event_alias, join_alias, start_expr);
     }
     if trace.table_has_column(table, "globalTid") {
         return ProcessSqlProjection {
@@ -451,14 +505,96 @@ mod tests {
         let resolver = CudaProcessResolver::build(&trace)?;
         assert_eq!(resolver.resolve(0, 1, Some(42), 100, None), None);
 
-        let join =
-            process_lateral_join_sql(&trace, "CUPTI_ACTIVITY_KIND_KERNEL", "t", "proc", "t.start");
+        let process =
+            process_sql_projection(&trace, "CUPTI_ACTIVITY_KIND_KERNEL", "t", "proc", "t.start");
         let sql = format!(
-            "SELECT proc.process_id \
-             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL t {join}"
+            "SELECT {expr} \
+             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL t {join}",
+            expr = process.expr,
+            join = process.join,
         );
         let process_id: Option<i64> = trace.conn().query_row(&sql, [], |row| row.get(0))?;
         assert_eq!(process_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn sql_projection_follows_ordered_process_evidence() -> Result<()> {
+        let (_dir, pqtdir) = parquet_fixture_with_rows(&[
+            (
+                "PROCESSES",
+                "CREATE TABLE PROCESSES (globalPid BIGINT, pid BIGINT)",
+                vec![
+                    "INSERT INTO PROCESSES VALUES (111, 1001)",
+                    "INSERT INTO PROCESSES VALUES (222, 1001)",
+                    "INSERT INTO PROCESSES VALUES (222, 2002)",
+                ],
+            ),
+            (
+                "TARGET_INFO_CUDA_CONTEXT_INFO",
+                "CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (\
+                    deviceId BIGINT, contextId BIGINT, processId BIGINT)",
+                vec![
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 1, 1001)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 1, 2002)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 2, 2002)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 3, 1001)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 3, 2002)",
+                    "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO VALUES (0, 4, 1001)",
+                ],
+            ),
+            (
+                "CUPTI_ACTIVITY_KIND_RUNTIME",
+                "CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME (\
+                    start BIGINT, \"end\" BIGINT, globalTid BIGINT, correlationId BIGINT)",
+                vec![
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME \
+                     VALUES (90, 95, 1001::BIGINT << 24, 43)",
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME \
+                     VALUES (70, 80, 2002::BIGINT << 24, 43)",
+                ],
+            ),
+            (
+                "CUPTI_ACTIVITY_KIND_KERNEL",
+                "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (\
+                    start BIGINT, \"end\" BIGINT, deviceId BIGINT, contextId BIGINT, \
+                    correlationId BIGINT, globalPid BIGINT)",
+                vec![
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+                     VALUES (100, 110, 0, 1, 42, 111)",
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+                     VALUES (100, 110, 0, 2, 42, NULL)",
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+                     VALUES (100, 110, 0, 3, 43, NULL)",
+                    "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+                     VALUES (100, 110, 0, 4, 44, 222)",
+                ],
+            ),
+        ])?;
+        let trace = Trace::open(&pqtdir)?;
+        let resolver = CudaProcessResolver::build(&trace)?;
+        let expected = [
+            resolver.resolve(0, 1, Some(42), 100, Some(111)),
+            resolver.resolve(0, 2, Some(42), 100, None),
+            resolver.resolve(0, 3, Some(43), 100, None),
+            resolver.resolve(0, 4, Some(44), 100, Some(222)),
+        ];
+        assert_eq!(expected, [Some(1001), Some(2002), Some(1001), None]);
+
+        let process =
+            process_sql_projection(&trace, "CUPTI_ACTIVITY_KIND_KERNEL", "t", "proc", "t.start");
+        let sql = format!(
+            "SELECT {expr} \
+             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL t {join} \
+             ORDER BY t.rowid",
+            expr = process.expr,
+            join = process.join,
+        );
+        let mut stmt = trace.conn().prepare(&sql)?;
+        let actual = stmt
+            .query_map([], |row| row.get::<_, Option<i64>>(0))?
+            .collect::<duckdb::Result<Vec<_>>>()?;
+        assert_eq!(actual, expected);
         Ok(())
     }
 }

@@ -1,0 +1,35 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-010"
+title = "Eliminate redundant NSys concurrency interval sorts"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "RFC-0006:C-CUDA-IDENTITY",
+    "ADR-0004",
+]
+
+[content]
+description = "Replace duplicated per-device, compute-copy, and per-stream interval collections and sorts with one worker-budgeted parallel ordering pass and optimized in-process sweeps over the established one-shot or resident interval evidence, preserving exact full-trace and bounded-window concurrency semantics while reducing retained memory and repeated ordering work."
+
+[[content.acceptance_criteria]]
+text = "Concurrency aggregation retains one compact interval collection, uses the source query-worker budget for parallel ordering and independent process-device groups, and does not copy or independently sort device, compute-copy, and stream interval sets."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "One-shot and resident concurrency responses remain equivalent for process/device filters, half-open window clipping, same-stream overlap, compute-copy overlap, ordering, limiting, and totals."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Focused differential tests and same-binary prof-profile measurements on a representative large multi-process profile demonstrate lower full-trace latency without adding a persistent artifact or changing the NSys wire."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-NSYS-WIRE-CONTRACT"]

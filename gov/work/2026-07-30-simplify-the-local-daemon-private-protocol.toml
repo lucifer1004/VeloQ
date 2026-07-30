@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-001"
+title = "Simplify the local daemon private protocol"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011:C-PROTOCOL",
+    "RFC-0011:C-ROUTING",
+    "RFC-0011:C-LOCAL-BOUNDARY",
+]
+
+[content]
+description = "Remove duplicate invocation transport and unreachable cancellation frames from the version-coupled, current-user local IPC protocol while preserving capability exchange, environment compatibility rejection before acceptance, ownership/no-replay semantics, lifecycle cancellation, and one-shot equivalence."
+notes = ["Accepted queries already share the daemon environment by construction, so environment serialization was also removed from session and exact-response identity keys; the environment remains on QueryInvocation only for the single pre-acceptance compatibility check."]
+
+[[content.acceptance_criteria]]
+text = "The local compatibility/capability handshake no longer transports the full query invocation; invocation environment compatibility is validated exactly once after query receipt and before acceptance"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Unreachable client-cancel and terminal-cancelled private protocol frames and ownership states are removed without changing daemon.cancelled diagnostics or shutdown behavior"
+status = "done"
+category = "removed"
+
+[[content.acceptance_criteria]]
+text = "Auto fallback, required diagnostics, version/capability exchange, request ownership, and routed output remain contract-equivalent"
+status = "done"
+category = "changed"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-GOVCTL-CHECK",
+    "GUARD-FMT",
+    "GUARD-WORKSPACE-CHECK",
+]

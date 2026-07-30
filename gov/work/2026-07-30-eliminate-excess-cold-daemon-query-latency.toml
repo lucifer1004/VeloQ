@@ -1,0 +1,37 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-007"
+title = "Eliminate excess cold daemon query latency"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Identify and remove avoidable cold-path work that makes a daemon-routed NSys scan substantially slower than the equivalent one-shot query on already prepared local artifacts, without weakening freshness, accounting, cancellation, or output equivalence."
+
+[[content.acceptance_criteria]]
+text = "Cold daemon execution does not redundantly open or scan the same NSys evidence outside the source work required by the equivalent one-shot command."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Freshness revalidation and resident-memory accounting remain bounded metadata operations rather than adding a profile-scale scan after query execution."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Alternating one-shot and cold-daemon runs on a representative large multi-process profile preserve byte-equivalent output and reduce the reproducible excess cold latency to no more than the adjacent one-shot runtime."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

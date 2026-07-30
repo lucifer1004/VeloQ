@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-INTERVAL-ACCELERATION"
+title = "Daemon-resident interval acceleration"
+kind = "normative"
+status = "active"
+since = "0.4.0"
+
+[content]
+text = """
+An NSys daemon session MAY lazily derive a disposable in-memory interval view from resolved NSys source evidence or from an already registered fresh NSys sidecar. The view belongs to that session and MUST NOT be shared across distinct session identities.
+
+This resident view MUST NOT create a new persistent sidecar, artifact-root member, `prep` readiness row, or public or persistent fingerprint contract. Private in-memory identity and fingerprint representations remain implementation details, but they MUST NOT weaken the applicable source or session freshness rules. The existing source evidence and registered sidecars remain the only persistent inputs.
+
+The resident view MUST partition every process-local CUDA axis by native process id before device id, stream id, or another process-private CUDA value is compared or aggregated.
+
+Only GPU work rows with `end_ns > start_ns` are eligible for resident interval acceleration. Eligible work and half-open query windows MUST use the interval `[start_ns, end_ns)`, so overlap is exactly `start_ns < to_ns` and `end_ns > from_ns`, and back-to-back intervals do not create simultaneous-open overlap.
+
+An accelerator-backed `timeline`, `concurrency`, or `gaps` query MUST preserve the complete documented one-shot semantics for the same request, including evidence selection, clipping, counts, aggregates, process and device scope, gap boundaries and bracketing row ids, ordering, limiting, totals, auxiliary data, and handled errors.
+
+When resident eligibility, source freshness, exact equivalence, or request coverage cannot be proven, the query MUST bypass the resident view and use the correctness-preserving one-shot or existing-sidecar path.
+
+Resident interval freshness MUST follow [[RFC-0011:C-SESSION-FRESHNESS]]. Resident interval eviction MUST follow [[RFC-0011:C-EVICTION]]. The view MUST remain disposable and its retained memory MUST be included in daemon-accounted session state under [[RFC-0011:C-RESOURCE-CONFIG]].
+
+Adding, using, bypassing, or evicting this memory-only view MUST NOT by itself change the NSys source wire version, row keys, response fields, `prep` output, artifact cleanup behavior, or one-shot availability.
+
+**Rationale:** On one machine, the existing NSys evidence and `gpu-work-events` sidecar already provide a reusable persistence boundary. A lazy session-local view can remove repeated interval work without adding another format, manifest, publication protocol, or cleanup surface. If it is not useful or is evicted, the established query path remains authoritative."""

@@ -1,0 +1,43 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-005"
+title = "Constrain NSys interval acceleration to resident reuse"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-29"
+refs = [
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-SOURCE-CAPABILITY",
+    "RFC-0005:C-FRESHNESS",
+    "RFC-0005:C-CACHE-REUSE",
+    "RFC-0006:C-COMMAND-SURFACE",
+    "RFC-0006:C-ROW-KEYS",
+    "ADR-0002",
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "ADR-0004",
+]
+
+[content]
+description = "Apply the single-machine Occam boundary to NSys scan acceleration: reuse existing source or registered sidecar evidence, permit only disposable daemon-resident interval views, preserve exact one-shot semantics and process-aware identity, and require cache-miss evidence before implementation."
+
+[[content.acceptance_criteria]]
+text = "The NSys source RFC permits optional daemon-resident interval reuse without adding a persistent sidecar, prep readiness row, fingerprint contract, or cleanup surface"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "A replacement ADR records why existing persistent evidence plus disposable resident views are preferred over a checkpointed persistent interval artifact for the single-machine scope"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Resident interval reuse remains process-aware, uses positive-duration half-open evidence, preserves complete one-shot semantics, and falls back whenever equivalence or freshness cannot be proven"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Any implementation decision is gated by varying-argument workloads that miss the exact-response cache and separately report resident build cost, warm reuse, eviction rebuild, retained memory, and one-shot latency"
+status = "done"
+category = "chore"

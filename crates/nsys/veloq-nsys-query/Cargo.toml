@@ -19,6 +19,7 @@ serde.workspace = true
 schemars.workspace = true
 log.workspace = true
 thiserror.workspace = true
+rayon.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

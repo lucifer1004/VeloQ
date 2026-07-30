@@ -17,6 +17,8 @@ mod parquet;
 use crate::gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
 use crate::{NsysDataResult, Trace};
 use parquet::{read_parquet, sidecar_is_fresh, write_parquet};
+use rayon::prelude::*;
+use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 use veloq_core::SourceFingerprint;
@@ -154,16 +156,19 @@ fn compute(trace: &Trace) -> NsysDataResult<Vec<GpuWorkEventRecord>> {
     for kind in GPU_WORK_INTERVAL_KINDS {
         collect_kind(trace, &resolver, kind, &mut records)?;
     }
-    records.sort_by(|a, b| {
-        a.start_ns
-            .cmp(&b.start_ns)
-            .then(a.process_id.cmp(&b.process_id))
-            .then(a.device_id.cmp(&b.device_id))
-            .then(a.stream_id.cmp(&b.stream_id))
-            .then(a.kind.cmp(&b.kind))
-            .then(a.row_id.cmp(&b.row_id))
-    });
+    let pool = trace.build_query_worker_pool()?;
+    pool.install(|| records.par_sort_unstable_by(gpu_work_event_order));
     Ok(records)
+}
+
+fn gpu_work_event_order(a: &GpuWorkEventRecord, b: &GpuWorkEventRecord) -> Ordering {
+    a.start_ns
+        .cmp(&b.start_ns)
+        .then(a.process_id.cmp(&b.process_id))
+        .then(a.device_id.cmp(&b.device_id))
+        .then(a.stream_id.cmp(&b.stream_id))
+        .then(a.kind.cmp(&b.kind))
+        .then(a.row_id.cmp(&b.row_id))
 }
 
 fn collect_kind(
@@ -207,7 +212,6 @@ fn collect_kind(
             t.{start_col} AS start_ns,
             t.{end_col} AS end_ns
         FROM nsight.{table} t
-        ORDER BY start_ns, row_id
         "#
     );
     let mut stmt = trace
@@ -343,6 +347,13 @@ mod tests {
         let records =
             load_if_present(&trace)?.ok_or_else(|| anyhow::anyhow!("fresh sidecar should load"))?;
         assert_eq!(records.len(), 4, "records: {records:?}");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.start_ns)
+                .collect::<Vec<_>>(),
+            vec![90, 100, 120, 140]
+        );
         let memcpy = records
             .iter()
             .find(|r| r.kind == "memcpy")

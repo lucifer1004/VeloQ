@@ -118,7 +118,7 @@ pub fn join_clause(
             )
         }
         EventKind::Kernel | EventKind::Memcpy | EventKind::Memset | EventKind::Sync => {
-            let process_join = veloq_nsys_data::process_lateral_join_sql(
+            let process = veloq_nsys_data::process_sql_projection(
                 trace,
                 kind.table(),
                 "t",
@@ -128,10 +128,12 @@ pub fn join_clause(
             format!(
                 "{process_join} \
                  LEFT JOIN {read} np \
-                   ON np.native_pid     = cuda_proc.process_id \
+                   ON np.native_pid     = {process_expr} \
                   AND np.device_id      = {dev} \
                   AND np.context_id     = {ctx} \
                   AND np.correlation_id = t.correlationId",
+                process_join = process.join,
+                process_expr = process.expr,
                 dev = crate::kind_sql::GPU_DEVICE_ID_EXPR,
                 ctx = crate::kind_sql::GPU_CONTEXT_ID_EXPR,
             )

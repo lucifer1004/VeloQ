@@ -38,6 +38,7 @@ pub mod nsys_rep;
 pub mod nvtx_nesting;
 pub mod nvtx_stack;
 pub mod nvtx_tree;
+pub mod resident_identity;
 pub mod runtime_nvtx_parent;
 pub mod scope;
 pub mod sidecar;
@@ -56,7 +57,7 @@ pub use capabilities::CapabilityFlags;
 pub use correlation::{CorrelatedRowIds, CorrelationIndex, CorrelationIndexStats, SyntheticId};
 pub use cuda_identity::{
     CudaProcessResolver, ProcessSqlProjection, native_pid_from_global_tid, native_pid_sql,
-    process_lateral_join_sql, process_sql_projection,
+    process_sql_projection,
 };
 pub use error::{DuckdbPhase, NsysDataError, NsysDataResult};
 pub use gpu_work::{GPU_WORK_INTERVAL_COLUMNS, GPU_WORK_INTERVAL_KINDS, GpuWorkKind};
@@ -65,6 +66,7 @@ pub use hardware::{CpuInfo, DriverInfo, GpuInfo, HostInfo, NicInfo, SystemInfo};
 pub use meta_cache::{META_CACHE_VERSION, PerTableEntry, TraceMetaCache};
 pub use nvtx_nesting::{NvtxEntry, NvtxNesting};
 pub use nvtx_tree::{NVTX_TREE_VERSION, NvtxTree, NvtxTreeRecord};
+pub use resident_identity::{ResidentTraceIdentity, resident_trace_identity};
 pub use runtime_nvtx_parent::{
     EnclosingNvtx, RUNTIME_NVTX_PARENT_VERSION, RuntimeNvtxParent, RuntimeParentEntry,
 };
@@ -237,6 +239,28 @@ pub struct Trace {
     detection_method: DetectionMethod,
     schema_version: Option<SchemaVersion>,
     meta_cache: OnceLock<TraceMetaCache>,
+    query_worker_count: usize,
+}
+
+/// Trace-local Rayon pool enforcing the resolved query worker budget.
+pub struct QueryWorkerPool {
+    inner: rayon::ThreadPool,
+}
+
+impl QueryWorkerPool {
+    pub fn install<OP, R>(&self, operation: OP) -> R
+    where
+        OP: FnOnce() -> R + Send,
+        R: Send,
+    {
+        self.inner.install(operation)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueryLimits {
+    worker_threads: usize,
+    memory_bytes: Option<u64>,
 }
 
 impl Trace {
@@ -249,10 +273,37 @@ impl Trace {
     /// `<TABLE>.parquet` file in the parquetdir, then picks a schema
     /// adapter.
     pub fn open<P: AsRef<Path>>(path: P) -> NsysDataResult<Self> {
+        Self::open_with_query_limits(path, None)
+    }
+
+    /// Open a daemon-resident trace with its worker budget and optional
+    /// explicit query-memory ceiling.
+    pub fn open_for_daemon<P: AsRef<Path>>(
+        path: P,
+        worker_threads: usize,
+        memory_bytes: Option<u64>,
+    ) -> NsysDataResult<Self> {
+        Self::open_with_query_limits(
+            path,
+            Some(QueryLimits {
+                worker_threads,
+                memory_bytes,
+            }),
+        )
+    }
+
+    fn open_with_query_limits<P: AsRef<Path>>(
+        path: P,
+        query_limits: Option<QueryLimits>,
+    ) -> NsysDataResult<Self> {
         let resolved = nsys_rep::resolve_trace(path.as_ref())?;
         let source_path = resolved.source_path;
         let pqtdir_path = resolved.pqtdir_path;
-        let (conn, tables) = open_nsight_duckdb(&pqtdir_path)?;
+        let query_limits = query_limits.unwrap_or(QueryLimits {
+            worker_threads: resolve_thread_count(),
+            memory_bytes: None,
+        });
+        let (conn, tables) = open_nsight_duckdb(&pqtdir_path, query_limits)?;
         let choice = pick_adapter(&conn, &pqtdir_path)?;
 
         attach_nvtx_tree_view_if_present(&conn, &source_path)?;
@@ -267,6 +318,7 @@ impl Trace {
             detection_method: choice.method,
             schema_version: choice.schema_version,
             meta_cache: OnceLock::new(),
+            query_worker_count: query_limits.worker_threads,
         })
     }
 
@@ -285,6 +337,21 @@ impl Trace {
 
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+
+    pub fn query_worker_count(&self) -> usize {
+        self.query_worker_count
+    }
+
+    /// Build a local Rayon pool within this trace's machine-adaptive or
+    /// explicitly configured worker budget.
+    pub fn build_query_worker_pool(&self) -> NsysDataResult<QueryWorkerPool> {
+        let inner = rayon::ThreadPoolBuilder::new()
+            .num_threads(self.query_worker_count)
+            .thread_name(|index| format!("veloq-query-{index}"))
+            .build()
+            .map_err(NsysDataError::query_worker_pool_build)?;
+        Ok(QueryWorkerPool { inner })
     }
 
     /// Tables present in the parquetdir, sorted.
@@ -402,6 +469,32 @@ impl Trace {
 
     pub fn meta_cache_initialised(&self) -> bool {
         self.meta_cache.get().is_some()
+    }
+
+    /// Heap retained by lazily decoded source models beyond the base resident
+    /// trace and DuckDB catalog estimate reserved at session admission.
+    pub fn additional_resident_memory_estimate_bytes(&self) -> u64 {
+        self.meta_cache
+            .get()
+            .map_or(0, TraceMetaCache::retained_heap_estimate_bytes)
+    }
+
+    /// Memory currently retained by DuckDB's own buffer manager.
+    ///
+    /// `duckdb_memory()` reports allocator-owned query-engine state by memory
+    /// tag. It excludes profile bytes merely mapped or cached by the operating
+    /// system, which keeps this estimate aligned with the daemon's explicit
+    /// retained-memory boundary.
+    pub fn query_engine_resident_memory_estimate_bytes(&self) -> NsysDataResult<u64> {
+        let bytes = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(memory_usage_bytes), 0)::BIGINT FROM duckdb_memory()",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(NsysDataError::duckdb_resident_memory_read)?;
+        Ok(u64::try_from(bytes).unwrap_or(u64::MAX))
     }
 
     /// Compute the trace's primary + full origins.
@@ -532,19 +625,9 @@ impl Trace {
     }
 }
 
-/// Upper bound on DuckDB's worker pool. DuckDB otherwise defaults to one
-/// worker per host core; on a many-core box (e.g. 224 cores) that spawns
-/// hundreds of workers that sit spinning on a lock for veloq's mostly
-/// serial, one-shot queries — wasting CPU with no wall-time gain. Capping
-/// trims that spin while keeping enough parallelism for the scan/aggregate
-/// verbs: 16 retains ~87% of the full-core aggregation speedup (measured
-/// on a 224-core host) while cutting the idle-worker count ~14×. Override
-/// with `VELOQ_DUCKDB_THREADS` for benchmarking or other host shapes.
-const DUCKDB_THREAD_CAP: usize = 16;
-
 /// Resolve veloq's DuckDB worker-thread count: `VELOQ_DUCKDB_THREADS`
 /// (a positive integer) wins for benchmarking/overrides, otherwise the
-/// host core count clamped to [`DUCKDB_THREAD_CAP`].
+/// shared query-engine default applies.
 fn resolve_thread_count() -> usize {
     if let Some(n) = std::env::var("VELOQ_DUCKDB_THREADS")
         .ok()
@@ -553,32 +636,29 @@ fn resolve_thread_count() -> usize {
     {
         return n;
     }
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(DUCKDB_THREAD_CAP)
+    veloq_core::default_query_worker_count()
 }
 
-/// Cap the connection's worker pool (see [`DUCKDB_THREAD_CAP`]). The
-/// thread count is a veloq-internal integer, never user input, so the
+/// The thread count is a veloq-internal integer, never user input, so the
 /// `PRAGMA` literal is safe.
-fn configure_threads(conn: &Connection) -> NsysDataResult<()> {
-    let threads = resolve_thread_count();
-    conn.execute_batch(&format!("PRAGMA threads={threads}"))
-        .map_err(NsysDataError::duckdb_thread_config)?;
-    Ok(())
-}
-
 /// Open a fresh in-memory DuckDB, create the `nsight` schema, and
 /// register a view for every `<TABLE>.parquet` in the parquetdir.
 /// Returns the connection plus the sorted list of table names that
 /// got a view.
-fn open_nsight_duckdb(pqtdir: &Path) -> NsysDataResult<(Connection, Vec<String>)> {
+fn open_nsight_duckdb(
+    pqtdir: &Path,
+    query_limits: QueryLimits,
+) -> NsysDataResult<(Connection, Vec<String>)> {
     if !pqtdir.is_dir() {
         return Err(NsysDataError::parquetdir_not_found(pqtdir.display()));
     }
     let conn = Connection::open_in_memory().map_err(NsysDataError::duckdb_open_in_memory)?;
-    configure_threads(&conn)?;
+    conn.execute_batch(&format!("PRAGMA threads={}", query_limits.worker_threads))
+        .map_err(NsysDataError::duckdb_thread_config)?;
+    if let Some(memory_bytes) = query_limits.memory_bytes {
+        conn.execute_batch(&format!("SET memory_limit = '{memory_bytes}B'"))
+            .map_err(NsysDataError::duckdb_memory_config)?;
+    }
     conn.execute_batch("CREATE SCHEMA IF NOT EXISTS nsight")
         .map_err(NsysDataError::duckdb_schema_create)?;
 

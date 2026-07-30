@@ -18,9 +18,9 @@
 
 use std::path::Path;
 use veloq_core::{
-    EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ResponseMeta, SourceRef, TraceSpan,
-    VeloqDiagnostic, shell_quote,
-    tabular::{TabularView, emit_csv, emit_table},
+    Envelope, EnvelopeError, EnvelopeTraceRef, NextStep, OutputFormat, ResponseMeta,
+    SourceExecution, SourceRef, TraceSpan, VeloqDiagnostic, shell_quote,
+    tabular::{TabularView, render_csv, render_table},
 };
 
 use crate::error::{NsysSourceError, NsysSourceResult};
@@ -56,8 +56,20 @@ pub fn emit<T: serde::Serialize>(
     trace_span: Option<TraceSpan>,
     verb: &str,
     data: T,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<()> {
-    emit_with_meta(trace, trace_span, verb, None, data)
+    emit_with_meta_evidence(trace, trace, trace_span, verb, None, data, output)
+}
+
+pub fn emit_with_evidence<T: serde::Serialize>(
+    trace: &Path,
+    evidence_trace: &Path,
+    trace_span: Option<TraceSpan>,
+    verb: &str,
+    data: T,
+    output: &mut SourceExecution,
+) -> NsysSourceResult<()> {
+    emit_with_meta_evidence(trace, evidence_trace, trace_span, verb, None, data, output)
 }
 
 /// Same as [`emit`] but populates the envelope's `meta` block. Used by
@@ -69,6 +81,19 @@ pub fn emit_with_meta<T: serde::Serialize>(
     verb: &str,
     meta: Option<ResponseMeta>,
     data: T,
+    output: &mut SourceExecution,
+) -> NsysSourceResult<()> {
+    emit_with_meta_evidence(trace, trace, trace_span, verb, meta, data, output)
+}
+
+fn emit_with_meta_evidence<T: serde::Serialize>(
+    trace: &Path,
+    evidence_trace: &Path,
+    trace_span: Option<TraceSpan>,
+    verb: &str,
+    meta: Option<ResponseMeta>,
+    data: T,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<()> {
     // `compute_trace_span` ran pre-dispatch and only consulted an
     // existing `<trace>.veloq/meta.bin`. Verbs that build the cache (summary,
@@ -76,16 +101,21 @@ pub fn emit_with_meta<T: serde::Serialize>(
     // so cold-trace envelopes still emit a populated `trace_span`.
     // Sub-ms when the sidecar exists; harmless `None` when it
     // doesn't.
-    let trace_span = trace_span.or_else(|| veloq_nsys_data::meta_cache::trace_span_for_path(trace));
-    veloq_core::emit_envelope(
+    let trace_span =
+        trace_span.or_else(|| veloq_nsys_data::meta_cache::trace_span_for_path(evidence_trace));
+    let envelope = Envelope::new(
         nsys_source_ref(),
         format!("{}.{verb}", NsysSource::KIND),
         Some(nsys_trace_ref(trace)),
         trace_span,
         meta,
         data,
-    )
-    .map_err(NsysSourceError::serialize_envelope)?;
+    );
+    output.write_stdout_line(
+        envelope
+            .to_json_pretty()
+            .map_err(NsysSourceError::serialize_envelope)?,
+    );
     Ok(())
 }
 
@@ -93,16 +123,24 @@ pub fn emit_with_meta<T: serde::Serialize>(
 /// `schema` that don't read a trace. The envelope's `trace` and
 /// `trace_span` fields are omitted entirely (rather than emitted with
 /// an empty path / zero span).
-pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> NsysSourceResult<()> {
-    veloq_core::emit_envelope(
+pub fn emit_meta<T: serde::Serialize>(
+    verb: &str,
+    data: T,
+    output: &mut SourceExecution,
+) -> NsysSourceResult<()> {
+    let envelope = Envelope::new(
         nsys_source_ref(),
         format!("{}.{verb}", NsysSource::KIND),
         None,
         None,
         None,
         data,
-    )
-    .map_err(NsysSourceError::serialize_envelope)?;
+    );
+    output.write_stdout_line(
+        envelope
+            .to_json_pretty()
+            .map_err(NsysSourceError::serialize_envelope)?,
+    );
     Ok(())
 }
 
@@ -112,8 +150,8 @@ pub fn emit_meta<T: serde::Serialize>(verb: &str, data: T) -> NsysSourceResult<(
 /// what lets each command tailor its tabular view without this
 /// helper having to know per-command structure.
 ///
-/// Verbs that resolve scope should call [`render_with_meta`] so the
-/// envelope's `meta.applied_scope` is populated.
+/// Verbs that resolve scope should call [`render_with_context`] with a
+/// metadata-bearing [`RenderContext`].
 pub fn render<T, F>(
     fmt: OutputFormat,
     trace: &Path,
@@ -121,41 +159,97 @@ pub fn render<T, F>(
     verb: &str,
     data: T,
     view_fn: F,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<()>
 where
     T: serde::Serialize,
     F: FnOnce(&T) -> TabularView,
 {
-    render_with_meta(fmt, trace, trace_span, verb, None, data, view_fn)
+    RenderContext::new(fmt, trace, trace_span, verb).render(data, view_fn, output)
 }
 
-/// Same as [`render`] but populates the envelope's `meta` block on the
-/// JSON path. The CSV / table paths ignore `meta` — they project
-/// `data` directly via `view_fn` and the meta block has no tabular
-/// equivalent.
-pub fn render_with_meta<T, F>(
+/// Rendering inputs shared by the JSON and human projections.
+pub struct RenderContext<'a> {
     fmt: OutputFormat,
-    trace: &Path,
+    trace: &'a Path,
+    evidence_trace: &'a Path,
     trace_span: Option<TraceSpan>,
-    verb: &str,
+    verb: &'a str,
     meta: Option<ResponseMeta>,
+}
+
+impl<'a> RenderContext<'a> {
+    pub fn new(
+        fmt: OutputFormat,
+        trace: &'a Path,
+        trace_span: Option<TraceSpan>,
+        verb: &'a str,
+    ) -> Self {
+        Self {
+            fmt,
+            trace,
+            evidence_trace: trace,
+            trace_span,
+            verb,
+            meta: None,
+        }
+    }
+
+    pub fn with_meta(mut self, meta: Option<ResponseMeta>) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    pub fn with_evidence_trace(mut self, evidence_trace: &'a Path) -> Self {
+        self.evidence_trace = evidence_trace;
+        self
+    }
+
+    pub fn render<T, F>(
+        self,
+        data: T,
+        view_fn: F,
+        output: &mut SourceExecution,
+    ) -> NsysSourceResult<()>
+    where
+        T: serde::Serialize,
+        F: FnOnce(&T) -> TabularView,
+    {
+        render_with_context(self, data, view_fn, output)
+    }
+}
+
+/// Same as [`render`] but accepts response metadata on the JSON path.
+/// CSV and table project `data` directly because the envelope metadata
+/// has no tabular equivalent.
+pub fn render_with_context<T, F>(
+    context: RenderContext<'_>,
     data: T,
     view_fn: F,
+    output: &mut SourceExecution,
 ) -> NsysSourceResult<()>
 where
     T: serde::Serialize,
     F: FnOnce(&T) -> TabularView,
 {
-    let qualified = format!("{}.{verb}", NsysSource::KIND);
-    let trace_str = trace.display().to_string();
-    match fmt {
-        OutputFormat::Json => emit_with_meta(trace, trace_span, verb, meta, data),
+    let qualified = format!("{}.{}", NsysSource::KIND, context.verb);
+    let trace_str = context.trace.display().to_string();
+    match context.fmt {
+        OutputFormat::Json => emit_with_meta_evidence(
+            context.trace,
+            context.evidence_trace,
+            context.trace_span,
+            context.verb,
+            context.meta,
+            data,
+            output,
+        ),
         OutputFormat::Csv => {
-            emit_csv(&view_fn(&data), &qualified, &trace_str)?;
+            output.write_stdout(render_csv(&view_fn(&data), &qualified, &trace_str)?);
             Ok(())
         }
         OutputFormat::Table => {
-            emit_table(&view_fn(&data), &qualified, &trace_str)?;
+            output.write_stdout(render_table(&view_fn(&data), &qualified, &trace_str));
             Ok(())
         }
     }
@@ -171,6 +265,7 @@ pub fn emit_ambiguity_error(
     trace_span: Option<TraceSpan>,
     err: &veloq_nsys_data::scope::AmbiguityError,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) {
     let qualified = format!("{}.{verb}", NsysSource::KIND);
     let trace_ref = Some(nsys_trace_ref(trace));
@@ -221,15 +316,15 @@ pub fn emit_ambiguity_error(
              for one process-local GPU"
     ));
     if !matches!(fmt, OutputFormat::Json) {
-        eprintln!("veloq: {}", err.message);
+        output.write_stderr_line(format!("veloq: {}", err.message));
     }
     if let Ok(s) = env.to_json_pretty() {
-        println!("{s}");
+        output.write_stdout_line(s);
     }
 }
 
-/// Shim around [`veloq_core::write_diagnostic_error_envelope`] that takes the
-/// NSys-typed trace path. Centralizes the
+/// Render a handled NSys diagnostic into the shared execution output.
+/// Centralizes the
 /// `Option<&Path> -> Option<EnvelopeTraceRef>` projection so the
 /// `commands::run` arms stay terse.
 ///
@@ -243,17 +338,23 @@ pub fn emit_error<E>(
     trace_span: Option<TraceSpan>,
     err: &E,
     fmt: OutputFormat,
+    output: &mut SourceExecution,
 ) where
     E: VeloqDiagnostic,
 {
-    veloq_core::write_diagnostic_error_envelope(
-        nsys_source_ref(),
-        verb,
+    let env = EnvelopeError::from_diagnostic(
+        Some(nsys_source_ref()),
+        Some(format!("{}.{verb}", NsysSource::KIND)),
         trace.map(nsys_trace_ref),
         trace_span,
         err,
-        fmt,
     );
+    if !matches!(fmt, OutputFormat::Json) {
+        output.write_stderr_line(format!("veloq: {err}"));
+    }
+    if let Ok(s) = env.to_json_pretty() {
+        output.write_stdout_line(s);
+    }
 }
 
 /// Emit a JSON error envelope for a clap parse failure.

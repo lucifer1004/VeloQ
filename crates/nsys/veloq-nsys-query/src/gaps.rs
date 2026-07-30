@@ -299,6 +299,17 @@ pub struct GapNeighbor {
 }
 
 pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsResponse> {
+    validate_request(&req)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_after_validation(&trace, req)
+}
+
+pub fn run_with_trace(trace: &Trace, req: GapsRequest) -> NsysQueryResult<GapsResponse> {
+    validate_request(&req)?;
+    run_after_validation(trace, req)
+}
+
+fn validate_request(req: &GapsRequest) -> NsysQueryResult<()> {
     crate::check_limit(req.limit)?;
     if req.min_ns <= 0 {
         return Err(NsysQueryError::GapsMinTooSmall { min_ns: req.min_ns });
@@ -337,8 +348,10 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
             }
         }
     }
+    Ok(())
+}
 
-    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+fn run_after_validation(trace: &Trace, req: GapsRequest) -> NsysQueryResult<GapsResponse> {
     let abs_window = trace
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
@@ -348,7 +361,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
     // cudaMemcpyAsync) are CPU-side and don't count; sync events are
     // CPU blocking and intentionally excluded from the "device in
     // flight" definition.
-    let Some(event_source) = gpu_event_source(&trace, abs_window)? else {
+    let Some(event_source) = gpu_event_source(trace, abs_window)? else {
         return Ok(GapsResponse {
             min_ns: req.min_ns,
             scope: req.scope.as_str(),
@@ -364,13 +377,23 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
     let union = event_source.sql.as_str();
 
     let gap_sql = match req.scope {
-        GapScope::Stream => build_stream_sql(union, &req, abs_window)?,
-        GapScope::Device => {
-            build_unified_sql(union, &req, abs_window, /*partition_device=*/ true)?
+        GapScope::Stream => {
+            build_stream_sql(union, &req, abs_window, event_source.needs_name_hydration)?
         }
-        GapScope::Trace => {
-            build_unified_sql(union, &req, abs_window, /*partition_device=*/ false)?
-        }
+        GapScope::Device => build_unified_sql(
+            union,
+            &req,
+            abs_window,
+            /*partition_device=*/ true,
+            event_source.needs_name_hydration,
+        )?,
+        GapScope::Trace => build_unified_sql(
+            union,
+            &req,
+            abs_window,
+            /*partition_device=*/ false,
+            event_source.needs_name_hydration,
+        )?,
     };
 
     let mut gaps = hydrate_gap_rows(
@@ -381,7 +404,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
     )?;
     let total_from_rows = truncate_gap_rows_to_limit(&mut gaps, req.limit);
     if event_source.needs_name_hydration {
-        hydrate_gap_neighbor_names(&trace, &mut gaps)?;
+        hydrate_gap_neighbor_names(trace, &mut gaps)?;
     }
     let total_matched = match total_from_rows {
         Some(total) => total,
@@ -395,7 +418,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: GapsRequest) -> NsysQueryResult<GapsRes
             origins.primary.duration_ns().max(0)
         }
     };
-    let streams = compute_stream_activity(&trace, union, &req, abs_window, span_ns)?;
+    let streams = compute_stream_activity(trace, union, &req, abs_window, span_ns)?;
 
     Ok(GapsResponse {
         min_ns: req.min_ns,
@@ -455,11 +478,11 @@ struct GapSqlRow {
     start_ns: i64,
     end_ns: i64,
     duration_ns: i64,
-    prev_kind: String,
+    prev_kind_code: i32,
     prev_row_num: i64,
     prev_name: String,
     prev_stream_id: i64,
-    next_kind: String,
+    next_kind_code: i32,
     next_row_num: i64,
     next_name: String,
     next_stream_id: i64,
@@ -476,11 +499,11 @@ fn gap_sql_row(row: &duckdb::Row<'_>) -> Result<GapSqlRow, duckdb::Error> {
         start_ns: row.get(3)?,
         end_ns: row.get(4)?,
         duration_ns: row.get(5)?,
-        prev_kind: row.get(6)?,
+        prev_kind_code: row.get(6)?,
         prev_row_num: row.get(7)?,
         prev_name: row.get(8)?,
         prev_stream_id: row.get(9)?,
-        next_kind: row.get(10)?,
+        next_kind_code: row.get(10)?,
         next_row_num: row.get(11)?,
         next_name: row.get(12)?,
         next_stream_id: row.get(13)?,
@@ -512,13 +535,19 @@ fn gap_from_sql_row(scope: GapScope, row: GapSqlRow) -> NsysQueryResult<Gap> {
         end_ns: row.end_ns,
         duration_ns: row.duration_ns,
         prev: GapNeighbor {
-            row_id: RowId::new(parse_kind(&row.prev_kind)?, row.prev_row_num),
+            row_id: RowId::new(
+                gpu_work_kind_from_code(row.prev_kind_code)?,
+                row.prev_row_num,
+            ),
             name: row.prev_name,
             timestamp_ns: row.start_ns,
             stream_id: row.prev_stream_id,
         },
         next: GapNeighbor {
-            row_id: RowId::new(parse_kind(&row.next_kind)?, row.next_row_num),
+            row_id: RowId::new(
+                gpu_work_kind_from_code(row.next_kind_code)?,
+                row.next_row_num,
+            ),
             name: row.next_name,
             timestamp_ns: row.end_ns,
             stream_id: row.next_stream_id,
@@ -723,8 +752,21 @@ fn gpu_event_source(
     trace: &Trace,
     abs_window: Option<(i64, i64)>,
 ) -> NsysQueryResult<Option<GpuEventSource>> {
+    if crate::resident_intervals::available(trace) {
+        let table = crate::resident_intervals::table_name();
+        let kind_code = gpu_work_kind_code_sql("kind")?;
+        return Ok(Some(GpuEventSource {
+            sql: format!(
+                "SELECT {kind_code} AS kind, row_id, process_id, device_id, stream_id, \
+                 CAST('' AS VARCHAR) AS name, start_ns, end_ns \
+                 FROM {table}"
+            ),
+            needs_name_hydration: true,
+        }));
+    }
+
     if veloq_nsys_data::gpu_work_events::view_available(trace) {
-        return Ok(Some(sidecar_gpu_event_source()));
+        return Ok(Some(sidecar_gpu_event_source()?));
     }
 
     // Full-trace gaps already pays the whole-trace scan cost; lazily
@@ -736,7 +778,7 @@ fn gpu_event_source(
         match veloq_nsys_data::gpu_work_events::ensure_sidecar(trace) {
             Ok(_) => {
                 if veloq_nsys_data::gpu_work_events::view_available(trace) {
-                    return Ok(Some(sidecar_gpu_event_source()));
+                    return Ok(Some(sidecar_gpu_event_source()?));
                 }
             }
             Err(err) => {
@@ -750,11 +792,13 @@ fn gpu_event_source(
     cold_gpu_event_source(trace)
 }
 
-fn sidecar_gpu_event_source() -> GpuEventSource {
-    GpuEventSource {
-        sql: r#"
+fn sidecar_gpu_event_source() -> NsysQueryResult<GpuEventSource> {
+    let kind_code = gpu_work_kind_code_sql("kind")?;
+    Ok(GpuEventSource {
+        sql: format!(
+            r#"
             SELECT
-                kind,
+                {kind_code} AS kind,
                 row_id,
                 process_id,
                 device_id,
@@ -763,10 +807,10 @@ fn sidecar_gpu_event_source() -> GpuEventSource {
                 start_ns,
                 end_ns
             FROM nsight.gpu_work_events
-        "#
-        .to_string(),
+            "#
+        ),
         needs_name_hydration: true,
-    }
+    })
 }
 
 fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource>> {
@@ -784,11 +828,41 @@ fn cold_gpu_event_source(trace: &Trace) -> NsysQueryResult<Option<GpuEventSource
     }))
 }
 
-fn parse_kind(s: &str) -> NsysQueryResult<EventKind> {
-    match EventKind::parse(s) {
-        Some(kind) => Ok(kind),
-        None => Err(NsysQueryError::internal_sql_kind_tag_invalid("gaps", s)),
+const GPU_WORK_KIND_CODES: [(EventKind, i32); 4] = [
+    (EventKind::Kernel, 0),
+    (EventKind::Memcpy, 1),
+    (EventKind::Memset, 2),
+    (EventKind::Graph, 3),
+];
+
+fn gpu_work_kind_code(kind: EventKind) -> NsysQueryResult<i32> {
+    GPU_WORK_KIND_CODES
+        .iter()
+        .find_map(|(candidate, code)| (*candidate == kind).then_some(*code))
+        .ok_or_else(|| NsysQueryError::internal_unsupported_kind("gaps", kind.as_str()))
+}
+
+fn gpu_work_kind_from_code(code: i32) -> NsysQueryResult<EventKind> {
+    GPU_WORK_KIND_CODES
+        .iter()
+        .find_map(|(kind, candidate)| (*candidate == code).then_some(*kind))
+        .ok_or_else(|| NsysQueryError::internal_sql_kind_tag_invalid("gaps", &code.to_string()))
+}
+
+fn gpu_work_kind_code_sql(column: &str) -> NsysQueryResult<String> {
+    let work = GpuWorkSet::from_data_definition()?;
+    let mut branches = Vec::with_capacity(work.kinds().len());
+    for kind in work.kinds() {
+        branches.push(format!(
+            "WHEN '{}' THEN {}",
+            kind.as_str(),
+            gpu_work_kind_code(*kind)?
+        ));
     }
+    Ok(format!(
+        "CAST(CASE {column} {} ELSE -1 END AS INTEGER)",
+        branches.join(" ")
+    ))
 }
 
 /// SQL and bind params for a gaps row query plus its minimal count
@@ -823,6 +897,7 @@ fn build_stream_sql(
     union: &str,
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
+    names_hydrated_after_query: bool,
 ) -> NsysQueryResult<GapSqlQuery> {
     let (event_ctes, event_source, mut rows_params) =
         build_stream_event_input(union, req, abs_window);
@@ -834,6 +909,11 @@ fn build_stream_sql(
         .clone()
         .unwrap_or_else(|| SortSpec::single("duration"));
     let order_by = gaps_sort_sql(&sort_spec)?;
+    let next_name_window = if names_hydrated_after_query {
+        "CAST('' AS VARCHAR) AS next_name"
+    } else {
+        "LEAD(name) OVER w AS next_name"
+    };
 
     let rows_sql = format!(
         r#"
@@ -844,8 +924,8 @@ fn build_stream_sql(
                 LEAD(start_ns) OVER w  AS next_start_ns,
                 LEAD(row_id)   OVER w  AS next_row_id,
                 LEAD(kind)     OVER w  AS next_kind,
-                LEAD(name)     OVER w  AS next_name,
-                LEAD(stream_id) OVER w AS next_stream_id
+                {next_name_window},
+                stream_id AS next_stream_id
             FROM {event_source}
             WINDOW w AS (PARTITION BY process_id, device_id, stream_id ORDER BY start_ns, row_id)
         ),
@@ -930,6 +1010,7 @@ fn build_unified_sql(
     req: &GapsRequest,
     abs_window: Option<(i64, i64)>,
     partition_device: bool,
+    names_hydrated_after_query: bool,
 ) -> NsysQueryResult<GapSqlQuery> {
     let partition = if partition_device {
         "PARTITION BY process_id, device_id ORDER BY start_ns, row_id"
@@ -947,6 +1028,11 @@ fn build_unified_sql(
         .clone()
         .unwrap_or_else(|| SortSpec::single("duration"));
     let order_by = gaps_sort_sql(&sort_spec)?;
+    let prev_name_window = if names_hydrated_after_query {
+        "CAST('' AS VARCHAR) AS prev_name"
+    } else {
+        "arg_max(name, end_ns) OVER win AS prev_name"
+    };
 
     // `stream_id` projection: under `--scope stream` it'd be the
     // partition key. Under unified scopes it's irrelevant at the
@@ -975,7 +1061,7 @@ fn build_unified_sql(
                 MAX(end_ns)          OVER win AS prev_max_end,
                 arg_max(row_id,    end_ns) OVER win AS prev_row_id,
                 arg_max(kind,      end_ns) OVER win AS prev_kind,
-                arg_max(name,      end_ns) OVER win AS prev_name,
+                {prev_name_window},
                 arg_max(stream_id, end_ns) OVER win AS prev_stream_id
             FROM {event_source}
             WINDOW win AS ({partition} ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)
@@ -1327,7 +1413,7 @@ fn per_kind_select(trace: &Trace, kind: EventKind) -> NsysQueryResult<String> {
         ));
     }
     let table = kind.table();
-    let label = kind.as_str();
+    let kind_code = gpu_work_kind_code(kind)?;
     let name_expr = crate::kind_sql::display_name_expr(kind);
     let joins = crate::kind_sql::name_joins(kind);
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
@@ -1337,7 +1423,7 @@ fn per_kind_select(trace: &Trace, kind: EventKind) -> NsysQueryResult<String> {
     Ok(format!(
         r#"
         SELECT
-            '{label}' AS kind,
+            {kind_code}::INTEGER AS kind,
             t.rowid   AS row_id,
             {process_expr} AS process_id,
             {dev} AS device_id,
@@ -1371,7 +1457,7 @@ mod tests {
              1::BIGINT AS prev_row_id, \
              'prev' AS prev_name, \
              7::BIGINT AS prev_stream_id, \
-             'kernel' AS next_kind, \
+             0::INTEGER AS next_kind, \
              2::BIGINT AS next_row_id, \
              'next' AS next_name, \
              8::BIGINT AS next_stream_id"
@@ -1442,6 +1528,7 @@ mod tests {
             &req,
             Some((10, 20)),
             true,
+            false,
         )?;
 
         assert!(query.rows_sql.contains("scoped_events AS"));
@@ -1498,6 +1585,7 @@ mod tests {
             },
             None,
             true,
+            false,
         )?;
         assert!(!full_trace_query.rows_sql.contains("COUNT(*) OVER"));
         assert!(full_trace_query.total_sql.contains("MAX(end_ns) OVER win"));
@@ -1519,7 +1607,12 @@ mod tests {
             limit: 7,
             ..Default::default()
         };
-        let query = build_stream_sql("SELECT * FROM synthetic_gpu_events", &req, Some((10, 20)))?;
+        let query = build_stream_sql(
+            "SELECT * FROM synthetic_gpu_events",
+            &req,
+            Some((10, 20)),
+            false,
+        )?;
 
         assert!(query.rows_sql.contains("scoped_events AS"));
         assert!(query.rows_sql.contains("prefix_events AS"));
@@ -1582,6 +1675,7 @@ mod tests {
                 ..Default::default()
             },
             None,
+            false,
         )?;
         assert!(!full_trace_query.rows_sql.contains("COUNT(*) OVER"));
         assert!(full_trace_query.total_sql.contains("LEAD(start_ns) OVER w"));
@@ -1611,8 +1705,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_kind_unknown_tag_is_typed() -> Result<()> {
-        let err = match parse_kind("bogus") {
+    fn gpu_work_kind_unknown_code_is_typed() -> Result<()> {
+        let err = match gpu_work_kind_from_code(99) {
             Ok(kind) => anyhow::bail!("expected unknown kind tag to fail, got {kind}"),
             Err(err) => err,
         };
@@ -1621,7 +1715,7 @@ mod tests {
         match err {
             crate::NsysQueryError::InternalSqlKindTagInvalid { verb, kind } => {
                 assert_eq!(verb, "gaps");
-                assert_eq!(kind, "bogus");
+                assert_eq!(kind, "99");
             }
             other => anyhow::bail!("expected InternalSqlKindTagInvalid, got {other:?}"),
         }
@@ -1660,11 +1754,11 @@ mod tests {
                    10::BIGINT AS gap_start_ns, \
                    20::BIGINT AS gap_end_ns, \
                    10::BIGINT AS gap_ns, \
-                   'kernel' AS prev_kind, \
+                   0::INTEGER AS prev_kind, \
                    1::BIGINT AS prev_row_id, \
                    'prev' AS prev_name, \
                    7::BIGINT AS prev_stream_id, \
-                   'kernel' AS next_kind, \
+                   0::INTEGER AS next_kind, \
                    2::BIGINT AS next_row_id, \
                    'next' AS next_name, \
                    8::BIGINT AS next_stream_id";
@@ -1691,7 +1785,7 @@ mod tests {
     #[test]
     fn hydrate_gap_rows_read_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
-        let sql = gap_hydration_sql("'not-duration'", "'kernel'");
+        let sql = gap_hydration_sql("'not-duration'", "0::INTEGER");
 
         let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device) {
             Ok(rows) => anyhow::bail!(
@@ -1715,7 +1809,7 @@ mod tests {
     #[test]
     fn hydrate_gap_rows_kind_tag_error_is_typed() -> Result<()> {
         let conn = duckdb::Connection::open_in_memory()?;
-        let sql = gap_hydration_sql("10::BIGINT", "'bogus'");
+        let sql = gap_hydration_sql("10::BIGINT", "99::INTEGER");
 
         let err = match hydrate_gap_rows(&conn, &sql, &[], GapScope::Device) {
             Ok(rows) => anyhow::bail!(

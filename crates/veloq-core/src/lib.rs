@@ -35,5 +35,9 @@ pub use query::{
 pub use shell::shell_quote;
 pub use sidecar::{SidecarCache, SidecarError, SidecarHeader, SidecarResult, SourceFingerprint};
 pub use sort::{Direction, SortField, SortKeyDef, SortKeySpec, SortSpec, sort_in_memory};
-pub use source::{OutputFormat, OutputFormatError, ProfileSource, SourceRunError, SourceRunResult};
+pub use source::{
+    CancellationToken, OutputFormat, OutputFormatError, ProfileSession, ProfileSource,
+    SourceExecution, SourceQueryContext, SourceRunError, SourceRunResult, SourceSessionConfig,
+    SourceSessionIdentity, default_query_worker_count,
+};
 pub use tabular::{TabularError, TabularResult};

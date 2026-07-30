@@ -172,10 +172,15 @@ version).
 6. **Type conversion at the boundary.** Read DuckDB columns as
    their native Arrow type (`Int64Array`) and convert once. Never
    force `UBIGINT`.
-7. **One subcommand = one DuckDB connection = one process.** CLI
-   calls stay stateless — no background threads, no channel-based
-   handles. The Parquet + metadata sidecars on disk make repeat
-   calls fast enough.
+7. **One-shot execution stays independently stateless.** With daemon
+   routing disabled, one CLI subcommand executes in its own process
+   and owns one query connection; it does not require a background
+   service or channel-based handle. Source implementations execute
+   through `veloq_core::ProfileSource::execute` and return a buffered
+   `SourceExecution`; the one-shot dispatcher projects those bytes to
+   process stdout/stderr. The optional, manually enabled local daemon
+   may reuse sessions and validated sidecars through the same boundary,
+   but it must not replace or weaken the one-shot contract.
 
 ## Workspace layout
 
@@ -183,6 +188,7 @@ version).
 veloq/
 └── crates/
     ├── veloq-core/             # Envelope, SourceRef, ProfileSource trait,
+    │                             buffered SourceExecution boundary,
     │                             OutputFormat, sort + time helpers
     ├── veloq-data/             # Source-neutral file/parquet cache helpers
     ├── veloq-query/            # DuckDB-backed query helpers shared by

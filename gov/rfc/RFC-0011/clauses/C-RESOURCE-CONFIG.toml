@@ -1,0 +1,40 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-RESOURCE-CONFIG"
+title = "Daemon resource configuration"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+All daemon resource settings MUST be selected only when creating a daemon with `daemon start`. This RFC defines no environment-variable or configuration-file source for these settings.
+
+`daemon start` MUST accept these optional decimal-integer arguments:
+
+- `--max-sessions <N>`: maximum resident sessions; `N` MUST be from 1 through 4294967295 inclusive.
+- `--max-resident-memory-mib <N>`: ceiling for daemon-accounted retained resident state in mebibytes; `N` MUST be from 1 through 17592186044415 inclusive.
+- `--max-concurrent-requests <N>`: maximum requests in active execution; `N` MUST be from 1 through 4294967295 inclusive.
+- `--max-query-workers <N>`: maximum aggregate daemon-managed query-worker permits reserved by active requests; `N` MUST be from 1 through 4294967295 inclusive.
+- `--max-query-memory-mib <N>`: explicit maximum aggregate query-engine memory budgets reserved by active requests in mebibytes; `N` MUST be from 1 through 17592186044415 inclusive.
+- `--max-queued-requests <N>`: maximum accepted requests waiting for active execution; `N` MUST be from 0 through 4294967295 inclusive, and zero disables waiting.
+- `--admission-timeout-ms <N>`: maximum time from queue entry until active execution; `N` MUST be from 0 through 31536000000 inclusive, and zero rejects instead of waiting.
+- `--idle-timeout-ms <N>`: idle duration after which a resident session becomes eligible for timeout discard; `N` MUST be from 0 through 31536000000 inclusive, and zero disables idle-timeout discard.
+- `--shutdown-grace-ms <N>`: maximum time `daemon stop` allows active requests to finish after stopping admission; `N` MUST be from 0 through 31536000000 inclusive, and zero requests cancellation immediately.
+
+One mebibyte in these arguments MUST equal 1,048,576 bytes. The memory upper bound is the greatest whole-MiB value whose byte conversion fits an unsigned 64-bit wire integer. Millisecond values MUST use elapsed monotonic time rather than wall-clock time; their upper bound is 365 days.
+
+Omitted settings MAY use implementation-selected defaults, except that omitting `--max-query-memory-mib` MUST leave query-engine memory policy to the selected source instead of imposing a daemon-derived ceiling. The default maximum active-request count MUST be one. A new daemon configuration with more than one active request MUST require an explicit `--max-query-memory-mib`; omission MUST prevent daemon mutation and return `daemon.invalid-config`.
+
+Effective numeric defaults and the omitted query-memory behavior MUST be shown by `daemon start --help` and MUST be returned by a successful running-state lifecycle row. The effective `max_query_memory_bytes` MUST be null when no explicit query-memory ceiling was configured and otherwise MUST equal the configured mebibyte value multiplied by 1,048,576.
+
+The effective settings MUST remain fixed for that daemon lifetime. Reconfiguration requires `daemon stop` followed by `daemon start` with new settings.
+
+Resident-memory accounting MUST include retained daemon-owned session state, decoded models, reusable query-engine state, and memory response caches. It MUST exclude profile input bytes merely mapped or cached by the operating system and MUST be reported as `resident_memory_estimate_bytes`; the configured ceiling is an admission and retention ceiling over this explicit estimate, not a process-RSS guarantee.
+
+When an explicit query-memory ceiling is configured, query-memory accounting MUST be the sum of query-engine budgets reserved for active requests and MUST be reported as `query_memory_reserved_bytes`. When no explicit ceiling is configured, the daemon MUST NOT claim a query-memory reservation and `query_memory_reserved_bytes` MUST remain zero. Worker accounting MUST count daemon-managed worker permits rather than claiming to equal the operating system's instantaneous thread count.
+
+A value with a sign, non-decimal character, overflow, or value outside its stated inclusive range MUST prevent daemon mutation and return `daemon.invalid-config`. When mutually satisfiable reservations cannot be formed within these effective limits, admission MUST follow [[RFC-0011:C-CONCURRENCY]].
+
+**Rationale:** A single start-time configuration source avoids hidden precedence. Exact integer domains, named units, and accounting boundaries make limits portable and status comparable. Leaving the default single query under its source engine's machine-aware policy avoids inventing a second memory heuristic, while an explicit aggregate ceiling remains mandatory before concurrent query engines can multiply memory demand."""

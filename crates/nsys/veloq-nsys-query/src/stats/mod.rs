@@ -21,6 +21,7 @@ use serde::Serialize;
 use sql::{NVTX_STYLE_EXPR, PerKindSubqueryOptions, per_kind_subquery};
 use std::path::Path;
 use veloq_core::{SortSpec, time::TimeWindow};
+use veloq_nsys_data::Trace;
 
 /// Event kinds that `stats` is willing to aggregate. Library consumers
 /// constructing `StatsRequest` by hand should pick from this set; CLI
@@ -349,7 +350,20 @@ pub struct StatRow {
 }
 
 pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsResponse> {
-    let (trace, abs_window) = crate::open_scoped(path.as_ref(), req.limit, req.time_window)?;
+    crate::check_limit(req.limit)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_after_limit(&trace, req)
+}
+
+pub fn run_with_trace(trace: &Trace, req: StatsRequest) -> NsysQueryResult<StatsResponse> {
+    crate::check_limit(req.limit)?;
+    run_after_limit(trace, req)
+}
+
+fn run_after_limit(trace: &Trace, req: StatsRequest) -> NsysQueryResult<StatsResponse> {
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
     // Defence-in-depth: hand-built `StatsRequest`s with non-stats
     // kinds get rejected here too. CLI callers go through
@@ -514,7 +528,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
         &req.kinds,
         req.nvtx.as_deref(),
         &ALLOWED_KINDS,
-        &trace,
+        trace,
         "stats",
     )?
     .into_iter()
@@ -542,7 +556,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     }
 
     let attribution = match req.nvtx.as_deref() {
-        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, &trace)?),
+        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, trace)?),
         None => None,
     };
 
@@ -578,7 +592,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     // NVTX + binary-search-and-walk-back gives an
     // `O(N_runtime × log N_nvtx + matches)` build cost.
     let nvtx_parent_sidecar: Option<std::path::PathBuf> = if group_by_nvtx_hierarchy {
-        let path = veloq_nsys_data::runtime_nvtx_parent::ensure_sidecar(&trace)
+        let path = veloq_nsys_data::runtime_nvtx_parent::ensure_sidecar(trace)
             .map_err(NsysQueryError::nvtx_parent_sidecar_ensure)?;
         Some(path)
     } else {
@@ -591,9 +605,9 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
     // to an empty map — domain *identity* still works, only the human
     // name is missing. Never fail the verb over a name lookup.
     let domain_names: std::collections::HashMap<(i64, i64), String> = if req.group_by.nvtx_path {
-        veloq_nsys_data::nvtx_tree::ensure_sidecar(&trace)
+        veloq_nsys_data::nvtx_tree::ensure_sidecar(trace)
             .map_err(NsysQueryError::nvtx_tree_load)?;
-        veloq_nsys_data::trace_map::nvtx_domain_names(&trace).unwrap_or_default()
+        veloq_nsys_data::trace_map::nvtx_domain_names(trace).unwrap_or_default()
     } else {
         std::collections::HashMap::new()
     };
@@ -609,7 +623,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
         include_nvtx_path: req.group_by.nvtx_path,
     };
     for kind in &kinds {
-        let (sql, params) = per_kind_subquery(&trace, *kind, &subquery_options)?;
+        let (sql, params) = per_kind_subquery(trace, *kind, &subquery_options)?;
         subqueries.push(sql);
         per_kind_params.extend(params);
     }
@@ -777,7 +791,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: StatsRequest) -> NsysQueryResult<StatsR
         None
     };
     let (mut out, scope) = hydrate_stats_rows(
-        &trace,
+        trace,
         &sql,
         &params,
         req.hist,

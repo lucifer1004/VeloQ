@@ -28,6 +28,7 @@
 use crate::cuda_identity::{CudaProcessResolver, native_pid_from_global_tid};
 use crate::{NsysDataResult, Trace};
 use duckdb::Connection;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -247,7 +248,7 @@ impl CorrelationIndex {
         idx.load_context_process_maps(trace.conn())?;
         let resolver = CudaProcessResolver::build(trace)?;
         let items = collect_correlation_items(trace, &resolver, &idx.process_to_contexts)?;
-        idx.merge_items(items);
+        idx.merge_items(trace, items)?;
         Ok(idx)
     }
 
@@ -309,23 +310,33 @@ impl CorrelationIndex {
         Ok(())
     }
 
-    fn merge_items(&mut self, items: Vec<CorrelationItem>) {
+    fn merge_items(
+        &mut self,
+        trace: &Trace,
+        mut items: Vec<CorrelationItem>,
+    ) -> NsysDataResult<()> {
         // Sort-merge: sort by syn_id then kind for stable grouping, then
         // linear-scan into per-syn_id buckets. O(N log N) sort + O(N)
         // group; performs well even on millions of items.
-        let mut items = items;
-        items.sort_unstable_by_key(|it| (it.syn_id, it.kind as u8));
-        for it in items {
-            let group = self.groups.entry(it.syn_id).or_default();
-            match it.kind {
-                ItemKind::Kernel => group.kernel.push(it.rowid),
-                ItemKind::Memcpy => group.memcpy.push(it.rowid),
-                ItemKind::Memset => group.memset.push(it.rowid),
-                ItemKind::Runtime => group.runtime.push(it.rowid),
-                ItemKind::Sync => group.sync.push(it.rowid),
-                ItemKind::Graph => group.graph.push(it.rowid),
+        let pool = trace.build_query_worker_pool()?;
+        pool.install(|| {
+            items.par_sort_unstable_by_key(|item| (item.syn_id, item.kind as u8));
+        });
+
+        let mut current_id = None;
+        let mut current_group = CorrelatedRowIds::default();
+        for item in items {
+            if current_id != Some(item.syn_id) {
+                if let Some(id) = current_id.replace(item.syn_id) {
+                    self.groups.insert(id, std::mem::take(&mut current_group));
+                }
             }
+            current_group.push(item);
         }
+        if let Some(id) = current_id {
+            self.groups.insert(id, current_group);
+        }
+        Ok(())
     }
 
     // ---- disk cache ------------------------------------------------------
@@ -398,6 +409,19 @@ struct CorrelationItem {
     syn_id: SyntheticId,
     rowid: i64,
     kind: ItemKind,
+}
+
+impl CorrelatedRowIds {
+    fn push(&mut self, item: CorrelationItem) {
+        match item.kind {
+            ItemKind::Kernel => self.kernel.push(item.rowid),
+            ItemKind::Memcpy => self.memcpy.push(item.rowid),
+            ItemKind::Memset => self.memset.push(item.rowid),
+            ItemKind::Runtime => self.runtime.push(item.rowid),
+            ItemKind::Sync => self.sync.push(item.rowid),
+            ItemKind::Graph => self.graph.push(item.rowid),
+        }
+    }
 }
 
 fn collect_correlation_items(

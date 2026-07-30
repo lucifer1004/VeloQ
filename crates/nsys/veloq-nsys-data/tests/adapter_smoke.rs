@@ -204,6 +204,32 @@ fn standard_adapter_dispatches_for_v3_schema() -> Result<()> {
 }
 
 #[test]
+fn daemon_limited_trace_executes_queries() -> Result<()> {
+    const RESERVED_QUERY_WORKERS: usize = 1;
+    const RESERVED_QUERY_MEMORY_BYTES: u64 = 64 * 1024 * 1024;
+
+    let fixture = minimal_v3()?;
+    let trace = Trace::open_for_daemon(
+        fixture.path(),
+        RESERVED_QUERY_WORKERS,
+        Some(RESERVED_QUERY_MEMORY_BYTES),
+    )?;
+    assert_eq!(trace.query_worker_count(), RESERVED_QUERY_WORKERS);
+    let pool = trace.build_query_worker_pool()?;
+    assert_eq!(
+        pool.install(rayon::current_num_threads),
+        RESERVED_QUERY_WORKERS
+    );
+    let table_count: i64 = trace.conn().query_row(
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'nsight'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(table_count > 0);
+    Ok(())
+}
+
+#[test]
 fn standard_adapter_accepts_v3_metric_only_schema() -> Result<()> {
     // Metric-only NSys exports (`--trace=none --nic-metrics=lf`) carry
     // METADATA + NET_NIC_METRIC and nothing else. StandardAdapter

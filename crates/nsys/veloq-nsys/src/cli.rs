@@ -13,6 +13,16 @@ use crate::filters::{
 use clap::{Subcommand, ValueEnum};
 use std::path::Path;
 
+pub const SUMMARY_COMMAND: &str = "summary";
+pub const STATS_COMMAND: &str = "stats";
+pub const SEARCH_COMMAND: &str = "search";
+pub const INSPECT_COMMAND: &str = "inspect";
+pub const CORRELATE_COMMAND: &str = "correlate";
+pub const CONCURRENCY_COMMAND: &str = "concurrency";
+pub const GAPS_COMMAND: &str = "gaps";
+pub const TIMELINE_COMMAND: &str = "timeline";
+pub const SLICES_COMMAND: &str = "slices";
+
 /// Aggregation unit for `stats`. `Ns` is the public, duration-based
 /// default; `Size` is the experimental byte-aggregator gated behind
 /// `VELOQ_UNSTABLE=1`.
@@ -491,25 +501,25 @@ impl Cmd {
     /// success/error envelopes agree for one invocation.
     pub fn name(&self) -> &'static str {
         match self {
-            Cmd::Summary { .. } => "summary",
+            Cmd::Summary { .. } => SUMMARY_COMMAND,
             Cmd::Stats { by, .. } => match by {
-                StatsBy::Ns => "stats",
+                StatsBy::Ns => STATS_COMMAND,
                 StatsBy::Size => "stats-by-size",
             },
-            Cmd::Search { .. } => "search",
-            Cmd::Inspect { .. } => "inspect",
-            Cmd::Correlate { .. } => "correlate",
+            Cmd::Search { .. } => SEARCH_COMMAND,
+            Cmd::Inspect { .. } => INSPECT_COMMAND,
+            Cmd::Correlate { .. } => CORRELATE_COMMAND,
             Cmd::GraphReplays { .. } => "graph-replays",
             Cmd::NcuCommand { .. } => "ncu-command",
             Cmd::CorrelationStats { .. } => "correlation-stats",
             Cmd::Prep { .. } => "prep",
-            Cmd::Concurrency { .. } => "concurrency",
-            Cmd::Gaps { .. } => "gaps",
-            Cmd::Timeline { .. } => "timeline",
+            Cmd::Concurrency { .. } => CONCURRENCY_COMMAND,
+            Cmd::Gaps { .. } => GAPS_COMMAND,
+            Cmd::Timeline { .. } => TIMELINE_COMMAND,
             Cmd::Viz {
                 command: VizCmd::Timeline { .. },
             } => "viz.timeline",
-            Cmd::Slices { .. } => "slices",
+            Cmd::Slices { .. } => SLICES_COMMAND,
             Cmd::Hardware { .. } => "hardware",
             Cmd::Metrics { .. } => "metrics",
             Cmd::Schema { .. } => "schema",

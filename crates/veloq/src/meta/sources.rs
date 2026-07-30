@@ -12,6 +12,7 @@
 
 use clap::{ArgMatches, Command};
 use serde::Serialize;
+use std::sync::Arc;
 use veloq_core::{OutputFormat, ProfileSource};
 
 use super::{META_SOURCE, MetaResult, emit_or_error};
@@ -48,7 +49,7 @@ pub fn cli() -> Command {
 
 pub fn run(
     _matches: &ArgMatches,
-    sources: &[Box<dyn ProfileSource>],
+    sources: &[Arc<dyn ProfileSource>],
     fmt: OutputFormat,
 ) -> MetaResult<i32> {
     let rows: Vec<SourceRow> = sources

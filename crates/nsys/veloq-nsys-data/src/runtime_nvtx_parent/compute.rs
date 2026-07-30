@@ -40,7 +40,8 @@ pub(super) fn compute(trace: &Trace) -> NsysDataResult<Vec<RuntimeParentEntry>> 
         return Ok(Vec::new());
     }
     let runtime = collect_runtime_rows(trace)?;
-    let walked = walk(&nvtx_by_tid, &runtime);
+    let pool = trace.build_query_worker_pool()?;
+    let walked = pool.install(|| walk(&nvtx_by_tid, &runtime));
     // Backfill `device_id` / `context_id` from the GPU side. When
     // `TARGET_INFO_CUDA_CONTEXT_INFO` or every GPU activity table is
     // missing the map is empty — walked entries retain `None` for

@@ -7,6 +7,7 @@
 
 use crate::{ErrorCode, VeloqDiagnostic};
 use comfy_table::{ContentArrangement, Table, presets::UTF8_BORDERS_ONLY};
+use std::cell::Cell;
 use std::fmt;
 use std::io::Write;
 use thiserror::Error;
@@ -44,6 +45,11 @@ impl VeloqDiagnostic for TabularError {
 
 /// Decimal precision for floating-point columns in CSV/table output.
 pub const DISPLAY_PRECISION: usize = 3;
+const NON_TERMINAL_TABLE_WIDTH: u16 = 200;
+
+thread_local! {
+    static TERMINAL_WIDTH_OVERRIDE: Cell<Option<Option<u16>>> = const { Cell::new(None) };
+}
 
 /// Flattened response shape for non-JSON outputs.
 pub struct TabularView {
@@ -96,32 +102,60 @@ where
 }
 
 pub fn emit_csv(view: &TabularView, command: &str, trace_path: &str) -> TabularResult<()> {
+    let rendered = render_csv(view, command, trace_path)?;
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    writeln!(handle, "# command={command}").ok();
-    writeln!(handle, "# trace={trace_path}").ok();
+    handle
+        .write_all(&rendered)
+        .map_err(|source| TabularError::FlushCsv { source })?;
+    handle
+        .flush()
+        .map_err(|source| TabularError::FlushCsv { source })
+}
+
+/// Render CSV into owned bytes without touching process-global stdout.
+pub fn render_csv(view: &TabularView, command: &str, trace_path: &str) -> TabularResult<Vec<u8>> {
+    let mut output = Vec::new();
+    writeln!(&mut output, "# command={command}").ok();
+    writeln!(&mut output, "# trace={trace_path}").ok();
     for (k, v) in &view.meta {
-        writeln!(handle, "# {k}={v}").ok();
+        writeln!(&mut output, "# {k}={v}").ok();
     }
 
-    let mut w = csv::Writer::from_writer(handle);
-    w.write_record(view.columns.iter().map(String::as_str))
-        .map_err(|source| TabularError::WriteCsvHeader { source })?;
-    for row in &view.rows {
-        w.write_record(row)
-            .map_err(|source| TabularError::WriteCsvRow { source })?;
+    {
+        let mut writer = csv::Writer::from_writer(&mut output);
+        writer
+            .write_record(view.columns.iter().map(String::as_str))
+            .map_err(|source| TabularError::WriteCsvHeader { source })?;
+        for row in &view.rows {
+            writer
+                .write_record(row)
+                .map_err(|source| TabularError::WriteCsvRow { source })?;
+        }
+        writer
+            .flush()
+            .map_err(|source| TabularError::FlushCsv { source })?;
     }
-    w.flush()
-        .map_err(|source| TabularError::FlushCsv { source })?;
-    Ok(())
+    Ok(output)
 }
 
 pub fn emit_table(view: &TabularView, command: &str, trace_path: &str) -> TabularResult<()> {
-    let width = terminal_width().unwrap_or(200);
-    println!(
-        "{}",
-        build_table(view.columns.iter().map(String::as_str), &view.rows, width)
-    );
+    let rendered = render_table(view, command, trace_path);
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    handle
+        .write_all(&rendered)
+        .map_err(|source| TabularError::FlushCsv { source })?;
+    handle
+        .flush()
+        .map_err(|source| TabularError::FlushCsv { source })
+}
+
+/// Render the human table projection into owned bytes without touching
+/// process-global stdout.
+pub fn render_table(view: &TabularView, command: &str, trace_path: &str) -> Vec<u8> {
+    let width = terminal_width().unwrap_or(NON_TERMINAL_TABLE_WIDTH);
+    let primary = build_table(view.columns.iter().map(String::as_str), &view.rows, width);
 
     let mut foot_rows: Vec<Vec<String>> = Vec::with_capacity(view.meta.len() + 2);
     foot_rows.push(vec!["command".to_string(), command.to_string()]);
@@ -129,8 +163,8 @@ pub fn emit_table(view: &TabularView, command: &str, trace_path: &str) -> Tabula
     for (k, v) in &view.meta {
         foot_rows.push(vec![(*k).to_string(), v.clone()]);
     }
-    println!("{}", build_table(["field", "value"], &foot_rows, width));
-    Ok(())
+    let footer = build_table(["field", "value"], &foot_rows, width);
+    format!("{primary}\n{footer}\n").into_bytes()
 }
 
 fn build_table<'a, I>(headers: I, rows: &[Vec<String>], width: u16) -> Table
@@ -149,7 +183,28 @@ where
 }
 
 fn terminal_width() -> Option<u16> {
-    terminal_size::terminal_size().map(|(w, _)| w.0)
+    TERMINAL_WIDTH_OVERRIDE
+        .get()
+        .unwrap_or_else(|| terminal_size::terminal_size().map(|(width, _)| width.0))
+}
+
+/// Apply the calling client's terminal width while rendering one daemon
+/// response. The override is thread-local so concurrent requests cannot alter
+/// each other's table projection.
+pub fn with_terminal_width<T>(width: Option<u16>, render: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Option<u16>>);
+
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TERMINAL_WIDTH_OVERRIDE.set(self.0);
+        }
+    }
+
+    let previous = TERMINAL_WIDTH_OVERRIDE.replace(Some(width));
+    let restore = Restore(previous);
+    let rendered = render();
+    drop(restore);
+    rendered
 }
 
 /// Format an `Option<T>` as `"<value>"` or empty string.

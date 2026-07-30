@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-EVICTION"
+title = "Resident-state bounds"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MUST enforce the configured resident-session count and daemon-accounted resident-memory limits defined by [[RFC-0011:C-RESOURCE-CONFIG]].
+
+The daemon MUST NOT admit inactive resident state whose accounted cost would exceed either effective limit.
+
+A session with an active or queued request MUST NOT be discarded while that protection applies.
+
+The daemon MAY discard eligible inactive resident state to satisfy a limit or idle timeout.
+
+If discarding eligible state is insufficient to admit a request within the configured admission deadline, the daemon MUST return `daemon.resource-pressure`.
+
+Discarding resident state MUST discard only daemon-owned memory, private cache entries, and open handles. It MUST NOT delete profile inputs or generated artifacts.
+
+The admission policy, ordering among eligible entries, separate or unified cache levels, recency tracking, cost weighting, and eviction score are private architectural decisions outside this RFC.
+
+**Rationale:** Users need bounded resource behavior, protection for in-flight work, and explicit failure outcomes. They do not need a wire-compatibility promise for the cache replacement algorithm."""

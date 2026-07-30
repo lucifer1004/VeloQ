@@ -3,12 +3,12 @@
 [govctl]
 id = "RFC-0006"
 title = "NSys source wire contract"
-version = "0.3.1"
+version = "0.4.0"
 status = "normative"
-phase = "stable"
+phase = "impl"
 owners = ["@Zihua Wu"]
 created = "2026-06-08"
-updated = "2026-07-28"
+updated = "2026-07-29"
 refs = [
     "RFC-0001",
     "RFC-0002",
@@ -31,8 +31,14 @@ refs = [
     "RFC-0005:C-FRESHNESS",
     "RFC-0003:C-LIST-SHAPE",
     "RFC-0003:C-AUXILIARY-DATA",
+    "RFC-0005:C-CACHE-REUSE",
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-SOURCE-CAPABILITY",
+    "RFC-0011:C-EVICTION",
+    "RFC-0011:C-RESOURCE-CONFIG",
 ]
-signature = "2cfdef70b3fe4edeb6169042aeb4b4c59df2a330b30c982e764b32d909f76bad"
+signature = "33168d0f2f21751e60a851feda234c84df86cdca3b7c6c4ee51ac20172ee102f"
 
 [[sections]]
 title = "Summary"
@@ -52,7 +58,14 @@ clauses = [
     "clauses/C-COMPATIBILITY.toml",
     "clauses/C-ARTIFACTS.toml",
     "clauses/C-CUDA-IDENTITY.toml",
+    "clauses/C-INTERVAL-ACCELERATION.toml",
 ]
+
+[[changelog]]
+version = "0.4.0"
+date = "2026-07-29"
+notes = "Govern daemon-resident NSys interval acceleration"
+changed = ["Define process-aware disposable resident interval reuse without a new persistent artifact"]
 
 [[changelog]]
 version = "0.3.1"
@@ -66,12 +79,6 @@ date = "2026-07-28"
 notes = "Make CUDA activity identity process-aware"
 added = ["Define process-aware CUDA identity and process-scoped location filtering"]
 changed = ["Advance the NSys wire contract to v4 and process-qualify CUDA row keys"]
-
-[[changelog]]
-version = "0.4.0"
-date = "2026-06-11"
-notes = "Bump NSys wire to v3 for timeline label-policy cleanup"
-changed = ["NSys source.version advances to v3 because nsys.viz.timeline no longer exposes character-count label caps in the command surface or response payload"]
 
 [[changelog]]
 version = "0.2.1"

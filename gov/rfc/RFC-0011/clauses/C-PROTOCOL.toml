@@ -1,0 +1,26 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-PROTOCOL"
+title = "Private protocol compatibility"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The client and daemon MUST complete a versioned compatibility and capability exchange before the daemon accepts a query for execution.
+
+The private protocol MUST distinguish a pre-acceptance rejection from acceptance. Once an execution request has been transmitted, lack of a definitive rejection MUST be treated by the client as indeterminate ownership unless a later terminal response proves the outcome.
+
+Failure to complete the exchange before any execution request is transmitted MUST follow the unresponsive routing behavior in [[RFC-0011:C-ROUTING]]. An incompatible exchange or unsupported capability MUST follow [[RFC-0011:C-ROUTING]] and [[RFC-0011:C-DIAGNOSTICS]].
+
+The daemon protocol MUST be treated as a private, version-coupled VeloQ transport rather than as a public third-party API.
+
+VeloQ MAY change the private daemon protocol without preserving cross-version compatibility when `auto` fallback, `required` diagnostics, lifecycle singleton safety, and no-replay behavior remain correct.
+
+After acceptance, the daemon MAY return the completed query response or a terminal handled diagnostic such as cancellation or resource pressure. If the transport fails after acceptance and the client receives no terminal response, the client MUST return `daemon.execution-indeterminate`. It MUST NOT reinterpret the failure as a pre-acceptance rejection or imply that the request was safely replayed.
+
+The protocol mechanism used to prove rejection, acceptance, completion, cancellation, or deduplication remains private.
+
+**Rationale:** Version coupling keeps the local protocol small. An explicit ownership boundary and terminal-response rule prevent duplicate execution even when a local connection fails at the worst possible time."""

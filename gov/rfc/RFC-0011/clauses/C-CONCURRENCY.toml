@@ -1,0 +1,28 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-CONCURRENCY"
+title = "Concurrency and resource pressure"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MUST enforce the effective limits for concurrent requests, query-worker permits, aggregate accounted query memory, queued requests, and admission wait defined by [[RFC-0011:C-RESOURCE-CONFIG]].
+
+A request admitted to active execution MUST hold the required concurrency, worker, and query-memory reservations until completion or cancellation releases them.
+
+A request that cannot execute immediately MAY enter the wait queue only when queue capacity remains and its admission deadline has not expired.
+
+When the queue is disabled or full, required reservations cannot be obtained, eligible state is insufficient, or the admission deadline expires before active execution begins, the daemon MUST return `daemon.resource-pressure`.
+
+The daemon MUST NOT silently launch or replay one-shot execution after accepting a request.
+
+Cancellation or client disconnect SHOULD release queued work, active reservations, and resident-state protection as soon as the selected source can do so safely. A cancellation reported as an error MUST use `daemon.cancelled`.
+
+Concurrent persistent-artifact writers MUST preserve the atomic-publication and fresh-reader behavior in [[RFC-0005:C-CONCURRENCY]].
+
+Scheduling order and prioritization are private implementation decisions unless a later RFC adds an externally measurable service guarantee.
+
+**Rationale:** Explicit admission accounting prevents a resident process from multiplying query work without bound. A stable pressure outcome covers every failed-admission path instead of only one eviction case."""

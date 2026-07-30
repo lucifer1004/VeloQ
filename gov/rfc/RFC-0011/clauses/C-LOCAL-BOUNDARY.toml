@@ -1,0 +1,24 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-LOCAL-BOUNDARY"
+title = "Local security boundary"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+The daemon MUST accept query requests only through an operating-system local IPC endpoint owned by the current user.
+
+Under the operating system's normal discretionary access-control model, the endpoint MUST prevent a non-privileged different operating-system user from submitting requests or observing query responses through that endpoint.
+
+Privileged operating-system administrators, root-equivalent processes, and a compromised current-user account are outside this endpoint-isolation threat model.
+
+The daemon MUST NOT listen on a TCP or UDP socket.
+
+The daemon MUST NOT expose a cross-machine or remotely discoverable query endpoint.
+
+Daemon lifecycle commands MUST target only the current user's daemon state.
+
+**Rationale:** VeloQ is a local profile-query CLI, not a trace-hosting or multi-user service. Restricting the daemon to same-user local IPC avoids creating an unowned network, authentication, tenancy, and data-exposure contract while stating the limits of operating-system user isolation honestly."""

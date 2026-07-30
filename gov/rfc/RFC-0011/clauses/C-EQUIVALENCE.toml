@@ -1,0 +1,32 @@
+#:schema ../../../schema/clause.schema.json
+
+[govctl]
+id = "C-EQUIVALENCE"
+title = "One-shot semantic equivalence"
+kind = "normative"
+status = "active"
+since = "0.1.0"
+
+[content]
+text = """
+For the same profile evidence, command arguments, and documented invocation context, a daemon-routed query MUST have the same documented data semantics as one-shot execution.
+
+Semantic equivalence includes matched evidence, row contents, aggregates, ordering and tie-breaking, limiting and truncation metadata, `count`, `total_matched`, auxiliary evidence, warnings, successful-empty behavior, and handled-error meaning.
+
+A daemon-routed query MUST preserve the command identity, source identity, source wire version, trace identity, row-key semantics, output-format semantics, and success or handled-error exit status of the equivalent one-shot query.
+
+A daemon-routed JSON query MUST emit exactly one primary JSON payload to client stdout on success or handled error, as required by [[RFC-0002:C-DEFAULT-MACHINE-OUTPUT]].
+
+Daemon progress and human-facing diagnostics MUST preserve the stdout and stderr separation in [[RFC-0002:C-STDOUT-STDERR]].
+
+A daemon-routed request MUST apply documented query-affecting invocation context equivalently to one-shot execution, including working-directory-relative path resolution and documented environment overrides.
+
+Equivalent responses need not be byte-for-byte identical when the contract permits non-semantic metadata, formatting, or timing differences.
+
+A response MUST NOT require process-local state from an earlier request to be interpreted.
+
+Selecting daemon transport MUST NOT by itself change the envelope schema version or a source wire version.
+
+The one-shot query path MUST remain usable when the daemon and all daemon-owned memory state are absent.
+
+**Rationale:** The daemon is a transport and acceleration choice, not a parallel evidence contract. Agents must be able to switch routing modes without changing either their parser or the meaning of the evidence."""

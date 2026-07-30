@@ -1,0 +1,61 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-003"
+title = "Add bounded daemon sessions and hybrid caching"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-29"
+refs = [
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-EVICTION",
+    "RFC-0011:C-CONCURRENCY",
+    "RFC-0011:C-OBSERVABILITY",
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "RFC-0005:C-FRESHNESS",
+    "RFC-0005:C-CONCURRENCY",
+    "ADR-0002",
+]
+depends_on = ["WI-2026-07-29-002"]
+
+[content]
+description = "Add freshness-safe resident sessions, bounded exact-response caching, two-level weighted eviction, and request admission accounting so the daemon accelerates repeated queries without making memory authoritative or exceeding configured resource limits."
+
+[[content.acceptance_criteria]]
+text = "Resident session identity and reuse eligibility apply the same source, profile-alias, configuration, and generated-artifact freshness rules as one-shot execution"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Exact-response cache keys include every documented semantic input and stale or ineligible entries are bypassed or discarded before reuse"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Pressure handling evicts disposable result entries before selecting eligible idle sessions by the accepted recency-and-resident-cost policy while protecting active and queued sessions"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Admission enforces concurrent-request, worker, query-memory, queue, resident-session, resident-memory, timeout, and cancellation accounting with governed resource-pressure outcomes"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Daemon status reports effective limits, aggregate usage, stable per-session state, cache hit and miss counts, memory estimates, and categorized eviction counters without mutating session state"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Concurrency and freshness tests cover simultaneous readers and builders, source mutation, artifact replacement, cancellation, queue exhaustion, result-first eviction, whole-session eviction, and daemon restart"
+status = "done"
+category = "fixed"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+]

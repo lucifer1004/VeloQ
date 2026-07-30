@@ -1,0 +1,34 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-008"
+title = "Eliminate eager CUDA process fallback ranking"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = ["RFC-0006:C-CUDA-IDENTITY"]
+
+[content]
+description = "Replace eager all-tier CUDA process candidate generation with ordered fallback resolution so direct activity process evidence and unique context mappings avoid runtime-distance ranking, while preserving ambiguous-tie and unresolved identity behavior across every shared NSys SQL caller."
+
+[[content.acceptance_criteria]]
+text = "CUDA activity SQL resolves process identity in evidence order and evaluates runtime-distance candidates only for rows unresolved by direct process evidence and unique context mapping."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Equal-best runtime candidates remain unresolved, and direct, unique-context, and runtime fallback cases agree with the in-memory CUDA process resolver."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Representative large multi-process profile output remains equivalent while the fully direct-mapped scan plan no longer contains profile-scale RANK_DENSE fallback windows."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-WORKSPACE-CHECK",
+]

@@ -1,0 +1,60 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-003"
+title = "Repair local daemon correctness and resource boundaries"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Restore the manually enabled local daemon to the [[RFC-0011]] contract by closing correctness, lifecycle, protocol, scheduling, freshness, accounting, and source-equivalence gaps discovered before release, while keeping the design single-machine, private, and minimal."
+
+[[content.acceptance_criteria]]
+text = "Every daemon-routed query passes through bounded admission, including invocations without reusable resident or exact-cache identity."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Shutdown cancellation reaches executing source work, freshness changes cannot bless stale resident state, and one resident session never executes overlapping requests."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Arbitrarily large buffered query output is transported in bounded frames and accepted requests receive typed terminal outcomes for known source failures."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Exact-response caching stores only successes, accounts retained key and payload memory, and keys only semantic invocation context."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Cold relative-path NSys queries preserve trace-span evidence, resident interval eligibility avoids full counts and exception probes, and daemon connection work remains bounded."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "The executable package no longer exposes daemon internals through an unintended public Rust library target."
+status = "done"
+category = "removed"
+
+[[content.acceptance_criteria]]
+text = "Daemon, NSys wire, CLI I/O, workspace check, formatting, governance, and full-CI clippy guards pass."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-FULL-CI-CLIPPY",
+    "GUARD-FULL-CI-TEST",
+]

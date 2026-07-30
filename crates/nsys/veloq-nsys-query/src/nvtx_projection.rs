@@ -75,8 +75,7 @@ pub fn sidecar_expanded_cte(alias: &str, sidecar_quoted: &str) -> String {
 pub fn gpu_kind_cte(trace: &Trace, alias: &str, label: &str, table: &str) -> String {
     let dev = crate::kind_sql::GPU_DEVICE_ID_EXPR;
     let stm = crate::kind_sql::GPU_STREAM_ID_EXPR;
-    let process_join =
-        veloq_nsys_data::process_lateral_join_sql(trace, table, "t", "proc", "t.start");
+    let process = veloq_nsys_data::process_sql_projection(trace, table, "t", "proc", "t.start");
     // Attribution: `attributed_runtime` carries `(device_id,
     // context_id, correlationId)` directly from the sidecar, so the
     // GPU JOIN is a single trio match — no `ctx_for_pid` bridge.
@@ -96,7 +95,9 @@ pub fn gpu_kind_cte(trace: &Trace, alias: &str, label: &str, table: &str) -> Str
              AND CAST(t.deviceId  AS INTEGER) = ar.device_id
              AND CAST(t.contextId AS BIGINT)  = ar.context_id
             {process_join}
-            WHERE proc.process_id = ar.native_pid
-        )"#
+            WHERE {process_expr} = ar.native_pid
+        )"#,
+        process_expr = process.expr,
+        process_join = process.join,
     )
 }

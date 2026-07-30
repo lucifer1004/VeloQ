@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional local query daemon** — add manual `veloq daemon
+  start/status/stop` lifecycle commands and `--daemon auto|off|required`
+  routing over current-user-only local IPC. Resident sessions, exact rendered
+  responses, admission, cancellation, idle expiry, freshness invalidation, and
+  result-first/cost-aware session eviction are bounded by explicit daemon
+  resource settings.
+- **Daemon-resident NSys interval reuse** — eligible NSys sessions register one
+  disposable, process-aware interval view over the existing fresh
+  `gpu-work-events` sidecar. Changing `timeline`, `concurrency`, and `gaps`
+  requests can reuse that normalized evidence while stale, missing, or
+  ineligible sidecars retain the established source/sidecar path.
+- **Daemon benchmark gate** — extend the leak-safe local benchmark to separate
+  one-shot execution, resident construction, varying-argument cache misses,
+  exact-response hits, and optional session-eviction rebuilds while reporting
+  retained-memory and cache counters.
+
+### Changed
+
+- **Source execution boundary** — render source-owned JSON, CSV, table, and
+  contextual errors into transport-neutral buffers so one-shot and daemon
+  execution share the same typed dispatch and byte-for-byte output contract.
+- **Daemon default resource budgets** — default to one active query, use the
+  shared host-aware query-worker cap, and derive the resident-memory ceiling
+  from the effective host or cgroup memory capacity. A single active query
+  retains its source engine's machine-aware memory default; an explicit query
+  memory ceiling remains available and is required when enabling concurrency.
+
+### Fixed
+
+- **Daemon launch lifecycle** — detach the service process from the invoking
+  terminal process group so a successful `daemon start` remains live after
+  its launcher exits.
+- **Daemon execution correctness** — apply bounded admission even without
+  reusable session identity, interrupt active NSys DuckDB work on shutdown,
+  serialize work within each resident session, and close rather than relabel a
+  session when post-query freshness changes.
+- **Daemon transport and caching** — stream buffered output through bounded
+  private-protocol chunks, preserve known source failures as completed CLI
+  outcomes, cache only successful responses, and account retained exact keys
+  and payloads.
+
 ## [0.5.1] - 2026-07-28
 
 ### Added

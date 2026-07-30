@@ -9,7 +9,7 @@ use veloq_core::{
     Direction, NameFilterRef, SortKeyDef, SortKeySpec, SortSpec,
     time::{DurationFilter, TimeWindow},
 };
-use veloq_nsys_data::NvtxNesting;
+use veloq_nsys_data::{NvtxNesting, Trace};
 
 use crate::column_map::{self, ColumnMap, maybe_col};
 use crate::event_ref::{
@@ -234,7 +234,20 @@ pub struct SearchResponse {
 }
 
 pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<SearchResponse> {
-    let (trace, abs_window) = crate::open_scoped(path.as_ref(), req.limit, req.time_window)?;
+    crate::check_limit(req.limit)?;
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_after_limit(&trace, req)
+}
+
+pub fn run_with_trace(trace: &Trace, req: SearchRequest) -> NsysQueryResult<SearchResponse> {
+    crate::check_limit(req.limit)?;
+    run_after_limit(trace, req)
+}
+
+fn run_after_limit(trace: &Trace, req: SearchRequest) -> NsysQueryResult<SearchResponse> {
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
 
     if let KindFilter::Only(kinds) = &req.kinds
         && kinds.contains(&EventKind::CpuSample)
@@ -262,7 +275,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
         &req.kinds,
         req.nvtx.as_deref(),
         EventKind::ALL,
-        &trace,
+        trace,
         "search",
     )?;
     if kinds.is_empty() {
@@ -278,7 +291,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     // Build the attribution CTE *after* the kind filter so it only
     // emits views for tables we actually need + are present.
     let attribution = match req.nvtx.as_deref() {
-        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, &trace)?),
+        Some(p) => Some(crate::nvtx_attribution::build(p, &kinds, trace)?),
         None => None,
     };
 
@@ -387,7 +400,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
     let mut rank_subquery_params = Vec::new();
     for k in &kinds {
         let fragment = crate::query_sql::event_scan::search_rank_select(
-            &trace,
+            trace,
             *k,
             nvtx_scope,
             include_name,
@@ -534,7 +547,7 @@ pub fn run<P: AsRef<Path>>(path: P, req: SearchRequest) -> NsysQueryResult<Searc
         && let Some(nesting_map) = nesting.as_ref()
     {
         let row_ids: Vec<crate::RowId> = events.iter().map(|e| e.base().row_id).collect();
-        let contexts = crate::nvtx_reverse::lookup_for_row_ids(&trace, &row_ids, nesting_map)?;
+        let contexts = crate::nvtx_reverse::lookup_for_row_ids(trace, &row_ids, nesting_map)?;
         for ev in &mut events {
             let row_id = ev.base().row_id;
             if let Some(ctx) = contexts.get(&row_id) {

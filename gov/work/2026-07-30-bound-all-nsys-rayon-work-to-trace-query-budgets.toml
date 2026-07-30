@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-014"
+title = "Bound all NSys Rayon work to trace query budgets"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+]
+
+[content]
+description = "Route every production NSys Rayon operation through one strongly typed trace-local worker pool so one-shot and daemon queries honor the same machine-adaptive or configured worker budget, including one-worker sessions, without silently escaping to Rayon's process-global pool."
+
+[[content.acceptance_criteria]]
+text = "Trace constructs a strongly typed local query pool with exactly its resolved worker budget and reports pool-construction failure as a typed NSys data error."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "GPU-work ordering, correlation ordering, concurrency ordering/aggregation, NVTX nesting, NVTX tree, and runtime-parent walks execute inside that trace-local pool."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "A one-worker daemon trace executes Rayon-backed production work in a one-thread local pool rather than the process-global pool."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Focused resource, identity, sidecar, and interval tests plus the required artifact/wire guards pass without wire or cache schema changes."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

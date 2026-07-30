@@ -16,6 +16,7 @@ pub mod self_update;
 pub mod sources;
 
 use clap::{ArgMatches, Command};
+use std::sync::Arc;
 use veloq_core::{
     EnvelopeError, EnvelopeTraceRef, OutputFormat, ProfileSource, ResponseMeta, SourceRef,
 };
@@ -61,7 +62,7 @@ pub fn cli() -> Vec<Command> {
 pub fn run(
     verb: &str,
     matches: &ArgMatches,
-    sources: &[Box<dyn ProfileSource>],
+    sources: &[Arc<dyn ProfileSource>],
     fmt: OutputFormat,
 ) -> MetaResult<i32> {
     match verb {

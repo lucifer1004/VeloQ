@@ -1,0 +1,42 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-006"
+title = "Make daemon memory defaults machine-adaptive"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Derive default daemon query and resident memory ceilings from the memory capacity actually available to the local process, respecting Linux cgroup limits while retaining explicit start-time overrides."
+
+[[content.acceptance_criteria]]
+text = "The default aggregate query-memory ceiling is one quarter of effective host-or-cgroup memory capacity, rounded down to whole MiB."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "The default daemon-accounted resident-memory ceiling is one sixteenth of effective host-or-cgroup memory capacity, rounded down to whole MiB."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Explicit max-query-memory-mib and max-resident-memory-mib values remain authoritative and daemon start/status expose the effective byte ceilings."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "The large real multi-process NSys scan remains output-equivalent and avoids the cold-path spill caused by the former fixed default."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

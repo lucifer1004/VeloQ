@@ -1,0 +1,54 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-29-006"
+title = "Implement daemon-resident NSys interval reuse"
+status = "done"
+created = "2026-07-29"
+started = "2026-07-29"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-EVICTION",
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "ADR-0004",
+]
+
+[content]
+description = "Add a lazy, process-aware NSys GPU interval view to each eligible daemon session so changing timeline, concurrency, and gaps requests can reuse normalized local evidence without creating another persistent artifact, while preserving exact one-shot behavior and bounded resident accounting."
+
+[[content.acceptance_criteria]]
+text = "Eligible NSys daemon sessions build at most one session-local positive-duration GPU interval view and reuse it across changing timeline, concurrency, and gaps requests without creating a new persistent artifact"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Accelerator-backed JSON, CSV, and table responses remain differentially equivalent to one-shot execution for process/device/stream filters, half-open windows, kind selection, limiting, totals, and gap neighbors, with unsupported requests falling back"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Resident interval memory is added to daemon session accounting and participates in existing result-first and weighted whole-session pressure handling without crossing session freshness boundaries"
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Cache-miss benchmarks vary request arguments and separately report resident construction, warm interval reuse, eviction rebuild, retained memory, one-shot latency, and exact-response hits"
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Prep readiness, clean behavior, registered sidecar inventory, and the NSys wire version remain unchanged"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-ROW-WIRE-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+]
