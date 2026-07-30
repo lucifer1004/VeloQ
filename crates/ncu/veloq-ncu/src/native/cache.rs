@@ -7,7 +7,7 @@
 //! ## Freshness by content hash (not mtime/ctime)
 //!
 //! The cache is valid iff a sibling `ncu-native.sha256` marker records the
-//! sha256 of the current `.ncu-rep`. This diverges deliberately from
+//! sha256 of the current NCU report. This diverges deliberately from
 //! `nsys_rep`'s ctime ordering: git checkout resets mtime/ctime, which
 //! would invalidate a *committed* golden sidecar and force a rebuild —
 //! and a rebuild requires NCU, breaking the NCU-free CI premise. A
@@ -19,7 +19,7 @@
 //! `ncu_report` API — NCU must be installed *at build time only*. A
 //! content-hash match serves the cache with no NCU. A mismatch (or a
 //! missing cache) with NCU absent is a structured error: veloq cannot
-//! ingest a new/changed `.ncu-rep` without NCU.
+//! ingest a new/changed report without NCU.
 //!
 //! ## Discovery (cross-platform)
 //!
@@ -35,7 +35,7 @@
 //!
 //! ## Committed-sidecar mode (report absent)
 //!
-//! When the source `.ncu-rep` is *absent* but a committed sidecar
+//! When the source NCU report is *absent* but a committed sidecar
 //! exists, the sidecar is authoritative — the export-once model taken
 //! to its conclusion: ship the leak-free `<report>.veloq/` sidecar, not
 //! the proprietary report (which embeds the capturing host's hostname /
@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::error::{NcuSourceError, NcuSourceResult};
+use crate::report::NcuReportFormat;
 
 use super::{NATIVE_SCHEMA, NativeSidecar};
 
@@ -105,6 +106,14 @@ pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
                     NATIVE_SCHEMA,
                 ));
             }
+            if !sidecar_reader_supports(report, &sc) {
+                return Err(
+                    NcuSourceError::native_sidecar_unsupported_compressed_reader(
+                        &cache,
+                        &sc.ncu_version,
+                    ),
+                );
+            }
             return Ok(sc);
         }
         return Err(NcuSourceError::trace_not_found(report));
@@ -112,7 +121,7 @@ pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
     let want = file_sha256(report)?;
     let marker = marker_path_for(report);
 
-    if let Some(sc) = load_if_fresh(&cache, &marker, &want)? {
+    if let Some(sc) = load_if_fresh(report, &cache, &marker, &want)? {
         return Ok(sc);
     }
 
@@ -137,7 +146,7 @@ pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
     })?;
 
     // A concurrent process may have built it while we waited.
-    if let Some(sc) = load_if_fresh(&cache, &marker, &want)? {
+    if let Some(sc) = load_if_fresh(report, &cache, &marker, &want)? {
         return Ok(sc);
     }
 
@@ -162,6 +171,7 @@ pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
 /// Load + validate the cache against the wanted content hash. `Ok(None)`
 /// when the cache or marker is missing or the hash differs.
 fn load_if_fresh(
+    report: &Path,
     cache: &Path,
     marker: &Path,
     want: &str,
@@ -183,7 +193,20 @@ fn load_if_fresh(
         );
         return Ok(None);
     }
+    if !sidecar_reader_supports(report, &sc) {
+        log::info!(
+            "native sidecar reader version {:?} cannot decode {}; needs rebuild",
+            sc.ncu_version,
+            report.display()
+        );
+        return Ok(None);
+    }
     Ok(Some(sc))
+}
+
+fn sidecar_reader_supports(report: &Path, sidecar: &NativeSidecar) -> bool {
+    NcuReportFormat::detect(report)
+        .is_none_or(|format| format.reader_supports(&sidecar.ncu_version))
 }
 
 /// Read + gunzip + deserialize a committed/cached native sidecar. Public
@@ -240,7 +263,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> NcuSourceResult<()> {
 }
 
 fn file_sha256(path: &Path) -> NcuSourceResult<String> {
-    // `.ncu-rep` fixtures are a few MB; read whole rather than a buffered
+    // NCU fixtures are a few MB; read whole rather than a buffered
     // loop so we avoid a slice index (clippy::indexing_slicing is denied).
     let bytes = fs::read(path)
         .map_err(|source| NcuSourceError::native_report_read(path.display(), source))?;
@@ -558,14 +581,14 @@ mod tests {
         std::env::temp_dir().join(format!("veloq-ncu-{label}-{}-{seq}", std::process::id()))
     }
 
-    fn write_test_sidecar(cache: &Path, schema: &str) -> Result<()> {
+    fn write_test_sidecar(cache: &Path, schema: &str, ncu_version: &str) -> Result<()> {
         use std::io::Write;
         let parent = cache
             .parent()
             .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
         fs::create_dir_all(parent)?;
         let payload = format!(
-            r#"{{"schema":"{schema}","ncu_version":"test","session":{{"versions":[]}},"launches":[]}}"#
+            r#"{{"schema":"{schema}","ncu_version":"{ncu_version}","session":{{"versions":[]}},"launches":[]}}"#
         );
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(payload.as_bytes())?;
@@ -592,7 +615,7 @@ mod tests {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
         let _ = fs::remove_dir_all(parent);
-        write_test_sidecar(&cache, NATIVE_SCHEMA)?;
+        write_test_sidecar(&cache, NATIVE_SCHEMA, "test")?;
 
         assert!(
             !tmp.exists(),
@@ -606,6 +629,28 @@ mod tests {
     }
 
     #[test]
+    fn committed_compressed_sidecar_rejects_unsupported_reader() -> Result<()> {
+        let report = unique_temp_path("absent-old-repz").with_extension("ncu-repz");
+        let cache = cache_path_for(&report);
+        let parent = cache
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
+        let _ = fs::remove_dir_all(parent);
+        write_test_sidecar(&cache, NATIVE_SCHEMA, "2025.3.1")?;
+
+        let err = build_or_load(&report)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("unsupported compressed sidecar should error"))?;
+        assert_eq!(
+            ncu_error_code(&err),
+            "ncu.input.native-sidecar-unsupported-reader"
+        );
+
+        fs::remove_dir_all(parent).ok();
+        Ok(())
+    }
+
+    #[test]
     fn committed_sidecar_schema_mismatch_is_typed() -> Result<()> {
         let tmp = unique_temp_path("schema-mismatch").with_extension("ncu-rep");
         let cache = cache_path_for(&tmp);
@@ -613,7 +658,7 @@ mod tests {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("cache path has no parent"))?;
         let _ = fs::remove_dir_all(parent);
-        write_test_sidecar(&cache, "older-schema")?;
+        write_test_sidecar(&cache, "older-schema", "test")?;
 
         assert!(
             !tmp.exists(),
@@ -628,6 +673,28 @@ mod tests {
         );
 
         fs::remove_dir_all(parent).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn compressed_report_rejects_cache_from_unsupported_reader() -> Result<()> {
+        let report = unique_temp_path("old-repz-cache").with_extension("ncu-repz");
+        fs::write(&report, b"compressed report fixture")?;
+        let cache = cache_path_for(&report);
+        let marker = marker_path_for(&report);
+        write_test_sidecar(&cache, NATIVE_SCHEMA, "2025.3.1")?;
+        let want = file_sha256(&report)?;
+        fs::write(&marker, format!("{want}\n"))?;
+
+        assert!(
+            load_if_fresh(&report, &cache, &marker, &want)?.is_none(),
+            "a sidecar produced by a pre-.ncu-repz reader must be rebuilt"
+        );
+
+        fs::remove_file(&report).ok();
+        if let Some(parent) = cache.parent() {
+            fs::remove_dir_all(parent).ok();
+        }
         Ok(())
     }
 

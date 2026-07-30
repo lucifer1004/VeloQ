@@ -7,8 +7,8 @@ sidecar as JSON on stdout. Uses ONLY the public API — no vendored
 protos, no NVIDIA files redistributed.
 
 Usage:
-    python3 ncu_export.py <report.ncu-rep>          # JSON sidecar -> stdout
-    python3 ncu_export.py <report.ncu-rep> --probe   # capability probe only
+    python3 ncu_export.py <report.ncu-rep[z]>          # JSON sidecar -> stdout
+    python3 ncu_export.py <report.ncu-rep[z]> --probe   # capability probe only
 
 The Rust ingest path is authoritative: it sets PYTHONPATH to the located
 `ncu_report` module directory before invoking this. We also self-locate
@@ -16,10 +16,11 @@ as a fallback so the helper runs standalone for fixture regeneration; the
 fallback mirrors the Rust-side cross-platform discovery so the
 two paths cannot diverge.
 
-Tested against Nsight Compute 2026.1.1 (ncu_report API). Other versions
-are expected to work: the helper resolves all version-specific enum
-semantics (metric type/subtype/rollup, stall reasons) from the *live*
-ncu_report enum by name rather than hard-coding integer codes,
+Tested against Nsight Compute 2026.1.1 and 2026.2.1 (`ncu_report` API).
+Other supported versions are expected to work: the helper resolves all
+version-specific enum semantics (metric type/subtype/rollup, stall
+reasons) from the *live* ncu_report enum by name rather than
+hard-coding integer codes,
 so an enum renumber cannot corrupt output. A
 structural API change (a renamed/relocated enum container) collapses the
 reverse maps to empty, which is reported as a `classification: "degraded"`
@@ -32,6 +33,34 @@ import json
 import os
 import sys
 from pathlib import Path
+
+
+_MIN_REPZ_READER_VERSION = (2025, 4)
+
+
+class UnsupportedCompressedReportReader(RuntimeError):
+    pass
+
+
+def _release_version(value: str) -> tuple[int, int] | None:
+    parts = value.split(".")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def _validate_report_reader(path: str, version: str) -> None:
+    if Path(path).suffix != ".ncu-repz":
+        return
+    parsed = _release_version(version)
+    if parsed is None or parsed < _MIN_REPZ_READER_VERSION:
+        raise UnsupportedCompressedReportReader(
+            f"`{path}` requires ncu_report 2025.4 or newer "
+            f"(found `{version}`)"
+        )
 
 
 # --- Locate + import ncu_report (cross-platform discovery) ---------
@@ -432,6 +461,8 @@ def _workload(action):
 
 def build_sidecar(path: str) -> dict:
     report = ncu_report.load_report(path)
+    report_version = report.get_version()
+    _validate_report_reader(path, report_version)
     launches, ranges, graphs = [], [], []
     for ri in range(report.num_ranges()):
         rng = report.range_by_idx(ri)
@@ -448,8 +479,8 @@ def build_sidecar(path: str) -> dict:
             # skipped — out of veloq's CUDA scope.
     out = {
         "schema": "ncu-native-v1",
-        "ncu_version": report.get_version(),
-        "session": {"versions": [{"provider": "Nsight Compute", "version": report.get_version()}]},
+        "ncu_version": report_version,
+        "session": {"versions": [{"provider": "Nsight Compute", "version": report_version}]},
         "launches": launches,
     }
     # Visible signal that enum-name resolution degraded to the suffix
@@ -468,7 +499,7 @@ def build_sidecar(path: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="veloq NCU ncu_report-native export helper")
-    ap.add_argument("report", nargs="?", help="path to a .ncu-rep file")
+    ap.add_argument("report", nargs="?", help="path to a .ncu-rep or .ncu-repz file")
     ap.add_argument("--probe", action="store_true", help="capability probe: print ncu_report version and exit 0")
     args = ap.parse_args()
 
@@ -479,7 +510,11 @@ def main() -> int:
         sys.stderr.write("error: <report> is required (or pass --probe)\n")
         return 2
 
-    sidecar = build_sidecar(args.report)
+    try:
+        sidecar = build_sidecar(args.report)
+    except UnsupportedCompressedReportReader as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 4
     # Deterministic: sorted keys so re-export is byte-identical.
     json.dump(sidecar, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

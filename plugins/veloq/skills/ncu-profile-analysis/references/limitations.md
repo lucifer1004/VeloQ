@@ -1,6 +1,6 @@
 # NCU Limits And Tool Handoffs
 
-`veloq ncu` reads existing `.ncu-rep` files and reshapes them for
+`veloq ncu` reads existing `.ncu-rep` and `.ncu-repz` files and reshapes them for
 agents. It does not profile live workloads, replay kernels, invent
 missing metrics, or replace every native NCU UI workflow.
 
@@ -157,14 +157,14 @@ correct or profitable without new measurements.
   `ncu-command` helper only generates a rerun recipe.
 - The `<file>.veloq/ncu-native.json.gz` sidecar is the single ingest
   path, built on first call and keyed on a sha256 content-hash of the
-  `.ncu-rep`. If you replace the report with different content at the
+  input report bytes. If you replace the report with different content at the
   same path, the hash changes and VeloQ rebuilds. If generated
   products go stale for some other reason, run `veloq clean R` to
   remove the report's `<file>.veloq/` artifact root.
 
 ## NCU version coupling
 
-VeloQ ingests `.ncu-rep` through NVIDIA's official `ncu_report` Python
+VeloQ ingests `.ncu-rep` and `.ncu-repz` through NVIDIA's official `ncu_report` Python
 API (required only at prep / first-touch; query-time is NCU-free).
 Coupling to the installed `ncu` version is bounded by design:
 

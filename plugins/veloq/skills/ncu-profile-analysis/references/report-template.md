@@ -9,7 +9,7 @@ The template is a checklist, not a form. Skip sections that
 don't apply. Every evidence line should carry the VeloQ
 command that produced it — that's the audit trail.
 
-Assume `R` is the `.ncu-rep` path under analysis. Substitute
+Assume `R` is the `.ncu-rep` or `.ncu-repz` path under analysis. Substitute
 your concrete report path, launch row id, kernel name, and
 counter names when filling the template.
 

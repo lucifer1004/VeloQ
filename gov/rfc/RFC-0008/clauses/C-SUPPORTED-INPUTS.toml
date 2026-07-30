@@ -11,16 +11,24 @@ since = "0.1.0"
 text = """
 NCU automatic source detection MUST follow the side-effect-free trace detection contract in [[RFC-0004:C-TRACE-DETECTION]].
 
-NCU automatic source detection MUST claim path names whose extension is `.ncu-rep`.
+NCU automatic source detection MUST claim path names whose extension is `.ncu-rep` or `.ncu-repz`.
 
-NCU automatic source detection MUST NOT claim `.nsys-rep`, `_pqtdir`, `.pt.trace.json`, `.pt.trace.json.gz`, `.sqlite`, or path names whose extension is not `.ncu-rep`.
+NCU automatic source detection MUST NOT claim `.nsys-rep`, `_pqtdir`, `.pt.trace.json`, `.pt.trace.json.gz`, `.sqlite`, or path names whose extension is neither `.ncu-rep` nor `.ncu-repz`.
 
-An NCU trace-bearing command MUST accept `.ncu-rep` report inputs when the report is present and a fresh or buildable native sidecar is available.
+An NCU trace-bearing command MUST accept `.ncu-rep` and `.ncu-repz` report inputs when the report is present and a fresh or buildable native sidecar is available.
 
-An NCU trace-bearing command MAY accept a missing `.ncu-rep` report path when the corresponding VeloQ artifact root already contains a readable native NCU sidecar with a supported native schema.
+For `.ncu-rep` and `.ncu-repz` reports containing equivalent NCU evidence, command responses MUST preserve the same primary `data.rows`, `data.count`, `data.total_matched`, and source-derived auxiliary evidence. Input paths, generated artifact paths, compressed sizes, and other storage-representation metadata MAY differ.
 
-An NCU trace-bearing command MUST emit a handled diagnostic error when neither the `.ncu-rep` report nor a readable native NCU sidecar with a supported native schema is available.
+An NCU trace-bearing command MUST emit a handled diagnostic error when answering the command requires decoding a present supported report and its available report reader cannot decode that report.
+
+An NCU trace-bearing command MUST NOT report a successful empty result solely because its available report reader does not support `.ncu-repz`.
+
+An NCU trace-bearing command MAY reuse a verified-fresh native sidecar without decoding the report.
+
+An NCU trace-bearing command MAY accept a missing supported report path when the corresponding VeloQ artifact root already contains a readable native NCU sidecar with a supported native schema.
+
+An NCU trace-bearing command MUST emit a handled diagnostic error when neither the supported report nor a readable native NCU sidecar with a supported native schema is available.
 
 An NCU command that opens a supported input MUST keep generated artifacts under the artifact root defined by [[RFC-0005:C-ARTIFACT-ROOT]].
 
-**Rationale:** Detection must remain deterministic and side-effect-free. Committed-sidecar mode lets tests, examples, and leak-free artifacts query a report-shaped path without shipping proprietary `.ncu-rep` files that may contain local machine details."""
+**Rationale:** Detection must remain deterministic and side-effect-free. Compression changes storage, not report evidence. Explicit decode failures prevent unsupported readers from turning compressed reports into plausible empty results without invalidating verified sidecar reuse. Committed-sidecar mode lets tests, examples, and leak-free artifacts query a report-shaped path without shipping proprietary report files that may contain local machine details."""

@@ -331,6 +331,7 @@ mod tests {
             ("trace.nsys-rep", Some("nsys")),
             ("trace_pqtdir", Some("nsys")),
             ("report.ncu-rep", Some("ncu")),
+            ("report.ncu-repz", Some("ncu")),
             ("worker0.pt.trace.json", Some("pytorch")),
             ("worker0.pt.trace.json.gz", Some("pytorch")),
             ("trace.sqlite", None),

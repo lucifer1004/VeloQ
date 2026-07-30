@@ -274,7 +274,7 @@ veloq inspect path/to/trace.nsys-rep cpu_sample:1234
 veloq nsys ncu-command path/to/trace.nsys-rep kernel:1234
 veloq nsys ncu-command path/to/trace.nsys-rep kernel:1234 --print | bash
 
-# ── NCU (kernel reports) — namespaced under `ncu`
+# ── NCU (`.ncu-rep` / `.ncu-repz` kernel reports) — namespaced under `ncu`
 # Slim overview (launch-derived totals + NCU-version session)
 veloq ncu summary path/to/report.ncu-rep
 veloq ncu summary --format csv path/to/report.ncu-rep
@@ -566,7 +566,7 @@ NVTX tree can be built.
 | NSys    | `.nsys-rep`                 | Primary path; exported via `nsys export -t parquetdir` on first use                                           |
 | NSys    | `<stem>_pqtdir/`            | Pre-exported parquetdir; opened directly                                                                      |
 | NSys    | `<trace>.veloq/parquetdir/` | Generated alias for the owning `.nsys-rep`; not a separate source                                             |
-| NCU     | `.ncu-rep`                  | Nsight Compute kernel report (ingested via NVIDIA's `ncu_report` API at prep time; no vendored proto schemas) |
+| NCU     | `.ncu-rep`, `.ncu-repz`     | Nsight Compute kernel report, plain or zstd-compressed (ingested via NVIDIA's `ncu_report` API at prep time)   |
 | PyTorch | `.pt.trace.json`            | PyTorch/Kineto Chrome trace JSON                                                                              |
 | PyTorch | `.pt.trace.json.gz`         | Gzipped PyTorch/Kineto Chrome trace JSON                                                                      |
 

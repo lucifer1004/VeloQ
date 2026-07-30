@@ -1,7 +1,7 @@
 # NCU Diagnosis Reference
 
 A signals → command → heuristic-threshold table for NCU kernel
-analysis. Use this when the agent already has an `.ncu-rep` and
+analysis. Use this when the agent already has an `.ncu-rep` or `.ncu-repz` and
 wants a fast routing decision before drilling into a single
 dimension. Read alongside
 [`metrics-and-sections.md`](metrics-and-sections.md) (which
@@ -17,7 +17,7 @@ are the only way to know whether a number is locally surprising.
 Calibrate against your workload before quoting any threshold
 from this file.
 
-Assume `R` is a `.ncu-rep` path throughout. The jq recipes are
+Assume `R` is an `.ncu-rep` or `.ncu-repz` path throughout. The jq recipes are
 runnable verbatim against `veloq ncu inspect`, `veloq ncu
 metrics`, and `veloq ncu source-metrics` JSON output.
 

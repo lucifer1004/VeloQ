@@ -1,7 +1,7 @@
-//! `NcuSource` — the `ProfileSource` impl for `.ncu-rep` kernel reports.
+//! `NcuSource` — the `ProfileSource` impl for Nsight Compute kernel reports.
 //!
 //! Owns the source identity, the trace-detection heuristic
-//! (`.ncu-rep`), and the run glue that reads the `ncu_report` native
+//! (`.ncu-rep` / `.ncu-repz`), and the run glue that reads the `ncu_report` native
 //! sidecar ([`crate::native::cache`]) and emits a shared [`Envelope`]
 //! (or [`EnvelopeError`] on failure).
 //!
@@ -21,6 +21,7 @@ use crate::metrics;
 use crate::native::{
     self, NativeSessionInfo, NativeSummaryAuxiliary, NativeSummaryResponse, NativeTotalsRow,
 };
+use crate::report::NcuReportFormat;
 use crate::schema::{SchemaPayload, schema_value_for};
 use crate::views::{
     disasm_view, graphs_view, inspect_view, launches_view, metrics_view, native_summary_view,
@@ -73,7 +74,7 @@ impl ProfileSource for NcuSource {
     }
 
     fn detect(&self, trace: &Path) -> bool {
-        matches!(trace.extension().and_then(|e| e.to_str()), Some("ncu-rep"))
+        NcuReportFormat::detect(trace).is_some()
     }
 
     fn cli(&self) -> Command {

@@ -1,4 +1,4 @@
-//! `veloq-ncu` — read Nsight Compute `.ncu-rep` reports.
+//! `veloq-ncu` — read Nsight Compute `.ncu-rep` and `.ncu-repz` reports.
 //!
 //! Ingestion goes through NVIDIA's official `ncu_report` Python API:
 //! a bundled helper exports each report to a leak-free
@@ -26,6 +26,7 @@ pub mod launches;
 pub mod lists;
 pub mod metrics;
 pub mod native;
+mod report;
 pub mod row_id;
 pub mod schema;
 pub mod schema_targets;

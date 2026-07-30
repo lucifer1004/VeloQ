@@ -3,12 +3,12 @@
 [govctl]
 id = "RFC-0008"
 title = "NCU source wire contract"
-version = "0.1.0"
+version = "0.2.0"
 status = "normative"
 phase = "stable"
 owners = ["@Zihua Wu"]
 created = "2026-06-08"
-updated = "2026-06-08"
+updated = "2026-07-30"
 refs = [
     "RFC-0001",
     "RFC-0002",
@@ -28,7 +28,7 @@ refs = [
     "RFC-0005:C-ARTIFACT-ROOT",
     "RFC-0005:C-FRESHNESS",
 ]
-signature = "95fad016751da79e7dbd23927f76a260ce22eb889649ed27054d1823e2d7352b"
+signature = "a2a6ef822f7415022c32256448cd3a7dbc17efd3ec2623ee2b60ed71c5cdabd9"
 
 [[sections]]
 title = "Summary"
@@ -47,6 +47,12 @@ clauses = [
     "clauses/C-SOURCE-EXCEPTIONS.toml",
     "clauses/C-COMPATIBILITY.toml",
 ]
+
+[[changelog]]
+version = "0.2.0"
+date = "2026-07-30"
+notes = "Support compressed Nsight Compute reports"
+added = ["Accept and correctly query .ncu-repz inputs alongside .ncu-rep"]
 
 [[changelog]]
 version = "0.1.0"

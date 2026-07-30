@@ -1,4 +1,4 @@
-//! Proto-free extraction of the ELF cubins embedded in a `.ncu-rep`.
+//! Proto-free extraction of the ELF cubins embedded in an NCU report.
 //!
 //! `ncu` imports the device ELF cubins into the report by default
 //! (`--import-sass`). They are ordinary CUDA ELF objects
@@ -21,6 +21,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::{NcuSourceError, NcuSourceResult};
+use crate::report::NcuReportFormat;
 
 /// `e_machine` value for NVIDIA CUDA ELF objects.
 const EM_CUDA: u16 = 190;
@@ -47,7 +48,7 @@ impl ExtractedCubin {
 /// unparseable candidates are skipped.
 ///
 /// Committed-sidecar mode (see [`crate::native::cache`] module docs):
-/// when the source `.ncu-rep` is absent, the cubins are loaded from the
+/// when the source NCU report is absent, the cubins are loaded from the
 /// committed `<report>.veloq/disasm/<sha>.cubin` files instead. The
 /// extracted cubins are clean compiled device code (no host/network
 /// strings), so they are committable where the report itself is not.
@@ -55,8 +56,16 @@ pub fn extract_cuda_cubins(report: &Path) -> NcuSourceResult<Vec<ExtractedCubin>
     if !report.exists() {
         return load_committed_cubins(report);
     }
-    let data = fs::read(report)
+    let stored = fs::read(report)
         .map_err(|source| NcuSourceError::cubin_report_read(report.display(), source))?;
+    let data = match NcuReportFormat::detect(report) {
+        Some(NcuReportFormat::Zstd) => {
+            zstd::stream::decode_all(stored.as_slice()).map_err(|source| {
+                NcuSourceError::cubin_report_zstd_decompress(report.display(), source)
+            })?
+        }
+        Some(NcuReportFormat::Plain) | None => stored,
+    };
     let mut out = Vec::new();
     for off in elf_magic_offsets(&data) {
         let Some(rest) = data.get(off..) else {
@@ -166,4 +175,40 @@ fn parse_one(rest: &[u8]) -> NcuSourceResult<Option<ExtractedCubin>> {
         bytes: bytes.to_vec(),
         symbols,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::{Context, Result};
+
+    fn fixture_cubin() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "tests/fixtures/source_metric_basic.ncu-rep.veloq/disasm/\
+             07f9586a81da22d4f11cb1fa04c3fa8c87e896e33687d27e3fa6ad33cb62b0b2.cubin",
+        )
+    }
+
+    #[test]
+    fn compressed_report_preserves_embedded_cubins() -> Result<()> {
+        let cubin = fs::read(fixture_cubin()).context("read committed cubin fixture")?;
+        let temp = tempfile::tempdir().context("create temp report directory")?;
+        let plain_path = temp.path().join("sample.ncu-rep");
+        let compressed_path = temp.path().join("sample.ncu-repz");
+        fs::write(&plain_path, &cubin).context("write plain report fixture")?;
+        let compressed =
+            zstd::stream::encode_all(cubin.as_slice(), 0).context("compress report fixture")?;
+        fs::write(&compressed_path, compressed).context("write compressed report fixture")?;
+
+        let plain = extract_cuda_cubins(&plain_path)?;
+        let compressed = extract_cuda_cubins(&compressed_path)?;
+
+        assert_eq!(plain.len(), 1);
+        assert_eq!(compressed.len(), plain.len());
+        let plain = plain.first().context("plain report cubin")?;
+        let compressed = compressed.first().context("compressed report cubin")?;
+        assert_eq!(compressed.bytes, plain.bytes);
+        assert_eq!(compressed.symbols, plain.symbols);
+        Ok(())
+    }
 }

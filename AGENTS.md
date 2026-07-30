@@ -207,7 +207,8 @@ veloq/
     │   └── veloq-nsys/         # Nsys clap surface + dispatch + CSV/table
     │                             views; impls `NsysSource: ProfileSource`
     ├── ncu/
-    │   └── veloq-ncu/          # `.ncu-rep` via NVIDIA's `ncu_report`
+    │   └── veloq-ncu/          # `.ncu-rep` / `.ncu-repz` via NVIDIA's
+    │                             `ncu_report`
     │                             API → native sidecar + SASS/PTX
     │                             correlation; impls `NcuSource: ProfileSource`
     └── pytorch/
@@ -334,7 +335,8 @@ Not shipped yet:
     - `<report>.veloq/ncu-native.json.gz` — `native::cache::build_or_load`;
       gzipped JSON sidecar from the `ncu_report` ingest. The sole NCU
       ingest path, reused by every NCU verb. Freshness is keyed on a
-      sha256 content-hash of the `.ncu-rep` (checkout-stable).
+      sha256 content-hash of the input `.ncu-rep` or `.ncu-repz`
+      (checkout-stable).
     - `<report>.veloq/disasm/<sha>.correlated.json` — per-cubin
       SASS/PTX/source-line index from nvdisasm + cuobjdump.
   - PyTorch:

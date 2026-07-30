@@ -1,6 +1,6 @@
 # NCU Metric-Name Architecture Notes
 
-Metric names in `.ncu-rep` reports drift across GPU
+Metric names in `.ncu-rep` and `.ncu-repz` reports drift across GPU
 architectures and NCU versions. Counters get renamed, split,
 or moved between sections, and sections themselves come and go
 between releases. **This file is not a translation table.** It
@@ -14,7 +14,7 @@ names across architectures because there is no canonical
 mapping that survives all reports — the best VeloQ can do is
 get out of the way and let you enumerate first.
 
-Assume `R` is a `.ncu-rep` path throughout.
+Assume `R` is an `.ncu-rep` or `.ncu-repz` path throughout.
 
 ## Enumerate before assuming a name exists
 

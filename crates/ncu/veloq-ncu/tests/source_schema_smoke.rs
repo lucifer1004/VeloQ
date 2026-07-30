@@ -11,6 +11,7 @@ fn source_identity_and_detection_match_wire_contract() {
     assert_eq!(source.kind(), "ncu");
     assert_eq!(source.version(), "v1");
     assert!(source.detect(Path::new("report.ncu-rep")));
+    assert!(source.detect(Path::new("report.ncu-repz")));
     assert!(!source.detect(Path::new("trace.nsys-rep")));
     assert!(!source.detect(Path::new("worker0.pt.trace.json")));
     assert!(!source.detect(Path::new("report.ncu-rep.veloq")));

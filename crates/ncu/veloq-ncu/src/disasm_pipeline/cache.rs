@@ -35,6 +35,37 @@ pub fn cubin_sha(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+struct TempArtifact(PathBuf);
+
+impl Drop for TempArtifact {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn write_atomic(
+    path: &Path,
+    bytes: &[u8],
+    write_error: impl Fn(&Path, std::io::Error) -> NcuSourceError,
+    publish_error: impl Fn(&Path, std::io::Error) -> NcuSourceError,
+) -> NcuSourceResult<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut temp_name = path.as_os_str().to_owned();
+    temp_name.push(format!(".tmp-{}-{seq}", std::process::id()));
+    let temp = TempArtifact(PathBuf::from(temp_name));
+    fs::write(&temp.0, bytes).map_err(|source| write_error(&temp.0, source))?;
+    // Unix rename atomically replaces the destination. Windows rename does
+    // not, so remove only there; readers may briefly observe a cache miss but
+    // never a partially written artifact.
+    #[cfg(windows)]
+    if path.exists() {
+        fs::remove_file(path).map_err(|source| publish_error(path, source))?;
+    }
+    fs::rename(&temp.0, path).map_err(|source| publish_error(path, source))?;
+    Ok(())
+}
+
 /// Return the sidecar directory for a given trace path:
 /// `<report>.veloq/disasm/`.
 pub fn sidecar_dir(trace_path: &Path) -> PathBuf {
@@ -43,7 +74,8 @@ pub fn sidecar_dir(trace_path: &Path) -> PathBuf {
 
 /// Materialize the cubin bytes to `<report>.veloq/disasm/<sha>.cubin`,
 /// creating the sidecar directory if missing. Returns the cubin
-/// path. Idempotent: skips the write when the file already exists.
+/// path. Idempotent: reuses a verified file and atomically replaces a
+/// missing or corrupted one.
 pub fn extract_and_cache_cubin(
     trace_path: &Path,
     sha: &str,
@@ -53,9 +85,23 @@ pub fn extract_and_cache_cubin(
     fs::create_dir_all(&dir)
         .map_err(|source| NcuSourceError::disasm_sidecar_dir_create(dir.display(), source))?;
     let cubin_path = dir.join(format!("{sha}.cubin"));
-    if !cubin_path.exists() {
-        fs::write(&cubin_path, bytes)
-            .map_err(|source| NcuSourceError::disasm_cubin_write(cubin_path.display(), source))?;
+    let write_required = match fs::read(&cubin_path) {
+        Ok(cached) => cubin_sha(&cached) != sha,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => true,
+        Err(source) => {
+            return Err(NcuSourceError::disasm_cubin_read(
+                cubin_path.display(),
+                source,
+            ));
+        }
+    };
+    if write_required {
+        write_atomic(
+            &cubin_path,
+            bytes,
+            |path, source| NcuSourceError::disasm_cubin_write(path.display(), source),
+            |path, source| NcuSourceError::disasm_cubin_publish(path.display(), source),
+        )?;
     }
     Ok(cubin_path)
 }
@@ -66,12 +112,13 @@ pub fn correlated_cache_path(trace_path: &Path, sha: &str) -> PathBuf {
 }
 
 /// Load a previously-cached `CorrelatedEntry` if `path` exists,
-/// carries the current [`CACHE_SCHEMA`], and the stored
-/// `instruction_stride` matches the caller's request. Returns
+/// carries the current [`CACHE_SCHEMA`], and the stored cubin SHA and
+/// `instruction_stride` match the caller's request. Returns
 /// `Ok(None)` for missing, schema-mismatched, or stride-mismatched
 /// files — all three force a fresh acquire.
 pub fn load_cached(
     path: &Path,
+    expected_cubin_sha: &str,
     instruction_stride: u64,
 ) -> NcuSourceResult<Option<CorrelatedEntry>> {
     if !path.exists() {
@@ -79,15 +126,27 @@ pub fn load_cached(
     }
     let bytes = fs::read(path)
         .map_err(|source| NcuSourceError::disasm_cache_read(path.display(), source))?;
-    let raw: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|source| NcuSourceError::disasm_cache_decode(path.display(), source))?;
+    let raw: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(raw) => raw,
+        Err(source) => {
+            log::info!("correlated disasm cache could not be decoded: {source}; needs rebuild");
+            return Ok(None);
+        }
+    };
     let schema = raw.get("schema").and_then(serde_json::Value::as_u64);
     if schema != Some(u64::from(CACHE_SCHEMA)) {
         return Ok(None);
     }
-    let file: CacheFile = serde_json::from_value(raw)
-        .map_err(|source| NcuSourceError::disasm_cache_decode(path.display(), source))?;
-    if file.entry.instruction_stride != instruction_stride {
+    let file: CacheFile = match serde_json::from_value(raw) {
+        Ok(file) => file,
+        Err(source) => {
+            log::info!("correlated disasm cache shape is invalid: {source}; needs rebuild");
+            return Ok(None);
+        }
+    };
+    if file.entry.cubin_sha != expected_cubin_sha
+        || file.entry.instruction_stride != instruction_stride
+    {
         return Ok(None);
     }
     Ok(Some(file.entry))
@@ -101,9 +160,12 @@ pub fn write_cache(path: &Path, entry: &CorrelatedEntry) -> NcuSourceResult<()> 
     };
     let bytes = serde_json::to_vec_pretty(&file)
         .map_err(|source| NcuSourceError::disasm_cache_encode(path.display(), source))?;
-    fs::write(path, bytes)
-        .map_err(|source| NcuSourceError::disasm_cache_write(path.display(), source))?;
-    Ok(())
+    write_atomic(
+        path,
+        &bytes,
+        |path, source| NcuSourceError::disasm_cache_write(path.display(), source),
+        |path, source| NcuSourceError::disasm_cache_publish(path.display(), source),
+    )
 }
 
 #[cfg(test)]
@@ -156,8 +218,10 @@ mod tests {
         assert!(cubin.exists());
         let read_back = fs::read(&cubin)?;
         assert_eq!(read_back, bytes);
+        fs::write(&cubin, b"truncated")?;
         let cubin2 = extract_and_cache_cubin(&tmp, &sha, bytes)?;
         assert_eq!(cubin, cubin2);
+        assert_eq!(fs::read(&cubin2)?, bytes);
         fs::remove_dir_all(sidecar_dir(&tmp))?;
         Ok(())
     }
@@ -166,7 +230,7 @@ mod tests {
     fn load_cached_returns_none_when_missing() -> Result<()> {
         let path = std::env::temp_dir().join("veloq-ncu-nonexistent.correlated.json");
         let _ = fs::remove_file(&path);
-        assert!(load_cached(&path, STRIDE)?.is_none());
+        assert!(load_cached(&path, "unused", STRIDE)?.is_none());
         Ok(())
     }
 
@@ -195,10 +259,24 @@ mod tests {
         });
         entry.warnings.push("nvdisasm warning : foo".into());
         write_cache(&path, &entry)?;
-        let loaded = load_cached(&path, STRIDE)?.ok_or_else(|| anyhow::anyhow!("just wrote it"))?;
+        let loaded = load_cached(&path, "abc123", STRIDE)?
+            .ok_or_else(|| anyhow::anyhow!("just wrote it"))?;
         assert_eq!(loaded.cubin_sha, "abc123");
         assert_eq!(loaded.kernels.len(), 1);
         assert_eq!(loaded.warnings.len(), 1);
+        assert!(load_cached(&path, "different", STRIDE)?.is_none());
+        fs::remove_file(&path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn load_cached_rebuilds_invalid_json() -> Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "veloq-ncu-invalid-cache-test-{}.correlated.json",
+            std::process::id()
+        ));
+        fs::write(&path, b"{partial")?;
+        assert!(load_cached(&path, "abc", STRIDE)?.is_none());
         fs::remove_file(&path)?;
         Ok(())
     }
@@ -220,7 +298,7 @@ mod tests {
             },
         });
         fs::write(&path, serde_json::to_vec(&raw)?)?;
-        assert!(load_cached(&path, STRIDE)?.is_none());
+        assert!(load_cached(&path, "xx", STRIDE)?.is_none());
         fs::remove_file(&path)?;
         Ok(())
     }
@@ -235,7 +313,7 @@ mod tests {
         entry.cubin_sha = "abc".into();
         entry.instruction_stride = STRIDE;
         write_cache(&path, &entry)?;
-        assert!(load_cached(&path, OTHER_STRIDE)?.is_none());
+        assert!(load_cached(&path, "abc", OTHER_STRIDE)?.is_none());
         fs::remove_file(&path)?;
         Ok(())
     }

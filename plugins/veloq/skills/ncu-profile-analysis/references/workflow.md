@@ -1,6 +1,6 @@
 # NCU Kernel-Analysis Workflow
 
-Assume `R` is a `.ncu-rep` path. Use JSON for agent analysis and
+Assume `R` is an `.ncu-rep` or `.ncu-repz` path. Use JSON for agent analysis and
 CSV/table only for human review or spreadsheets. Verb matrix and
 envelope shape are in [`../SKILL.md`](../SKILL.md).
 

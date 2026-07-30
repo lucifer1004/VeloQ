@@ -1,6 +1,6 @@
 # NCU Analysis Dimensions
 
-Six dimensions to evaluate when reading an `.ncu-rep`. Each
+Six dimensions to evaluate when reading an `.ncu-rep` or `.ncu-repz`. Each
 dimension is a structured _question_ with one VeloQ query and
 three response tiers — _typical_, _noteworthy_, _red-flag_.
 The same tier vocabulary is used in
@@ -15,7 +15,7 @@ calibrated against NCU's shipped rule cutoffs
 the fixtures shipped with VeloQ. Confirm against your own
 workload before treating any threshold as final.
 
-Assume `R` is a `.ncu-rep` path and `L = launch:<idx>` a chosen
+Assume `R` is an `.ncu-rep` or `.ncu-repz` path and `L = launch:<idx>` a chosen
 row id throughout. Substitute your launch when you copy the
 queries.
 

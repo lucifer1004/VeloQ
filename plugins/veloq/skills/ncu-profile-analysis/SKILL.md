@@ -1,11 +1,12 @@
 ---
 name: ncu-profile-analysis
-description: "Analyze Nsight Compute `.ncu-rep` kernel reports using the VeloQ CLI. Use for occupancy, warp stalls, memory/instruction bottlenecks, rule findings, source/SASS/PTX correlation, and metric CSV/table export."
+description: "Analyze Nsight Compute `.ncu-rep` and `.ncu-repz` kernel reports using the VeloQ CLI. Use for occupancy, warp stalls, memory/instruction bottlenecks, rule findings, source/SASS/PTX correlation, and metric CSV/table export."
 ---
 
 # Nsight Compute Profile Analysis
 
-Use this skill for Nsight Compute `.ncu-rep` kernel reports and
+Use this skill for Nsight Compute `.ncu-rep` and zstd-compressed
+`.ncu-repz` kernel reports and
 kernel-internal bottleneck analysis. NCU explains why a kernel is slow
 internally; NSys explains what ran when. Use `veloq ncu` as the
 evidence extractor for report data, then decide whether the evidence
@@ -62,7 +63,7 @@ JSON output is the agent contract. Success:
 }
 ```
 
-`trace_span` is omitted on NCU verbs (`.ncu-rep` doesn't carry the
+`trace_span` is omitted on NCU verbs (NCU reports do not carry the
 NSys-style primary-execution window). Every list verb returns
 canonical `data.rows[]` with a stable per-row `key`:
 
@@ -188,7 +189,8 @@ they are not the normal analysis API. Remove them with
   `inspect` / `metrics` / `ranges` / `graphs` / `sources` all read it.
   Built once via the bundled `ncu_report` helper (NCU required at
   build time only); invalidated on a sha256 content-hash of the
-  `.ncu-rep` (checkout-stable, so a committed sidecar serves NCU-free).
+  input report bytes (checkout-stable, so a committed sidecar serves
+  NCU-free).
 - `<file>.veloq/disasm/<sha>.correlated.json` — per-cubin
   SASS / PTX / source-line index from nvdisasm + cuobjdump. The cubin
   is extracted from the report (embedded ELF); SHA-keyed so stale
@@ -196,7 +198,8 @@ they are not the normal analysis API. Remove them with
 
 ## Where VeloQ Stops
 
-Use `veloq ncu` to read and reshape existing `.ncu-rep` evidence. Turn
+Use `veloq ncu` to read and reshape existing `.ncu-rep` or `.ncu-repz`
+evidence. Turn
 to other tools when the next step requires new data or visual context:
 
 - Native `ncu` CLI: capture missing sections/metrics, replay kernels,
@@ -214,7 +217,8 @@ to other tools when the next step requires new data or visual context:
 
 ## Routing boundary
 
-Use `ncu-profile-analysis` for `.ncu-rep` and kernel-internal metric
+Use `ncu-profile-analysis` for `.ncu-rep` / `.ncu-repz` and
+kernel-internal metric
 questions. Use `nsys-profile-analysis` for `.nsys-rep` / `_pqtdir/`
 timeline questions, NVTX ranges, CPU↔GPU launch correlation, GPU idle
 bubbles, and PM-counter time series.

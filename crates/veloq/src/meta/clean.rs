@@ -5,7 +5,7 @@
 //! defined by `veloq-core`. Passing VeloQ's generated
 //! `<report>.veloq/parquetdir/` child cleans its parent artifact root.
 //! It does not remove direct `_pqtdir/` inputs, `.nsys-rep` files,
-//! `.ncu-rep` files, or any legacy sidecar names.
+//! `.ncu-rep` / `.ncu-repz` files, or any legacy sidecar names.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use serde::Serialize;

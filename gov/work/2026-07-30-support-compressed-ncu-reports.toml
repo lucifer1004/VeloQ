@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-020"
+title = "Support compressed NCU reports"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = ["RFC-0008"]
+
+[content]
+description = "Add compressed Nsight Compute report support across source detection, native ingestion, and cubin-backed disassembly so current NCU outputs remain queryable without changing NCU wire or artifact identity."
+
+[[content.acceptance_criteria]]
+text = "Automatic detection and trace-bearing NCU commands accept .ncu-repz reports alongside .ncu-rep reports."
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Equivalent compressed and uncompressed reports produce equivalent native query evidence and cubin-backed disassembly results."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "An NCU report reader that predates .ncu-repz support returns a handled diagnostic instead of a successful empty result."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "NCU CLI help, maintainer guidance, canonical plugin skill, and changelog describe both supported report encodings."
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Cubin and correlated-disassembly cache artifacts are atomically published and corrupted cache entries are rebuilt instead of reused."
+status = "done"
+category = "fixed"
+
+[verification]
+required_guards = ["GUARD-NCU-WIRE-CONTRACT"]

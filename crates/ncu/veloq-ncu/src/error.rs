@@ -13,6 +13,7 @@ pub enum NcuIoOperation {
     Publish,
     CompressGzip,
     DecompressGzip,
+    DecompressZstd,
 }
 
 impl NcuIoOperation {
@@ -26,6 +27,7 @@ impl NcuIoOperation {
             Self::Publish => ErrorCode::new("ncu.input.io-publish"),
             Self::CompressGzip => ErrorCode::new("ncu.input.gzip-compress"),
             Self::DecompressGzip => ErrorCode::new("ncu.input.gzip-decompress"),
+            Self::DecompressZstd => ErrorCode::new("ncu.input.zstd-decompress"),
         }
     }
 }
@@ -41,6 +43,7 @@ impl std::fmt::Display for NcuIoOperation {
             Self::Publish => f.write_str("publish"),
             Self::CompressGzip => f.write_str("gzip"),
             Self::DecompressGzip => f.write_str("gunzip"),
+            Self::DecompressZstd => f.write_str("decompress zstd"),
         }
     }
 }
@@ -202,6 +205,11 @@ pub enum NcuSourceError {
         actual: String,
         expected: &'static str,
     },
+
+    #[error(
+        "native sidecar `{path}` was produced by ncu_report `{version}`, which cannot decode `.ncu-repz` reports"
+    )]
+    NativeSidecarUnsupportedCompressedReader { path: String, version: String },
 
     #[error(
         "cannot ingest `{report}` without Nsight Compute: {source}. A matching native sidecar would have been used, but none is fresh. Install NCU (provides the ncu_report Python module) or run `veloq ncu prep` on a machine with NCU, then commit/copy the <report>.veloq/ sidecar"
@@ -467,6 +475,13 @@ impl NcuSourceError {
         Self::input_io("cubin report", NcuIoOperation::Read, path, source)
     }
 
+    pub fn cubin_report_zstd_decompress(
+        path: impl std::fmt::Display,
+        source: std::io::Error,
+    ) -> Self {
+        Self::input_io("cubin report", NcuIoOperation::DecompressZstd, path, source)
+    }
+
     pub fn cubin_committed_dir_entry_read(
         path: impl std::fmt::Display,
         source: std::io::Error,
@@ -500,6 +515,16 @@ impl NcuSourceError {
             path: path.display().to_string(),
             actual: actual.into(),
             expected,
+        }
+    }
+
+    pub fn native_sidecar_unsupported_compressed_reader(
+        path: &std::path::Path,
+        version: &str,
+    ) -> Self {
+        Self::NativeSidecarUnsupportedCompressedReader {
+            path: path.display().to_string(),
+            version: version.to_string(),
         }
     }
 
@@ -701,6 +726,14 @@ impl NcuSourceError {
         Self::input_io("cubin sidecar", NcuIoOperation::Write, path, source)
     }
 
+    pub fn disasm_cubin_read(path: impl std::fmt::Display, source: std::io::Error) -> Self {
+        Self::input_io("cubin sidecar", NcuIoOperation::Read, path, source)
+    }
+
+    pub fn disasm_cubin_publish(path: impl std::fmt::Display, source: std::io::Error) -> Self {
+        Self::input_io("cubin sidecar", NcuIoOperation::Publish, path, source)
+    }
+
     pub fn disasm_cache_read(path: impl std::fmt::Display, source: std::io::Error) -> Self {
         Self::input_io(
             "correlated disasm cache",
@@ -732,6 +765,15 @@ impl NcuSourceError {
         Self::input_io(
             "correlated disasm cache",
             NcuIoOperation::Write,
+            path,
+            source,
+        )
+    }
+
+    pub fn disasm_cache_publish(path: impl std::fmt::Display, source: std::io::Error) -> Self {
+        Self::input_io(
+            "correlated disasm cache",
+            NcuIoOperation::Publish,
             path,
             source,
         )
@@ -814,6 +856,9 @@ impl VeloqDiagnostic for NcuSourceError {
             }
             Self::NativeSidecarSchemaMismatch { .. } => {
                 ErrorCode::new("ncu.input.native-sidecar-schema-mismatch")
+            }
+            Self::NativeSidecarUnsupportedCompressedReader { .. } => {
+                ErrorCode::new("ncu.input.native-sidecar-unsupported-reader")
             }
             Self::NativeIngestUnavailable { .. } => ErrorCode::new("ncu.input.ingest-unavailable"),
             Self::NativeHelperSchemaMismatch { .. } => {

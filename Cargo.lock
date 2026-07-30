@@ -3530,8 +3530,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "veloq-core",
+ "zstd",
 ]
 
 [[package]]

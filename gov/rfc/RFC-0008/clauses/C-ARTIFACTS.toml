@@ -25,9 +25,9 @@ NCU disassembly correlation JSON artifacts MUST use the `disasm/<sha>.correlated
 
 NCU extracted cubin artifacts MAY use the `disasm/<sha>.cubin` path form within the report artifact root.
 
-When the `.ncu-rep` report exists, NCU native sidecar freshness MUST be keyed on a content hash of the report bytes rather than on local absolute paths.
+When a supported NCU report exists, NCU native sidecar freshness MUST be keyed on a content hash of the report bytes rather than on local absolute paths.
 
-When the `.ncu-rep` report is missing but a readable native sidecar with a supported native schema exists, NCU MAY treat that sidecar as authoritative committed-sidecar input.
+When a supported NCU report is missing but a readable native sidecar with a supported native schema exists, NCU MAY treat that sidecar as authoritative committed-sidecar input.
 
 NCU command-line query workflows MUST accept the report path as the user-facing input.
 

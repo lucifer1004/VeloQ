@@ -27,6 +27,7 @@
 //! Run: `VELOQ_NCU_LIVE=1 cargo test --release -p veloq-ncu --test ncu_live_drift`
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -130,5 +131,36 @@ fn live_helper_sidecar_matches_committed() -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn live_helper_compressed_sidecar_matches_plain() -> Result<()> {
+    if std::env::var_os("VELOQ_NCU_LIVE").is_none() {
+        eprintln!(
+            "skipping: set VELOQ_NCU_LIVE=1 on a box with Nsight Compute to run the drift check"
+        );
+        return Ok(());
+    }
+
+    let report = report_path();
+    let plain = run_helper_live(&report)?;
+    let raw = fs::read(&report).context("read plain NCU report")?;
+    let compressed =
+        zstd::stream::encode_all(raw.as_slice(), 0).context("compress NCU report fixture")?;
+    let compressed_path = std::env::temp_dir().join(format!(
+        "veloq-ncu-live-{}-compressed.ncu-repz",
+        std::process::id()
+    ));
+    fs::write(&compressed_path, compressed).context("write compressed NCU report fixture")?;
+    let loaded = run_helper_live(&compressed_path);
+    let _ = fs::remove_file(&compressed_path);
+    let loaded = loaded?;
+
+    assert_eq!(
+        serde_json::to_value(loaded)?,
+        serde_json::to_value(plain)?,
+        "compressed and plain reports must produce the same native sidecar"
+    );
     Ok(())
 }

@@ -112,7 +112,7 @@ pub fn run<P: AsRef<Path>>(path: P, row_id: &str) -> NcuSourceResult<DisasmRespo
     let sha = cubin_sha(&cub.bytes);
     let cache_path = correlated_cache_path(path, &sha);
     let sm = launch.sm_label();
-    let mut entry = if let Some(loaded) = load_cached(&cache_path, INSTRUCTION_STRIDE)? {
+    let mut entry = if let Some(loaded) = load_cached(&cache_path, &sha, INSTRUCTION_STRIDE)? {
         loaded
     } else {
         let cubin_path = extract_and_cache_cubin(path, &sha, &cub.bytes)?;

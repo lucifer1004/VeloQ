@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Summarize a `.ncu-rep` kernel report — launch-derived totals
+    /// Summarize an NCU kernel report — launch-derived totals
     /// (launch / range / graph / metric / rule / kernel-disasm counts)
     /// plus the NCU version. Per-launch metrics, rules, SASS / PTX /
     /// source correlation, and embedded source live in the dedicated
@@ -20,7 +20,7 @@ pub enum Cmd {
     /// full payload; `--format csv|table` renders a totals + session
     /// projection.
     Summary {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
     },
 
@@ -30,7 +30,7 @@ pub enum Cmd {
     /// and NVTX state land there. Reads the
     /// `<file>.veloq/ncu-native.json.gz` sidecar.
     Launches {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// Glob (`*` / `?`) over the launch's demangled kernel
@@ -67,7 +67,7 @@ pub enum Cmd {
     /// row_ids: metrics, rules, NVTX state, and the recovered identity
     /// scalars. Mirrors `veloq inspect <kernel:N>` on the NSys side.
     Inspect {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// `launch:<idx>` row_id (one or more) as returned by
@@ -85,7 +85,7 @@ pub enum Cmd {
     /// `data.rows[]`; branch on `data.format` (`long` or
     /// `per_launch`) before reading row fields.
     Metrics {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// Glob over metric `name` field. Required — `--counter *`
@@ -116,7 +116,7 @@ pub enum Cmd {
     /// calls for the same cubin skip the nvdisasm / cuobjdump
     /// invocations.
     Disasm {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// `launch:<idx>` row_id as returned by `ncu launches`.
@@ -128,6 +128,7 @@ pub enum Cmd {
     /// range` / `app-range`). Headline rows; full details via a
     /// future `ncu inspect range:<idx>`.
     Ranges {
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -136,6 +137,7 @@ pub enum Cmd {
     /// List CUDA-graph workloads (captured under `ncu
     /// --graph-profiling graph`).
     Graphs {
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -147,6 +149,7 @@ pub enum Cmd {
     /// whether the SASS/PTX pipeline output is already cached for that
     /// cubin. (`ncu_report` exposes no raw cubin/PTX byte sizes.)
     Sources {
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
         #[arg(long, default_value_t = 100)]
         limit: usize,
@@ -157,7 +160,7 @@ pub enum Cmd {
     /// with the DWARF source-line attribution from disasm so agents
     /// can answer "which source lines have the most bank conflicts?"
     SourceMetrics {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// `launch:<idx>` row_id as returned by `ncu launches`.
@@ -203,7 +206,7 @@ pub enum Cmd {
     /// lines incur which stall reasons, and how much." Counts are
     /// raw sample counts; compute percentages in jq if wanted.
     WarpStalls {
-        /// Path to the `.ncu-rep` file.
+        /// Path to the `.ncu-rep` or `.ncu-repz` file.
         trace: PathBuf,
 
         /// `launch:<idx>` row_id as returned by `ncu launches`.

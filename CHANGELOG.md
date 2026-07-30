@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Compressed NCU reports** — recognize and query zstd-compressed
+  `.ncu-repz` reports alongside `.ncu-rep`, including cubin-backed
+  disassembly and an explicit diagnostic for report readers that predate
+  compressed-report support.
 - **Optional local query daemon** — add manual `veloq daemon
   start/status/stop` lifecycle commands and `--daemon auto|off|required`
   routing over current-user-only local IPC. Resident sessions, exact rendered
