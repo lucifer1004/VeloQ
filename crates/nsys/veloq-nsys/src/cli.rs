@@ -22,6 +22,8 @@ pub const CONCURRENCY_COMMAND: &str = "concurrency";
 pub const GAPS_COMMAND: &str = "gaps";
 pub const TIMELINE_COMMAND: &str = "timeline";
 pub const SLICES_COMMAND: &str = "slices";
+pub const GRAPH_REPLAYS_COMMAND: &str = "graph-replays";
+pub const NCU_COMMAND: &str = "ncu-command";
 
 /// Aggregation unit for `stats`. `Ns` is the public, duration-based
 /// default; `Size` is the experimental byte-aggregator gated behind
@@ -509,8 +511,8 @@ impl Cmd {
             Cmd::Search { .. } => SEARCH_COMMAND,
             Cmd::Inspect { .. } => INSPECT_COMMAND,
             Cmd::Correlate { .. } => CORRELATE_COMMAND,
-            Cmd::GraphReplays { .. } => "graph-replays",
-            Cmd::NcuCommand { .. } => "ncu-command",
+            Cmd::GraphReplays { .. } => GRAPH_REPLAYS_COMMAND,
+            Cmd::NcuCommand { .. } => NCU_COMMAND,
             Cmd::CorrelationStats { .. } => "correlation-stats",
             Cmd::Prep { .. } => "prep",
             Cmd::Concurrency { .. } => CONCURRENCY_COMMAND,

@@ -197,6 +197,8 @@ struct Session {
     queued_requests: u64,
     exact_results: HashMap<ExactQueryKey, ExactResult>,
     exact_response_bytes: u64,
+    exact_candidates: HashMap<ExactQueryKey, ExactCandidate>,
+    exact_candidate_bytes: u64,
     cache_hits: u64,
     cache_misses: u64,
     last_touch: Instant,
@@ -226,6 +228,12 @@ impl std::fmt::Debug for ResidentSlot {
 #[derive(Debug)]
 struct ExactResult {
     execution: Arc<SourceExecution>,
+    accounted_bytes: u64,
+    last_touch_sequence: u64,
+}
+
+#[derive(Debug)]
+struct ExactCandidate {
     accounted_bytes: u64,
     last_touch_sequence: u64,
 }
@@ -651,6 +659,7 @@ impl ActiveRequest {
         };
         let additional = resident_memory_estimate_bytes.saturating_sub(previous_bytes);
         if additional > 0 {
+            evict_candidates_until_memory_fits(&mut state, &self.engine.shared.limits, additional);
             evict_results_until_memory_fits(&mut state, &self.engine.shared.limits, additional);
             evict_sessions_until_memory_fits(
                 &mut state,
@@ -766,6 +775,8 @@ fn admit_session(
         queued_requests: 0,
         exact_results: HashMap::new(),
         exact_response_bytes: 0,
+        exact_candidates: HashMap::new(),
+        exact_candidate_bytes: 0,
         cache_hits: 0,
         cache_misses: 0,
         last_touch: now,
@@ -818,6 +829,9 @@ fn lookup_exact(
         state.cache_hits = state.cache_hits.saturating_add(1);
         return Some(Arc::clone(&entry.execution));
     }
+    if let Some(candidate) = session.exact_candidates.get_mut(cache_key) {
+        candidate.last_touch_sequence = sequence;
+    }
     session.cache_misses = session.cache_misses.saturating_add(1);
     state.cache_misses = state.cache_misses.saturating_add(1);
     None
@@ -830,24 +844,36 @@ fn insert_exact(
     cache_key: ExactQueryKey,
     execution: Arc<SourceExecution>,
 ) {
-    let accounted_bytes = u64::try_from(std::mem::size_of::<ExactResult>())
-        .unwrap_or(u64::MAX)
-        .saturating_add(cache_key.retained_memory_estimate_bytes())
-        .saturating_add(execution.retained_memory_estimate_bytes());
+    let accounted_bytes = exact_result_accounted_bytes(&cache_key, &execution);
     if accounted_bytes > limits.max_resident_memory_bytes {
         return;
     }
 
-    if let Some(session) = state.sessions.get_mut(session_id)
+    let reuse_observed = remove_exact_candidate(state, session_id, &cache_key);
+    let replacing = if let Some(session) = state.sessions.get_mut(session_id)
         && let Some(previous) = session.exact_results.remove(&cache_key)
     {
         session.exact_response_bytes = session
             .exact_response_bytes
             .saturating_sub(previous.accounted_bytes);
+        true
+    } else {
+        false
+    };
+    let fits_without_eviction =
+        resident_memory(state).saturating_add(accounted_bytes) <= limits.max_resident_memory_bytes;
+    if !fits_without_eviction && !reuse_observed && !replacing {
+        record_exact_candidate(state, limits, session_id, cache_key);
+        return;
     }
+
+    evict_candidates_until_memory_fits(state, limits, accounted_bytes);
     evict_results_until_memory_fits(state, limits, accounted_bytes);
     evict_sessions_until_memory_fits(state, limits, accounted_bytes, Some(session_id));
     if resident_memory(state).saturating_add(accounted_bytes) > limits.max_resident_memory_bytes {
+        if reuse_observed {
+            record_exact_candidate(state, limits, session_id, cache_key);
+        }
         return;
     }
 
@@ -863,6 +889,63 @@ fn insert_exact(
             },
         );
     }
+}
+
+fn exact_result_accounted_bytes(cache_key: &ExactQueryKey, execution: &SourceExecution) -> u64 {
+    u64::try_from(std::mem::size_of::<ExactResult>())
+        .unwrap_or(u64::MAX)
+        .saturating_add(cache_key.retained_memory_estimate_bytes())
+        .saturating_add(execution.retained_memory_estimate_bytes())
+}
+
+fn record_exact_candidate(
+    state: &mut State,
+    limits: &DaemonLimits,
+    session_id: &str,
+    cache_key: ExactQueryKey,
+) {
+    let accounted_bytes = u64::try_from(std::mem::size_of::<ExactCandidate>())
+        .unwrap_or(u64::MAX)
+        .saturating_add(cache_key.retained_memory_estimate_bytes());
+    if accounted_bytes > limits.max_resident_memory_bytes {
+        return;
+    }
+    evict_candidates_until_memory_fits(state, limits, accounted_bytes);
+    if resident_memory(state).saturating_add(accounted_bytes) > limits.max_resident_memory_bytes {
+        return;
+    }
+
+    let sequence = tick(state);
+    if let Some(session) = state.sessions.get_mut(session_id) {
+        if let Some(previous) = session.exact_candidates.remove(&cache_key) {
+            session.exact_candidate_bytes = session
+                .exact_candidate_bytes
+                .saturating_sub(previous.accounted_bytes);
+        }
+        session.exact_candidate_bytes = session
+            .exact_candidate_bytes
+            .saturating_add(accounted_bytes);
+        session.exact_candidates.insert(
+            cache_key,
+            ExactCandidate {
+                accounted_bytes,
+                last_touch_sequence: sequence,
+            },
+        );
+    }
+}
+
+fn remove_exact_candidate(state: &mut State, session_id: &str, cache_key: &ExactQueryKey) -> bool {
+    let Some(session) = state.sessions.get_mut(session_id) else {
+        return false;
+    };
+    let Some(candidate) = session.exact_candidates.remove(cache_key) else {
+        return false;
+    };
+    session.exact_candidate_bytes = session
+        .exact_candidate_bytes
+        .saturating_sub(candidate.accounted_bytes);
+    true
 }
 
 fn resources_available(
@@ -1080,6 +1163,7 @@ fn make_room_for_session(
     session_count_full: bool,
 ) {
     if resident_memory(state).saturating_add(incoming_bytes) > limits.max_resident_memory_bytes {
+        evict_candidates_until_memory_fits(state, limits, incoming_bytes);
         evict_results_until_memory_fits(state, limits, incoming_bytes);
     }
     while session_count_full_or_memory_exceeded(state, limits, incoming_bytes, session_count_full) {
@@ -1124,6 +1208,35 @@ fn evict_results_until_memory_fits(state: &mut State, limits: &DaemonLimits, inc
             break;
         };
         remove_exact_result(state, &session_id, &cache_key);
+    }
+}
+
+fn evict_candidates_until_memory_fits(
+    state: &mut State,
+    limits: &DaemonLimits,
+    incoming_bytes: u64,
+) {
+    while resident_memory(state).saturating_add(incoming_bytes) > limits.max_resident_memory_bytes {
+        let candidate = state
+            .sessions
+            .iter()
+            .flat_map(|(session_id, session)| {
+                session
+                    .exact_candidates
+                    .iter()
+                    .map(move |(cache_key, candidate)| {
+                        (
+                            candidate.last_touch_sequence,
+                            session_id.clone(),
+                            cache_key.clone(),
+                        )
+                    })
+            })
+            .min();
+        let Some((_, session_id, cache_key)) = candidate else {
+            break;
+        };
+        let _ = remove_exact_candidate(state, &session_id, &cache_key);
     }
 }
 
@@ -1242,6 +1355,7 @@ fn session_memory(session: &Session) -> u64 {
         .source_resident_memory_bytes
         .saturating_add(session.daemon_resident_memory_bytes)
         .saturating_add(session.exact_response_bytes)
+        .saturating_add(session.exact_candidate_bytes)
 }
 
 fn daemon_session_memory_estimate(map_key_capacity: usize, session: &Session) -> u64 {
@@ -1517,6 +1631,227 @@ mod tests {
             .wait_until_active()
             .expect("activate third request")
             .complete(None, None);
+    }
+
+    #[test]
+    fn pressure_requires_reuse_before_displacing_a_session() {
+        let mut configured = limits();
+        configured.max_sessions = 2;
+        configured.max_resident_memory_bytes = 6 * MIB_BYTES;
+        let engine = DaemonEngine::new(configured);
+        let source_bytes = 2 * MIB_BYTES;
+        let result_bytes = usize::try_from(3 * MIB_BYTES).expect("test allocation fits usize");
+
+        accepted(
+            engine
+                .accept(
+                    "reusable-peer",
+                    spec("peer", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    None,
+                )
+                .expect("accept reusable peer"),
+        )
+        .wait_until_active()
+        .expect("activate reusable peer")
+        .complete(None, None);
+
+        let key = exact_key("large");
+        let first = accepted(
+            engine
+                .accept(
+                    "large-first",
+                    spec("target", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&key),
+                )
+                .expect("accept first large query"),
+        );
+        let target_session_id = first
+            .session_id()
+            .expect("target query has a session")
+            .to_string();
+        let result = execution(&"x".repeat(result_bytes));
+        first
+            .wait_until_active()
+            .expect("activate first large query")
+            .complete(Some(key.clone()), Some(&result));
+
+        let singleton = engine.snapshot();
+        assert_eq!(singleton.usage.resident_sessions, 2);
+        assert_eq!(singleton.usage.exact_response_entries, 0);
+        assert_eq!(singleton.evictions.sessions, 0);
+
+        let protected_peer = accepted(
+            engine
+                .accept(
+                    "active-peer",
+                    spec("peer", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    None,
+                )
+                .expect("accept active peer"),
+        )
+        .wait_until_active()
+        .expect("activate protected peer");
+        accepted(
+            engine
+                .accept(
+                    "large-repeat",
+                    spec("target", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&key),
+                )
+                .expect("accept repeated large query"),
+        )
+        .wait_until_active()
+        .expect("activate repeated large query")
+        .complete(Some(key.clone()), Some(&result));
+        let protected = engine.snapshot();
+        assert_eq!(protected.usage.resident_sessions, 2);
+        assert_eq!(protected.usage.exact_response_entries, 0);
+        assert_eq!(protected.evictions.sessions, 0);
+        protected_peer.complete(None, None);
+
+        accepted(
+            engine
+                .accept(
+                    "large-repeat-after-protection",
+                    spec("target", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&key),
+                )
+                .expect("accept large query after peer release"),
+        )
+        .wait_until_active()
+        .expect("activate large query after peer release")
+        .complete(Some(key.clone()), Some(&result));
+
+        let repeated = engine.snapshot();
+        assert_eq!(repeated.usage.resident_sessions, 1);
+        assert_eq!(repeated.usage.exact_response_entries, 1);
+        assert_eq!(repeated.evictions.resident_memory_sessions, 1);
+        assert_eq!(
+            repeated
+                .sessions
+                .first()
+                .map(|session| session.session_id.as_str()),
+            Some(target_session_id.as_str())
+        );
+        match engine
+            .accept(
+                "large-hit",
+                spec("target", "fresh", source_bytes),
+                QueryReservation::new(1, 128),
+                Some(&key),
+            )
+            .expect("look up repeated large result")
+        {
+            AcceptOutcome::Cached(cached) => assert_eq!(cached.stdout(), result.stdout()),
+            AcceptOutcome::Accepted(_) => panic!("repeated large result must be exact cached"),
+        }
+        let hit = engine.snapshot();
+        assert_eq!(hit.usage.cache_hits, 1);
+        assert_eq!(hit.usage.cache_misses, 3);
+    }
+
+    #[test]
+    fn pressure_preserves_a_hot_small_result_until_large_reuse_is_observed() {
+        let mut configured = limits();
+        configured.max_sessions = 1;
+        configured.max_resident_memory_bytes = 7 * MIB_BYTES / 2;
+        let engine = DaemonEngine::new(configured);
+        let source_bytes = MIB_BYTES / 2;
+        let small_bytes = usize::try_from(MIB_BYTES / 2).expect("test allocation fits usize");
+        let large_bytes = usize::try_from(11 * MIB_BYTES / 4).expect("test allocation fits usize");
+        let small_key = exact_key("small");
+        let large_key = exact_key("large");
+        let small = execution(&"s".repeat(small_bytes));
+        let large = execution(&"l".repeat(large_bytes));
+
+        accepted(
+            engine
+                .accept(
+                    "small-first",
+                    spec("mixed", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&small_key),
+                )
+                .expect("accept small query"),
+        )
+        .wait_until_active()
+        .expect("activate small query")
+        .complete(Some(small_key.clone()), Some(&small));
+        assert!(matches!(
+            engine
+                .accept(
+                    "small-hit",
+                    spec("mixed", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&small_key),
+                )
+                .expect("look up small result"),
+            AcceptOutcome::Cached(_)
+        ));
+
+        accepted(
+            engine
+                .accept(
+                    "large-first",
+                    spec("mixed", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&large_key),
+                )
+                .expect("accept first large query"),
+        )
+        .wait_until_active()
+        .expect("activate first large query")
+        .complete(Some(large_key.clone()), Some(&large));
+        let singleton = engine.snapshot();
+        assert_eq!(singleton.usage.exact_response_entries, 1);
+        assert_eq!(singleton.evictions.result_entries, 0);
+
+        accepted(
+            engine
+                .accept(
+                    "large-repeat",
+                    spec("mixed", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&large_key),
+                )
+                .expect("accept repeated large query"),
+        )
+        .wait_until_active()
+        .expect("activate repeated large query")
+        .complete(Some(large_key.clone()), Some(&large));
+        let repeated = engine.snapshot();
+        assert_eq!(repeated.usage.exact_response_entries, 1);
+        assert_eq!(repeated.evictions.result_entries, 1);
+        match engine
+            .accept(
+                "large-hit",
+                spec("mixed", "fresh", source_bytes),
+                QueryReservation::new(1, 128),
+                Some(&large_key),
+            )
+            .expect("look up admitted large result")
+        {
+            AcceptOutcome::Cached(cached) => assert_eq!(cached.stdout(), large.stdout()),
+            AcceptOutcome::Accepted(_) => panic!("reused large result must be exact cached"),
+        }
+        accepted(
+            engine
+                .accept(
+                    "small-after-eviction",
+                    spec("mixed", "fresh", source_bytes),
+                    QueryReservation::new(1, 128),
+                    Some(&small_key),
+                )
+                .expect("retry evicted small query"),
+        )
+        .wait_until_active()
+        .expect("activate evicted small query")
+        .complete(None, None);
     }
 
     #[test]
@@ -2111,15 +2446,38 @@ mod tests {
         failure.set_exit_code(1);
         active.complete(Some(key.clone()), Some(&failure));
         assert_eq!(engine.snapshot().usage.exact_response_entries, 0);
-        assert!(matches!(
-            engine.accept(
-                "retry",
-                spec("trace", "fresh", 100),
-                QueryReservation::new(1, 128),
-                Some(&key),
-            ),
-            Ok(AcceptOutcome::Accepted(_))
-        ));
+        accepted(
+            engine
+                .accept(
+                    "retry",
+                    spec("trace", "fresh", 100),
+                    QueryReservation::new(1, 128),
+                    Some(&key),
+                )
+                .expect("retry failed query"),
+        )
+        .wait_until_active()
+        .expect("activate retry")
+        .complete(None, None);
+
+        let cancelled_key = exact_key("cancelled");
+        let cancelled = accepted(
+            engine
+                .accept(
+                    "cancelled",
+                    spec("cancelled", "fresh", 100),
+                    QueryReservation::new(1, 128),
+                    Some(&cancelled_key),
+                )
+                .expect("admit cancelled request"),
+        )
+        .wait_until_active()
+        .expect("activate cancelled request");
+        engine
+            .cancel(cancelled.request_id())
+            .expect("cancel active request");
+        cancelled.complete(Some(cancelled_key), Some(&execution("cancelled success")));
+        assert_eq!(engine.snapshot().usage.exact_response_entries, 0);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::ffi::{OsStr, OsString};
-use std::io::{self, BufRead, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -10,14 +10,15 @@ use super::config::DaemonLimits;
 use super::session::DaemonSnapshot;
 
 pub const CONTROL_VERSION: &str = "1";
-pub const PROTOCOL_VERSION: &str = "2";
-pub const MAX_FRAME_BYTES: u64 = 64 * 1024 * 1024;
+pub const PROTOCOL_VERSION: &str = "3";
+pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const OUTPUT_CHUNK_BYTES: usize = 1024 * 1024;
+const FRAME_LENGTH_BYTES: usize = std::mem::size_of::<u32>();
 pub const QUERY_ENVIRONMENT_KEYS: &[&str] = &["PATH", "VELOQ_DUCKDB_THREADS", "VELOQ_UNSTABLE"];
 const NON_SEMANTIC_VALUE_FLAGS: &[&str] = &["--daemon", "--daemon-connect-timeout-ms", "--format"];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(tag = "encoding", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum EncodedOsString {
     #[cfg(unix)]
     Unix { bytes: Vec<u8> },
@@ -232,7 +233,7 @@ pub struct Capability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ClientFrame {
     Hello {
         protocol_version: String,
@@ -260,7 +261,7 @@ pub enum ControlOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ServerFrame {
     Hello {
         protocol_version: String,
@@ -386,53 +387,71 @@ impl RequestOwnership {
     }
 }
 
+/// Write one version-coupled private-protocol frame as a little-endian
+/// length followed by its binary payload.
 pub fn write_frame(writer: &mut impl Write, frame: &impl Serialize) -> io::Result<()> {
-    let bytes = serde_json::to_vec(frame).map_err(io::Error::other)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) >= MAX_FRAME_BYTES {
+    let bytes = bincode::serde::encode_to_vec(
+        frame,
+        bincode::config::standard().with_limit::<MAX_FRAME_BYTES>(),
+    )
+    .map_err(io::Error::other)?;
+    if bytes.len() > MAX_FRAME_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "daemon protocol frame exceeds the size limit",
         ));
     }
+    let length = u32::try_from(bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon protocol frame length is not representable",
+        )
+    })?;
+    writer.write_all(&length.to_le_bytes())?;
     writer.write_all(&bytes)?;
-    writer.write_all(b"\n")?;
     writer.flush()
 }
 
-pub fn read_frame<T: DeserializeOwned>(reader: &mut impl BufRead) -> io::Result<T> {
-    let mut bytes = Vec::new();
-    loop {
-        let available = reader.fill_buf()?;
-        if available.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "daemon connection closed before a complete frame",
-            ));
-        }
-        let take = available
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(available.len(), |index| index + 1);
-        if bytes.len() as u64 + take as u64 > MAX_FRAME_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "daemon protocol frame exceeds the size limit",
-            ));
-        }
-        let terminated = available.get(take.saturating_sub(1)) == Some(&b'\n');
-        let chunk = available.get(..take).ok_or_else(|| {
+/// Decode one bounded frame directly from the stream. `Take` prevents the
+/// decoder from crossing the advertised boundary without retaining a second
+/// full-frame input buffer.
+pub fn read_frame<T: DeserializeOwned>(reader: &mut impl Read) -> io::Result<T> {
+    let mut prefix = [0u8; FRAME_LENGTH_BYTES];
+    reader.read_exact(&mut prefix).map_err(|source| {
+        if source.kind() == io::ErrorKind::UnexpectedEof {
             io::Error::new(
-                io::ErrorKind::InvalidData,
-                "daemon protocol frame boundary exceeds the buffered input",
+                io::ErrorKind::UnexpectedEof,
+                "daemon connection closed before a complete frame length",
             )
-        })?;
-        bytes.extend_from_slice(chunk);
-        reader.consume(take);
-        if terminated {
-            break;
+        } else {
+            source
         }
+    })?;
+    let length = usize::try_from(u32::from_le_bytes(prefix)).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon protocol frame length is not representable",
+        )
+    })?;
+    if length > MAX_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon protocol frame exceeds the size limit",
+        ));
     }
-    serde_json::from_slice(&bytes).map_err(io::Error::other)
+    let mut payload = reader.take(u64::try_from(length).unwrap_or(u64::MAX));
+    let frame = bincode::serde::decode_from_std_read(
+        &mut payload,
+        bincode::config::standard().with_limit::<MAX_FRAME_BYTES>(),
+    )
+    .map_err(io::Error::other)?;
+    if payload.limit() != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon protocol frame contains trailing bytes",
+        ));
+    }
+    Ok(frame)
 }
 
 #[cfg(test)]
@@ -441,17 +460,64 @@ mod tests {
     use std::io::{BufReader, Cursor};
 
     #[test]
-    fn frame_round_trip_is_newline_delimited() -> io::Result<()> {
+    fn frame_round_trip_is_length_prefixed() -> io::Result<()> {
         let frame = ClientFrame::Hello {
             protocol_version: "1".into(),
             veloq_version: "0.5.1".into(),
         };
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &frame)?;
-        assert_eq!(bytes.last(), Some(&b'\n'));
+        let encoded_length = u32::from_le_bytes(
+            bytes
+                .get(..FRAME_LENGTH_BYTES)
+                .ok_or_else(|| io::Error::other("encoded frame has no length prefix"))?
+                .try_into()
+                .map_err(io::Error::other)?,
+        );
+        assert_eq!(
+            usize::try_from(encoded_length).map_err(io::Error::other)?,
+            bytes.len() - FRAME_LENGTH_BYTES
+        );
         let mut reader = BufReader::new(Cursor::new(bytes));
         let decoded: ClientFrame = read_frame(&mut reader)?;
         assert_eq!(decoded, frame);
+        Ok(())
+    }
+
+    #[test]
+    fn frame_reader_rejects_oversized_and_trailing_payloads() -> io::Result<()> {
+        let oversized = u32::try_from(MAX_FRAME_BYTES.saturating_add(1))
+            .map_err(io::Error::other)?
+            .to_le_bytes();
+        let oversized_error = match read_frame::<ClientFrame>(&mut Cursor::new(oversized)) {
+            Ok(_) => return Err(io::Error::other("oversized frame was accepted")),
+            Err(error) => error,
+        };
+        assert_eq!(oversized_error.kind(), io::ErrorKind::InvalidData);
+
+        let frame = ClientFrame::Hello {
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            veloq_version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let mut trailing = Vec::new();
+        write_frame(&mut trailing, &frame)?;
+        let length = u32::from_le_bytes(
+            trailing
+                .get(..FRAME_LENGTH_BYTES)
+                .ok_or_else(|| io::Error::other("encoded frame has no length prefix"))?
+                .try_into()
+                .map_err(io::Error::other)?,
+        );
+        trailing
+            .get_mut(..FRAME_LENGTH_BYTES)
+            .ok_or_else(|| io::Error::other("encoded frame has no mutable length prefix"))?
+            .copy_from_slice(&length.saturating_add(1).to_le_bytes());
+        trailing.push(0);
+        let trailing_error = match read_frame::<ClientFrame>(&mut Cursor::new(trailing)) {
+            Ok(_) => return Err(io::Error::other("frame with trailing payload was accepted")),
+            Err(error) => error,
+        };
+        assert_eq!(trailing_error.kind(), io::ErrorKind::InvalidData);
         Ok(())
     }
 

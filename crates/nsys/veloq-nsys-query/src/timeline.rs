@@ -23,7 +23,9 @@ use crate::query_sql::{
 };
 use crate::{EventKind, KindFilter, NsysQueryError, NsysQueryResult};
 use duckdb::types::Value;
+use rayon::prelude::*;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use veloq_core::{time::TimeWindow, timeline_bucket_key};
 use veloq_nsys_data::Trace;
@@ -172,6 +174,84 @@ pub fn run_with_trace(trace: &Trace, req: TimelineRequest) -> NsysQueryResult<Ti
     run_after_validation(trace, req)
 }
 
+pub fn run_with_index(
+    trace: &Trace,
+    index: &crate::resident_intervals::ResidentIntervalIndex,
+    req: TimelineRequest,
+) -> NsysQueryResult<TimelineResponse> {
+    validate_request(&req)?;
+    if req.nvtx.is_some() {
+        return run_after_validation(trace, req);
+    }
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
+    let kind_policy = TimelineKindPolicy::from_gpu_work_definition()?;
+    let kinds = kind_policy.resolve(&req.kinds, None, trace)?;
+    if kinds.is_empty() {
+        return Ok(TimelineResponse {
+            interval_ns: req.interval_ns,
+            count: 0,
+            total_matched: 0,
+            time_window_ns: abs_window,
+            nvtx_scope: None,
+            rows: Vec::new(),
+        });
+    }
+    let anchor = match abs_window {
+        Some((start_ns, _)) => start_ns,
+        None => {
+            trace
+                .read_origins()
+                .map_err(NsysQueryError::data)?
+                .0
+                .primary
+                .start_ns
+        }
+    };
+    let devices = index
+        .selected_devices(req.process_id, req.device)
+        .collect::<Vec<_>>();
+    let pool = trace
+        .build_query_worker_pool()
+        .map_err(NsysQueryError::data)?;
+    let partials = pool.install(|| {
+        devices
+            .par_iter()
+            .map(|device| {
+                timeline_partition(
+                    device,
+                    &kinds,
+                    req.stream,
+                    abs_window,
+                    anchor,
+                    req.interval_ns,
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    let mut buckets = BTreeMap::<i64, BucketAccumulator>::new();
+    for partial in partials {
+        for (start_ns, contribution) in partial {
+            buckets.entry(start_ns).or_default().merge(contribution);
+        }
+    }
+    let total_matched = i64::try_from(buckets.len()).unwrap_or(i64::MAX);
+    let rows = buckets
+        .into_iter()
+        .take(req.limit)
+        .map(|(start_ns, bucket)| bucket.into_row(start_ns, req.interval_ns))
+        .collect::<Vec<_>>();
+    Ok(TimelineResponse {
+        interval_ns: req.interval_ns,
+        count: rows.len(),
+        total_matched,
+        time_window_ns: abs_window,
+        nvtx_scope: None,
+        rows,
+    })
+}
+
 fn validate_request(req: &TimelineRequest) -> NsysQueryResult<()> {
     crate::check_limit(req.limit)?;
     if req.interval_ns <= 0 {
@@ -231,30 +311,20 @@ fn run_after_validation(trace: &Trace, req: TimelineRequest) -> NsysQueryResult<
         crate::nvtx_attribution::NvtxScope::None
     };
 
-    // Per-kind event SELECTs feeding the UNION ALL. A daemon session's
-    // normalized TEMP view already contains the same process-qualified
-    // interval axes, so non-NVTX queries can scan it directly.
-    let (subqueries, per_kind_params) =
-        if attribution.is_none() && crate::resident_intervals::available(trace) {
-            let fragment = resident_select(&kinds, &req, abs_window);
-            (vec![fragment.sql], fragment.params)
-        } else {
-            let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
-            let mut per_kind_params: Vec<Value> = Vec::new();
-            for kind in &kinds {
-                let fragment = per_kind_select(
-                    trace,
-                    *kind,
-                    &req,
-                    abs_window,
-                    nvtx_scope,
-                    kind_policy.allowed(),
-                )?;
-                subqueries.push(fragment.sql);
-                per_kind_params.extend(fragment.params);
-            }
-            (subqueries, per_kind_params)
-        };
+    let mut subqueries: Vec<String> = Vec::with_capacity(kinds.len());
+    let mut per_kind_params: Vec<Value> = Vec::new();
+    for kind in &kinds {
+        let fragment = per_kind_select(
+            trace,
+            *kind,
+            &req,
+            abs_window,
+            nvtx_scope,
+            kind_policy.allowed(),
+        )?;
+        subqueries.push(fragment.sql);
+        per_kind_params.extend(fragment.params);
+    }
     let union = subqueries.join(" UNION ALL ");
 
     let attribution_prefix = match &attribution {
@@ -467,53 +537,112 @@ fn per_kind_select(
     Ok(SqlFragment::new(sql, params))
 }
 
-fn resident_select(
+#[derive(Debug, Clone, Copy, Default)]
+struct BucketAccumulator {
+    total_ns: i64,
+    kernel_ns: i64,
+    memcpy_ns: i64,
+    memset_ns: i64,
+    graph_ns: i64,
+    count: i64,
+    kernel_count: i64,
+    memcpy_count: i64,
+    memset_count: i64,
+    graph_count: i64,
+}
+
+impl BucketAccumulator {
+    fn push(&mut self, kind: EventKind, duration_ns: i64) {
+        self.total_ns += duration_ns;
+        self.count += 1;
+        match kind {
+            EventKind::Kernel => {
+                self.kernel_ns += duration_ns;
+                self.kernel_count += 1;
+            }
+            EventKind::Memcpy => {
+                self.memcpy_ns += duration_ns;
+                self.memcpy_count += 1;
+            }
+            EventKind::Memset => {
+                self.memset_ns += duration_ns;
+                self.memset_count += 1;
+            }
+            EventKind::Graph => {
+                self.graph_ns += duration_ns;
+                self.graph_count += 1;
+            }
+            _ => {}
+        }
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.total_ns += other.total_ns;
+        self.kernel_ns += other.kernel_ns;
+        self.memcpy_ns += other.memcpy_ns;
+        self.memset_ns += other.memset_ns;
+        self.graph_ns += other.graph_ns;
+        self.count += other.count;
+        self.kernel_count += other.kernel_count;
+        self.memcpy_count += other.memcpy_count;
+        self.memset_count += other.memset_count;
+        self.graph_count += other.graph_count;
+    }
+
+    fn into_row(self, start_ns: i64, interval_ns: i64) -> Bucket {
+        let end_ns = start_ns.saturating_add(interval_ns);
+        Bucket {
+            key: timeline_bucket_key(start_ns, end_ns),
+            start_ns,
+            end_ns,
+            total_ns: self.total_ns,
+            kernel_ns: self.kernel_ns,
+            memcpy_ns: self.memcpy_ns,
+            memset_ns: self.memset_ns,
+            graph_ns: self.graph_ns,
+            count: self.count,
+            kernel_count: self.kernel_count,
+            memcpy_count: self.memcpy_count,
+            memset_count: self.memset_count,
+            graph_count: self.graph_count,
+        }
+    }
+}
+
+fn timeline_partition(
+    device: &crate::resident_intervals::DevicePartition,
     kinds: &[EventKind],
-    req: &TimelineRequest,
-    abs_window: Option<(i64, i64)>,
-) -> SqlFragment {
-    let table = crate::resident_intervals::table_name();
-    let labels = kinds
-        .iter()
-        .map(|kind| format!("'{}'", kind.as_str()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let (start_expr, end_expr, mut where_parts, mut params): (&str, &str, Vec<String>, Vec<Value>) =
-        match abs_window {
-            Some((s, e)) => (
-                "GREATEST(start_ns, ?)",
-                "LEAST(end_ns, ?)",
-                vec!["start_ns < ? AND end_ns > ?".to_string()],
-                vec![
-                    Value::BigInt(s),
-                    Value::BigInt(e),
-                    Value::BigInt(e),
-                    Value::BigInt(s),
-                ],
-            ),
-            None => ("start_ns", "end_ns", Vec::new(), Vec::new()),
-        };
-    where_parts.push(format!("kind IN ({labels})"));
-    if let Some(process_id) = req.process_id {
-        where_parts.push("process_id = ?".to_string());
-        params.push(Value::BigInt(process_id));
+    stream_id: Option<i64>,
+    window: Option<(i64, i64)>,
+    anchor_ns: i64,
+    interval_ns: i64,
+) -> BTreeMap<i64, BucketAccumulator> {
+    let mut buckets = BTreeMap::<i64, BucketAccumulator>::new();
+    for interval in device.intervals(window) {
+        if !kinds.contains(&interval.kind)
+            || stream_id.is_some_and(|stream_id| interval.stream_id != stream_id)
+        {
+            continue;
+        }
+        let offset = interval.start_ns.saturating_sub(anchor_ns);
+        let mut bucket_start =
+            offset.div_euclid(interval_ns).saturating_mul(interval_ns) + anchor_ns;
+        while bucket_start < interval.end_ns {
+            let bucket_end = bucket_start.saturating_add(interval_ns);
+            let duration_ns = interval.end_ns.min(bucket_end) - interval.start_ns.max(bucket_start);
+            if duration_ns > 0 {
+                buckets
+                    .entry(bucket_start)
+                    .or_default()
+                    .push(interval.kind, duration_ns);
+            }
+            let Some(next_bucket) = bucket_start.checked_add(interval_ns) else {
+                break;
+            };
+            bucket_start = next_bucket;
+        }
     }
-    if let Some(device) = req.device {
-        where_parts.push("device_id = ?".to_string());
-        params.push(Value::Int(device));
-    }
-    if let Some(stream) = req.stream {
-        where_parts.push("stream_id = ?".to_string());
-        params.push(Value::BigInt(stream));
-    }
-    let where_clause = where_parts.join(" AND ");
-    SqlFragment::new(
-        format!(
-            "SELECT kind, {start_expr} AS start_ns, {end_expr} AS end_ns \
-             FROM {table} WHERE {where_clause}"
-        ),
-        params,
-    )
+    buckets
 }
 
 #[cfg(test)]

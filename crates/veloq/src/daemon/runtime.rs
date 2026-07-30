@@ -586,6 +586,7 @@ impl PreparedQuery {
                 session_config: SourceSessionConfig {
                     query_workers: workers,
                     query_memory_bytes: memory,
+                    resident_memory_bytes: engine.limits().max_resident_memory_bytes,
                 },
                 admitted_freshness_key,
             }),
@@ -972,31 +973,55 @@ mod tests {
     use std::io::{BufReader, Cursor};
 
     #[test]
-    fn completed_output_is_split_into_bounded_frames() -> DaemonResult<()> {
-        let payload = vec![255; OUTPUT_CHUNK_BYTES.saturating_mul(5).saturating_add(17)];
-        let execution = SourceExecution::from_parts(0, payload.clone(), Vec::new());
-        let mut wire = Vec::new();
-        write_completed_execution(&mut wire, "large".to_string(), &execution)?;
+    fn completed_output_round_trips_bounded_binary_chunks() -> DaemonResult<()> {
+        let boundary_stdout = (0u8..=u8::MAX)
+            .cycle()
+            .take(OUTPUT_CHUNK_BYTES)
+            .collect::<Vec<_>>();
+        let multichunk_stderr = (0u8..=u8::MAX)
+            .rev()
+            .cycle()
+            .take(OUTPUT_CHUNK_BYTES.saturating_mul(2).saturating_add(17))
+            .collect::<Vec<_>>();
+        for (stdout, stderr, expected_chunk_count) in [
+            (Vec::new(), Vec::new(), 0),
+            (boundary_stdout, multichunk_stderr, 4),
+        ] {
+            let execution = SourceExecution::from_parts(7, stdout.clone(), stderr.clone());
+            let mut wire = Vec::new();
+            write_completed_execution(&mut wire, "binary".to_string(), &execution)?;
 
-        let mut reconstructed = Vec::new();
-        let mut reader = BufReader::new(Cursor::new(wire));
-        loop {
-            let frame: ServerFrame = read_frame(&mut reader)
-                .map_err(|source| DaemonError::lifecycle(source.to_string()))?;
-            match frame {
-                ServerFrame::OutputChunk {
-                    stream: OutputStream::Stdout,
-                    bytes,
-                    ..
-                } => reconstructed.extend_from_slice(&bytes),
-                ServerFrame::Completed { exit_code, .. } => {
-                    assert_eq!(exit_code, 0);
-                    break;
+            let mut reconstructed_stdout = Vec::new();
+            let mut reconstructed_stderr = Vec::new();
+            let mut chunk_count = 0usize;
+            let mut reader = BufReader::new(Cursor::new(wire));
+            loop {
+                let frame: ServerFrame = read_frame(&mut reader)
+                    .map_err(|source| DaemonError::lifecycle(source.to_string()))?;
+                match frame {
+                    ServerFrame::OutputChunk { stream, bytes, .. } => {
+                        assert!(bytes.len() <= OUTPUT_CHUNK_BYTES);
+                        chunk_count = chunk_count.saturating_add(1);
+                        match stream {
+                            OutputStream::Stdout => {
+                                reconstructed_stdout.extend_from_slice(&bytes);
+                            }
+                            OutputStream::Stderr => {
+                                reconstructed_stderr.extend_from_slice(&bytes);
+                            }
+                        }
+                    }
+                    ServerFrame::Completed { exit_code, .. } => {
+                        assert_eq!(exit_code, 7);
+                        break;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            assert_eq!(chunk_count, expected_chunk_count);
+            assert_eq!(reconstructed_stdout, stdout);
+            assert_eq!(reconstructed_stderr, stderr);
         }
-        assert_eq!(reconstructed, payload);
         Ok(())
     }
 

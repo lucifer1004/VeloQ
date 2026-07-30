@@ -1,0 +1,51 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-017"
+title = "Build a resident NSys GPU interval index"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0006:C-INTERVAL-ACCELERATION",
+    "RFC-0011:C-ACCELERATION",
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-SESSION-FRESHNESS",
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "ADR-0004",
+]
+
+[content]
+description = "Replace the NSys daemon's view-only interval reuse with a lazily materialized, process-partitioned resident interval index that accelerates varying-window timeline, concurrency, and gaps queries without adding persistent artifacts or changing one-shot behavior."
+
+[[content.acceptance_criteria]]
+text = "Eligible normalized GPU work is materialized lazily into compact resident interval state partitioned by native process before device and stream, with start-ordered raw intervals and reusable coverage, activity, and gap evidence."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Accelerator-backed timeline, concurrency, and gaps preserve the complete one-shot response semantics for process and device scope, half-open windows, clipping, totals, ordering, limiting, stream summaries, and gap bracketing row identities."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Interval construction and queries use the session worker budget for partition-level parallelism with deterministic merging and no nested oversubscription."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Resident interval state is freshness-bound, accurately memory-accounted, disposable with its session, and bypassed when eligibility, capacity, cancellation safety, or exact equivalence cannot be proven."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Prof-profile measurements on representative large NSys traces report build cost, retained bytes, varying-window warm latency, exact-hit latency, and one-shot latency separately for all three accelerated verbs."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

@@ -1,0 +1,47 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-019"
+title = "Avoid low-value exact-response retention"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011:C-EVICTION",
+    "RFC-0011:C-RESOURCE-CONFIG",
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-OBSERVABILITY",
+    "ADR-0002",
+]
+
+[content]
+description = "Make exact-response admission reuse-aware so one-off large responses do not displace more valuable session or result state, while preserving bounded result-first eviction, exact byte reuse, and the existing daemon lifecycle wire."
+
+[[content.acceptance_criteria]]
+text = "Under constrained resident capacity, a one-off response whose accounted cost would evict reusable session or hotter result state is not admitted merely because it fits beneath the global ceiling, while repeated evidence can make the same exact query eligible."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Admission scales from effective configured capacity, accounted entry cost, and observed reuse instead of introducing an absolute response-size magic number."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "An admitted exact response remains byte-identical to its original successful execution, freshness-bound to its session, cancellation-safe, and excluded for unsuccessful executions."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Result-entry accounting, hit and miss counters, result-first pressure eviction, active and queued session protection, and whole-session cost-aware recency behavior remain correct under the new admission policy."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Deterministic pressure scenarios cover singleton large queries, repeated large queries, repeated small queries, mixed result sizes, session reuse, and eviction without relying on host-specific memory capacity."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-DAEMON-CONTRACT"]

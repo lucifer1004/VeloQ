@@ -124,6 +124,10 @@ pub struct SourceSessionConfig {
     pub query_workers: u64,
     /// `None` leaves memory policy to the source query engine.
     pub query_memory_bytes: Option<u64>,
+    /// Whole-daemon retained-memory ceiling. Sources use this only to refuse
+    /// optional resident accelerators whose conservative retained-size bound
+    /// cannot fit; daemon accounting remains authoritative after construction.
+    pub resident_memory_bytes: u64,
 }
 
 /// Default worker budget shared by one-shot and daemon query engines.

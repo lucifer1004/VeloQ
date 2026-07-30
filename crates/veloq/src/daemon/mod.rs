@@ -25,7 +25,7 @@ pub const DEFAULT_SOURCE: &str = "nsys";
 pub type DaemonResult<T> = Result<T, DaemonError>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Error)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum DaemonError {
     #[error("{message}")]
     Absent { message: String },

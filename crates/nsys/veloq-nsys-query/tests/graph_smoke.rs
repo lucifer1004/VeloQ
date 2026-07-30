@@ -549,6 +549,104 @@ fn graph_replays_same_raw_correlation_on_two_devices_does_not_merge() -> Result<
     Ok(())
 }
 
+#[test]
+fn resident_graph_trace_index_preserves_varying_query_responses() -> Result<()> {
+    let fixture = fixture::with_graph_trace()?;
+    let trace = veloq_nsys_data::Trace::open(fixture.path())?;
+    let mut requests = vec![
+        veloq_nsys_query::graph_replays::GraphReplaysRequest::default(),
+        veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            time_window: Some(TimeWindow::parse("@125ms-@126ms")?),
+            sort: Some(veloq_core::SortSpec::parse("start:asc")?),
+            limit: 1,
+            ..Default::default()
+        },
+        veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            nvtx: Some("frame".to_string()),
+            top_nodes_limit: 1,
+            ..Default::default()
+        },
+    ];
+    for sort in ["wall:asc", "sum:desc", "start:desc", "count:asc"] {
+        requests.push(veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            process_id: Some(12345),
+            device: Some(0),
+            sort: Some(veloq_core::SortSpec::parse(sort)?),
+            ..Default::default()
+        });
+    }
+    for request in requests {
+        let one_shot = veloq_nsys_query::graph_replays::run(fixture.path(), request.clone())?;
+        assert!(veloq_nsys_query::graph_replays::ensure_resident_index(
+            &trace
+        )?);
+        let resident = veloq_nsys_query::graph_replays::run_with_trace(&trace, request)?;
+        assert_eq!(
+            serde_json::to_vec(&resident)?,
+            serde_json::to_vec(&one_shot)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resident_graph_node_index_preserves_varying_query_responses() -> Result<()> {
+    let fixture = fixture::with_graph_nodes()?;
+    let trace = veloq_nsys_data::Trace::open(fixture.path())?;
+    let mut requests = vec![
+        veloq_nsys_query::graph_replays::GraphReplaysRequest::default(),
+        veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            time_window: Some(TimeWindow::parse("@200ms-@216ms")?),
+            sort: Some(veloq_core::SortSpec::parse("sum:desc,start:asc")?),
+            limit: 2,
+            top_nodes_limit: 1,
+            ..Default::default()
+        },
+        veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            nvtx: Some("frame".to_string()),
+            ..Default::default()
+        },
+    ];
+    for sort in ["wall:asc", "sum:desc", "start:desc", "count:asc"] {
+        requests.push(veloq_nsys_query::graph_replays::GraphReplaysRequest {
+            process_id: Some(12345),
+            device: Some(0),
+            sort: Some(veloq_core::SortSpec::parse(sort)?),
+            top_nodes_limit: 2,
+            ..Default::default()
+        });
+    }
+    for request in requests {
+        let one_shot = veloq_nsys_query::graph_replays::run(fixture.path(), request.clone())?;
+        assert!(veloq_nsys_query::graph_replays::ensure_resident_index(
+            &trace
+        )?);
+        let resident = veloq_nsys_query::graph_replays::run_with_trace(&trace, request)?;
+        assert_eq!(
+            serde_json::to_vec(&resident)?,
+            serde_json::to_vec(&one_shot)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resident_graph_index_absence_preserves_established_empty_response() -> Result<()> {
+    let fixture = fixture::minimal_gpu()?;
+    let trace = veloq_nsys_data::Trace::open(fixture.path())?;
+    let request = veloq_nsys_query::graph_replays::GraphReplaysRequest::default();
+    let one_shot = veloq_nsys_query::graph_replays::run(fixture.path(), request.clone())?;
+    assert!(!veloq_nsys_query::graph_replays::ensure_resident_index(
+        &trace
+    )?);
+    let resident = veloq_nsys_query::graph_replays::run_with_trace(&trace, request)?;
+    assert_eq!(
+        serde_json::to_vec(&resident)?,
+        serde_json::to_vec(&one_shot)?
+    );
+    Ok(())
+}
+
 // ===== Graph-events (CUDA_GRAPH_EVENTS lifecycle) ============================
 
 #[test]

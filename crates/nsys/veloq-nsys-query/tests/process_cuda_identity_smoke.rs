@@ -51,6 +51,32 @@ fn graph_replays_do_not_merge_process_private_device_zero() -> Result<()> {
 }
 
 #[test]
+fn resident_graph_replays_preserve_process_private_device_zero() -> Result<()> {
+    let fixture = fixture::process_private_cuda_identity_collision()?;
+    let one_shot =
+        veloq_nsys_query::graph_replays::run(fixture.path(), GraphReplaysRequest::default())?;
+    let trace = Trace::open(fixture.path())?;
+    assert!(veloq_nsys_query::graph_replays::ensure_resident_index(
+        &trace
+    )?);
+    let resident =
+        veloq_nsys_query::graph_replays::run_with_trace(&trace, GraphReplaysRequest::default())?;
+    assert_eq!(
+        serde_json::to_vec(&resident)?,
+        serde_json::to_vec(&one_shot)?
+    );
+    assert_eq!(
+        resident
+            .rows
+            .iter()
+            .map(|row| (row.process_id, row.device_id))
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([(1001, 0), (2002, 0)])
+    );
+    Ok(())
+}
+
+#[test]
 fn correlate_keeps_each_rank_chain_private() -> Result<()> {
     let trace = fixture::process_private_cuda_identity_collision()?;
     let response = veloq_nsys_query::correlate::run(

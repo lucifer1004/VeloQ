@@ -357,7 +357,7 @@ pub fn process_resident_memory(process_id: u32) -> Option<u64> {
             libc::sysconf(libc::_SC_PAGESIZE)
         };
         let page_size = u64::try_from(page_size).ok().filter(|size| *size > 0)?;
-        return resident_pages.checked_mul(page_size);
+        resident_pages.checked_mul(page_size)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -404,7 +404,7 @@ fn process_start_time(process_id: u32) -> Option<u64> {
             .ok()?;
         let (boot_time, clock_ticks_per_second) = *linux_process_clock()?;
         // Preserve sysinfo's historical seconds-since-epoch owner-record representation.
-        return Some(boot_time.saturating_add(start_ticks.checked_div(clock_ticks_per_second)?));
+        Some(boot_time.saturating_add(start_ticks.checked_div(clock_ticks_per_second)?))
     }
     #[cfg(not(target_os = "linux"))]
     {

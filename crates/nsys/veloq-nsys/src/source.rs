@@ -7,8 +7,9 @@
 //! hands off to [`crate::commands::run`].
 
 use crate::cli::{
-    CONCURRENCY_COMMAND, CORRELATE_COMMAND, Cmd, GAPS_COMMAND, INSPECT_COMMAND, SEARCH_COMMAND,
-    SLICES_COMMAND, STATS_COMMAND, SUMMARY_COMMAND, TIMELINE_COMMAND,
+    CONCURRENCY_COMMAND, CORRELATE_COMMAND, Cmd, GAPS_COMMAND, GRAPH_REPLAYS_COMMAND,
+    INSPECT_COMMAND, NCU_COMMAND, SEARCH_COMMAND, SLICES_COMMAND, STATS_COMMAND, SUMMARY_COMMAND,
+    TIMELINE_COMMAND,
 };
 use crate::commands;
 use crate::error::NsysSourceError;
@@ -50,6 +51,8 @@ impl NsysSource {
         CONCURRENCY_COMMAND,
         GAPS_COMMAND,
         SLICES_COMMAND,
+        GRAPH_REPLAYS_COMMAND,
+        NCU_COMMAND,
     ];
 }
 
@@ -140,8 +143,11 @@ impl ProfileSource for NsysSource {
                 worker_threads,
                 config.query_memory_bytes,
             )?,
-            interval_view_failed: false,
-            interval_view_accounted_bytes: 0,
+            interval_index: None,
+            interval_index_attempted: false,
+            interval_reuse_observed: false,
+            resident_memory_ceiling_bytes: config.resident_memory_bytes,
+            graph_index_attempted: false,
         })))
     }
 
@@ -159,7 +165,7 @@ impl ProfileSource for NsysSource {
         matches: &clap::ArgMatches,
         fmt: OutputFormat,
     ) -> SourceRunResult<SourceExecution> {
-        self.execute_with_trace(matches, fmt, None, None)
+        self.execute_with_trace(matches, fmt, None, None, None)
     }
 
     fn execute_daemon(
@@ -168,7 +174,7 @@ impl ProfileSource for NsysSource {
         fmt: OutputFormat,
         resolved_trace: &Path,
     ) -> SourceRunResult<SourceExecution> {
-        self.execute_with_trace(matches, fmt, Some(resolved_trace), None)
+        self.execute_with_trace(matches, fmt, Some(resolved_trace), None, None)
     }
 
     fn execute_daemon_cancellable(
@@ -208,8 +214,11 @@ impl ProfileSource for NsysSource {
         };
         let mut session = NsysProfileSession {
             trace,
-            interval_view_failed: false,
-            interval_view_accounted_bytes: 0,
+            interval_index: None,
+            interval_index_attempted: false,
+            interval_reuse_observed: false,
+            resident_memory_ceiling_bytes: config.resident_memory_bytes,
+            graph_index_attempted: false,
         };
         session.execute(matches, fmt, cancellation)
     }
@@ -222,6 +231,7 @@ impl NsysSource {
         fmt: OutputFormat,
         resolved_trace: Option<&Path>,
         resident_trace: Option<&veloq_nsys_data::Trace>,
+        resident_intervals: Option<&veloq_nsys_query::resident_intervals::ResidentIntervalIndex>,
     ) -> SourceRunResult<SourceExecution> {
         // Parse the matches back into the typed `Cmd`. The clap
         // dance happens twice (binary builds the same tree, parses
@@ -245,12 +255,16 @@ impl NsysSource {
             .map(|path| resolved_trace.unwrap_or(path))
             .and_then(|path| self.compute_trace_span(path));
         let mut output = SourceExecution::new();
+        let resident = resident_trace.map(|trace| commands::ResidentQueryState {
+            trace,
+            intervals: resident_intervals,
+        });
         match commands::run(
             cmd,
             fmt,
             trace_path.as_deref(),
             resolved_trace,
-            resident_trace,
+            resident,
             trace_span,
             &mut output,
         ) {
@@ -278,8 +292,11 @@ impl NsysSource {
 
 struct NsysProfileSession {
     trace: veloq_nsys_data::Trace,
-    interval_view_failed: bool,
-    interval_view_accounted_bytes: u64,
+    interval_index: Option<veloq_nsys_query::resident_intervals::ResidentIntervalIndex>,
+    interval_index_attempted: bool,
+    interval_reuse_observed: bool,
+    resident_memory_ceiling_bytes: u64,
+    graph_index_attempted: bool,
 }
 
 impl ProfileSession for NsysProfileSession {
@@ -297,29 +314,70 @@ impl ProfileSession for NsysProfileSession {
         let interrupt = self.trace.conn().interrupt_handle();
         cancellation.register_interrupt(move || interrupt.interrupt());
         let command = Cmd::from_arg_matches(matches)?;
-        if self.interval_view_accounted_bytes == 0
-            && !self.interval_view_failed
-            && matches!(command.name(), "timeline" | "concurrency" | "gaps")
+        let interval_command = match &command {
+            Cmd::Timeline { gpu, .. } => gpu.nvtx.is_none(),
+            Cmd::Concurrency { .. } | Cmd::Gaps { .. } => true,
+            _ => false,
+        };
+        if self.interval_index.is_none()
+            && !self.interval_index_attempted
+            && interval_command
+            && veloq_nsys_data::gpu_work_events::view_available(&self.trace)
         {
-            match veloq_nsys_query::resident_intervals::ensure(&self.trace) {
-                Ok(Some(info)) => {
-                    self.interval_view_accounted_bytes = info.accounted_bytes;
+            if !self.interval_reuse_observed {
+                self.interval_reuse_observed = true;
+            } else {
+                self.interval_index_attempted = true;
+                match veloq_nsys_query::resident_intervals::build(
+                    &self.trace,
+                    self.resident_memory_ceiling_bytes,
+                ) {
+                    Ok(Some(index)) => {
+                        if cancellation.is_cancelled() {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "query cancelled",
+                            )
+                            .into());
+                        }
+                        self.interval_index = Some(index);
+                    }
+                    Ok(None) => {
+                        log::debug!(
+                            "resident intervals: index is ineligible or cannot fit; using established query paths"
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "resident intervals: session-local index build failed; using established query paths: {error:#}"
+                        );
+                    }
                 }
-                Ok(None) => {
+            }
+        }
+        if !self.graph_index_attempted && command.name() == GRAPH_REPLAYS_COMMAND {
+            self.graph_index_attempted = true;
+            match veloq_nsys_query::graph_replays::ensure_resident_index(&self.trace) {
+                Ok(true) => {}
+                Ok(false) => {
                     log::debug!(
-                        "resident intervals: no eligible registered view; using established query paths"
+                        "resident graph replays: no replay evidence; using established query path"
                     );
                 }
                 Err(error) => {
-                    self.interval_view_failed = true;
                     log::warn!(
-                        "resident intervals: session-local build failed; using established query paths: {error:#}"
+                        "resident graph replays: session-local build failed; using established query path: {error:#}"
                     );
                 }
             }
         }
-        let execution =
-            NsysSource.execute_with_trace(matches, fmt, Some(self.trace.path()), Some(&self.trace));
+        let execution = NsysSource.execute_with_trace(
+            matches,
+            fmt,
+            Some(self.trace.path()),
+            Some(&self.trace),
+            self.interval_index.as_ref(),
+        );
         if cancellation.is_cancelled() {
             return Err(
                 std::io::Error::new(std::io::ErrorKind::Interrupted, "query cancelled").into(),
@@ -338,7 +396,11 @@ impl ProfileSession for NsysProfileSession {
             });
         query_engine_bytes
             .saturating_add(self.trace.additional_resident_memory_estimate_bytes())
-            .saturating_add(self.interval_view_accounted_bytes)
+            .saturating_add(
+                self.interval_index
+                    .as_ref()
+                    .map_or(0, |index| index.retained_memory_estimate_bytes()),
+            )
     }
 }
 

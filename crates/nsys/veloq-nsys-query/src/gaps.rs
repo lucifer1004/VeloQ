@@ -34,8 +34,9 @@
 
 use crate::query_sql::{exec, gpu_work::GpuWorkSet};
 use duckdb::types::Value;
+use rayon::prelude::*;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use veloq_core::{
     Direction, SortKeyDef, SortKeySpec, SortSpec,
@@ -309,6 +310,93 @@ pub fn run_with_trace(trace: &Trace, req: GapsRequest) -> NsysQueryResult<GapsRe
     run_after_validation(trace, req)
 }
 
+pub fn run_with_index(
+    trace: &Trace,
+    index: &crate::resident_intervals::ResidentIntervalIndex,
+    req: GapsRequest,
+) -> NsysQueryResult<GapsResponse> {
+    validate_request(&req)?;
+    let abs_window = trace
+        .resolve_window(req.time_window)
+        .map_err(NsysQueryError::time_window_resolve)?;
+    let mut gaps = match req.scope {
+        GapScope::Device => index
+            .selected_devices(req.process_id, req.device)
+            .flat_map(|device| {
+                device
+                    .gaps()
+                    .filter(|gap| gap_matches(*gap, abs_window, req.min_ns))
+                    .map(|gap| {
+                        gap_from_evidence(
+                            req.scope,
+                            Some(device.process_id()),
+                            Some(device.device_id()),
+                            None,
+                            gap,
+                        )
+                    })
+            })
+            .collect::<Vec<_>>(),
+        GapScope::Stream => index
+            .selected_devices(req.process_id, req.device)
+            .flat_map(|device| {
+                device
+                    .streams()
+                    .iter()
+                    .filter(|stream| {
+                        req.stream
+                            .is_none_or(|stream_id| stream.stream_id() == stream_id)
+                    })
+                    .flat_map(|stream| {
+                        device
+                            .stream_gaps(stream)
+                            .filter(|gap| gap_matches(*gap, abs_window, req.min_ns))
+                            .map(|gap| {
+                                gap_from_evidence(
+                                    req.scope,
+                                    Some(device.process_id()),
+                                    Some(device.device_id()),
+                                    Some(stream.stream_id()),
+                                    gap,
+                                )
+                            })
+                    })
+            })
+            .collect::<Vec<_>>(),
+        GapScope::Trace => {
+            let mut gaps = Vec::new();
+            index.visit_trace_gaps(req.process_id, |gap| {
+                if gap_matches(gap, abs_window, req.min_ns) {
+                    gaps.push(gap_from_evidence(req.scope, None, None, None, gap));
+                }
+            });
+            gaps
+        }
+    };
+    sort_gap_rows(&mut gaps, req.sort.as_ref())?;
+    let total_matched = i64::try_from(gaps.len()).unwrap_or(i64::MAX);
+    gaps.truncate(req.limit);
+    hydrate_gap_neighbor_names(trace, &mut gaps)?;
+
+    let span_ns = match abs_window {
+        Some((start_ns, end_ns)) => (end_ns - start_ns).max(0),
+        None => {
+            let (origins, _) = trace.read_origins().map_err(NsysQueryError::data)?;
+            origins.primary.duration_ns().max(0)
+        }
+    };
+    let streams = indexed_stream_activity(trace, index, &req, abs_window, span_ns)?;
+    Ok(GapsResponse {
+        min_ns: req.min_ns,
+        scope: req.scope.as_str(),
+        count: gaps.len(),
+        total_matched,
+        time_window_ns: abs_window,
+        rows: gaps,
+        auxiliary: GapsAuxiliary { streams },
+    })
+}
+
 fn validate_request(req: &GapsRequest) -> NsysQueryResult<()> {
     crate::check_limit(req.limit)?;
     if req.min_ns <= 0 {
@@ -555,6 +643,78 @@ fn gap_from_sql_row(scope: GapScope, row: GapSqlRow) -> NsysQueryResult<Gap> {
     })
 }
 
+fn gap_matches(
+    gap: crate::resident_intervals::GapEvidence,
+    window: Option<(i64, i64)>,
+    min_ns: i64,
+) -> bool {
+    gap.duration_ns() >= min_ns && gap.overlaps(window)
+}
+
+fn gap_from_evidence(
+    scope: GapScope,
+    process_id: Option<i64>,
+    device_id: Option<i32>,
+    stream_id: Option<i64>,
+    gap: crate::resident_intervals::GapEvidence,
+) -> Gap {
+    let key = match (scope, process_id, device_id, stream_id) {
+        (GapScope::Stream, Some(process_id), Some(device_id), Some(stream_id)) => {
+            format!(
+                "gap|pid:{process_id}|dev:{device_id}|stream:{stream_id}|@{}",
+                gap.start_ns
+            )
+        }
+        (GapScope::Device, Some(process_id), Some(device_id), _) => {
+            format!("gap|pid:{process_id}|dev:{device_id}|@{}", gap.start_ns)
+        }
+        _ => format!("gap|@{}", gap.start_ns),
+    };
+    Gap {
+        key,
+        process_id,
+        device_id,
+        stream_id,
+        start_ns: gap.start_ns,
+        end_ns: gap.end_ns,
+        duration_ns: gap.duration_ns(),
+        prev: GapNeighbor {
+            row_id: RowId::new(gap.prev.kind, gap.prev.row_id),
+            name: String::new(),
+            timestamp_ns: gap.start_ns,
+            stream_id: gap.prev.stream_id,
+        },
+        next: GapNeighbor {
+            row_id: RowId::new(gap.next.kind, gap.next.row_id),
+            name: String::new(),
+            timestamp_ns: gap.end_ns,
+            stream_id: gap.next.stream_id,
+        },
+    }
+}
+
+fn sort_gap_rows(gaps: &mut [Gap], sort: Option<&SortSpec>) -> NsysQueryResult<()> {
+    let default_sort = SortSpec::single("duration");
+    let sort = sort.unwrap_or(&default_sort);
+    let keys = sort
+        .fields()
+        .iter()
+        .map(|field| SortKey::from_field(field).map_err(NsysQueryError::gaps_sort_invalid))
+        .collect::<NsysQueryResult<Vec<_>>>()?;
+    veloq_core::sort::sort_in_memory(
+        gaps,
+        &keys,
+        |key, left, right| match key {
+            SortKey::Duration => left.duration_ns.cmp(&right.duration_ns),
+            SortKey::Start => left.start_ns.cmp(&right.start_ns),
+            SortKey::Device => left.device_id.cmp(&right.device_id),
+            SortKey::Stream => left.stream_id.cmp(&right.stream_id),
+        },
+        |left, right| left.start_ns.cmp(&right.start_ns),
+    );
+    Ok(())
+}
+
 fn hydrate_gap_neighbor_names(trace: &Trace, gaps: &mut [Gap]) -> NsysQueryResult<()> {
     if gaps.is_empty() {
         return Ok(());
@@ -689,6 +849,73 @@ fn compute_stream_activity(
     hydrate_stream_activity_rows(trace.conn(), &sql, &params, span_ns)
 }
 
+fn indexed_stream_activity(
+    trace: &Trace,
+    index: &crate::resident_intervals::ResidentIntervalIndex,
+    req: &GapsRequest,
+    abs_window: Option<(i64, i64)>,
+    span_ns: i64,
+) -> NsysQueryResult<Vec<StreamActivity>> {
+    let devices = index
+        .selected_devices(req.process_id, req.device)
+        .collect::<Vec<_>>();
+    let pool = trace
+        .build_query_worker_pool()
+        .map_err(NsysQueryError::data)?;
+    let partials = pool.install(|| {
+        devices
+            .par_iter()
+            .map(|device| {
+                let mut activity = BTreeMap::<i64, i64>::new();
+                match abs_window {
+                    None => {
+                        for stream in device.streams() {
+                            if req
+                                .stream
+                                .is_none_or(|stream_id| stream.stream_id() == stream_id)
+                            {
+                                activity.insert(stream.stream_id(), stream.sum_busy_ns());
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        for interval in device.intervals(abs_window) {
+                            if req
+                                .stream
+                                .is_none_or(|stream_id| interval.stream_id == stream_id)
+                            {
+                                *activity.entry(interval.stream_id).or_default() +=
+                                    interval.duration_ns();
+                            }
+                        }
+                    }
+                }
+                (device.process_id(), device.device_id(), activity)
+            })
+            .collect::<Vec<_>>()
+    });
+    Ok(partials
+        .into_iter()
+        .flat_map(|(process_id, device_id, activity)| {
+            activity
+                .into_iter()
+                .map(move |(stream_id, busy_ns)| StreamActivity {
+                    key: format!("stream|pid:{process_id}|dev:{device_id}|stream:{stream_id}"),
+                    process_id,
+                    device_id,
+                    stream_id,
+                    busy_ns,
+                    span_ns,
+                    busy_ratio: if span_ns > 0 {
+                        (busy_ns as f64) / (span_ns as f64)
+                    } else {
+                        f64::NAN
+                    },
+                })
+        })
+        .collect())
+}
+
 fn hydrate_stream_activity_rows(
     conn: &duckdb::Connection,
     sql: &str,
@@ -752,19 +979,6 @@ fn gpu_event_source(
     trace: &Trace,
     abs_window: Option<(i64, i64)>,
 ) -> NsysQueryResult<Option<GpuEventSource>> {
-    if crate::resident_intervals::available(trace) {
-        let table = crate::resident_intervals::table_name();
-        let kind_code = gpu_work_kind_code_sql("kind")?;
-        return Ok(Some(GpuEventSource {
-            sql: format!(
-                "SELECT {kind_code} AS kind, row_id, process_id, device_id, stream_id, \
-                 CAST('' AS VARCHAR) AS name, start_ns, end_ns \
-                 FROM {table}"
-            ),
-            needs_name_hydration: true,
-        }));
-    }
-
     if veloq_nsys_data::gpu_work_events::view_available(trace) {
         return Ok(Some(sidecar_gpu_event_source()?));
     }

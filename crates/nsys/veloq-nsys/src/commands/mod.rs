@@ -120,12 +120,18 @@ fn validate_gaps_scope_args(
 /// Each `Cmd::*` arm is small enough to live inline; if a command
 /// grows complex (multi-step pipeline, async work, etc.) it can
 /// graduate to its own helper without touching this signature.
-pub fn run(
+#[derive(Clone, Copy)]
+pub(crate) struct ResidentQueryState<'a> {
+    pub trace: &'a veloq_nsys_data::Trace,
+    pub intervals: Option<&'a veloq_nsys_query::resident_intervals::ResidentIntervalIndex>,
+}
+
+pub(crate) fn run(
     cmd: Cmd,
     fmt: OutputFormat,
     trace: Option<&Path>,
     resolved_trace: Option<&Path>,
-    resident_trace: Option<&veloq_nsys_data::Trace>,
+    resident: Option<ResidentQueryState<'_>>,
     trace_span: Option<TraceSpan>,
     output: &mut SourceExecution,
 ) -> NsysSourceResult<i32> {
@@ -147,6 +153,8 @@ pub fn run(
     }
     let trace = trace.ok_or(NsysSourceError::MissingTracePath)?;
     let query_trace = resolved_trace.unwrap_or(trace);
+    let resident_trace = resident.map(|state| state.trace);
+    let resident_intervals = resident.and_then(|state| state.intervals);
     match cmd {
         Cmd::Summary { .. } => {
             let data = match resident_trace {
@@ -453,18 +461,19 @@ pub fn run(
                 None => return Ok(1),
             };
             let sort = parse_sort_spec(&sort)?;
-            let data = veloq_nsys_query::graph_replays::run(
-                query_trace,
-                veloq_nsys_query::graph_replays::GraphReplaysRequest {
-                    time_window: common.time_window()?,
-                    nvtx: nvtx.clone(),
-                    process_id: scope.applied.native_pid,
-                    device: scope.applied.device,
-                    sort,
-                    limit: common.limit_or(20)?,
-                    top_nodes_limit: top_nodes,
-                },
-            )?;
+            let request = veloq_nsys_query::graph_replays::GraphReplaysRequest {
+                time_window: common.time_window()?,
+                nvtx: nvtx.clone(),
+                process_id: scope.applied.native_pid,
+                device: scope.applied.device,
+                sort,
+                limit: common.limit_or(20)?,
+                top_nodes_limit: top_nodes,
+            };
+            let data = match resident_trace {
+                Some(trace) => veloq_nsys_query::graph_replays::run_with_trace(trace, request)?,
+                None => veloq_nsys_query::graph_replays::run(query_trace, request)?,
+            };
             let projected = projected_scope(&scope, None, nvtx.as_deref(), data.time_window_ns);
             let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
             let meta = meta_with_scope(
@@ -520,9 +529,14 @@ pub fn run(
                 time_window: common.time_window()?,
                 limit: common.limit_or(100)?,
             };
-            let data = match resident_trace {
-                Some(trace) => veloq_nsys_query::concurrency::run_with_trace(trace, request)?,
-                None => veloq_nsys_query::concurrency::run(query_trace, request)?,
+            let data = match (resident_trace, resident_intervals) {
+                (Some(trace), Some(index)) => {
+                    veloq_nsys_query::concurrency::run_with_index(trace, index, request)?
+                }
+                (Some(trace), None) => {
+                    veloq_nsys_query::concurrency::run_with_trace(trace, request)?
+                }
+                (None, _) => veloq_nsys_query::concurrency::run(query_trace, request)?,
             };
             let projected = projected_scope(&resolved, None, None, data.time_window_ns);
             let warnings = run_guards(data.rows.len(), &projected, query_trace, trace_span);
@@ -572,9 +586,12 @@ pub fn run(
                 sort,
                 limit: common.limit_or(100)?,
             };
-            let data = match resident_trace {
-                Some(trace) => veloq_nsys_query::gaps::run_with_trace(trace, request)?,
-                None => veloq_nsys_query::gaps::run(query_trace, request)?,
+            let data = match (resident_trace, resident_intervals) {
+                (Some(trace), Some(index)) => {
+                    veloq_nsys_query::gaps::run_with_index(trace, index, request)?
+                }
+                (Some(trace), None) => veloq_nsys_query::gaps::run_with_trace(trace, request)?,
+                (None, _) => veloq_nsys_query::gaps::run(query_trace, request)?,
             };
             let next_steps = gaps_next_steps(&data.rows);
             let projected = projected_scope(&resolved, None, None, data.time_window_ns);
@@ -627,9 +644,12 @@ pub fn run(
                 stream: scope.applied.stream,
                 limit: common.limit_or(1000)?,
             };
-            let data = match resident_trace {
-                Some(trace) => veloq_nsys_query::timeline::run_with_trace(trace, request)?,
-                None => veloq_nsys_query::timeline::run(query_trace, request)?,
+            let data = match (resident_trace, resident_intervals) {
+                (Some(trace), Some(index)) => {
+                    veloq_nsys_query::timeline::run_with_index(trace, index, request)?
+                }
+                (Some(trace), None) => veloq_nsys_query::timeline::run_with_trace(trace, request)?,
+                (None, _) => veloq_nsys_query::timeline::run(query_trace, request)?,
             };
             let projected = projected_scope(
                 &scope,

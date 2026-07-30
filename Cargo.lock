@@ -3461,6 +3461,7 @@ version = "0.5.1"
 dependencies = [
  "agent-plugin-installer",
  "anyhow",
+ "bincode",
  "clap",
  "duckdb",
  "env_logger",

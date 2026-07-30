@@ -9,9 +9,9 @@ and report exact repeats separately. Supplying a second trace also measures
 rebuild after deterministic max-sessions=1 eviction.
 
 Interval states require an already prepared, fresh gpu-work-events sidecar.
-The harness also observes source-memory accounting before and after the first
-interval query so a fallback execution cannot be mislabeled as resident-view
-construction.
+The harness first records one distinct scan miss as reuse evidence, then
+observes source-memory accounting around the next varying miss so a fallback
+execution cannot be mislabeled as resident-index construction.
 """
 
 from __future__ import annotations
@@ -225,7 +225,9 @@ def interval_workloads(
     span_ns: int,
     samples: int,
 ) -> dict[str, list[list[str]]]:
-    variant_count = samples + 1
+    # One distinct miss establishes reuse interest, the next constructs the
+    # index, and `samples` further windows measure warm cache misses.
+    variant_count = samples + 2
     window_ns = max(1, span_ns // INTERVAL_WINDOW_PARTS)
     offset_range = span_ns - window_ns
     if offset_range < variant_count - 1:
@@ -304,14 +306,14 @@ def daemon_metrics(executable: str) -> dict[str, int]:
     return metrics
 
 
-def require_resident_interval_view(
+def require_resident_interval_index(
     before: dict[str, int],
     after: dict[str, int],
 ) -> None:
     if after["source_memory_bytes"] <= before["source_memory_bytes"]:
         raise BenchmarkFailure(
             "the interval query did not register accounted resident state; "
-            "refusing to label fallback execution as resident"
+            "refusing to label fallback execution as resident-index construction"
         )
 
 
@@ -322,7 +324,9 @@ def benchmark_interval_workload(
     samples: int,
     eviction_trace: Path | None,
 ) -> dict[str, tuple[list[int], dict[str, int] | None]]:
-    measured_variants = variants[1 : samples + 1]
+    interest_variant = variants[0]
+    construction_variant = variants[1]
+    measured_variants = variants[2 : samples + 2]
     one_shot = [
         measure(executable, [*arguments, "--daemon", "off"])
         for arguments in measured_variants
@@ -334,22 +338,24 @@ def benchmark_interval_workload(
         run(executable, ["daemon", "start"])
         try:
             run(executable, ["summary", str(trace), "--daemon", "required"])
+            run(executable, [*interest_variant, "--daemon", "required"])
             before = daemon_metrics(executable)
             construction.append(
                 measure(executable, [*arguments, "--daemon", "required"])
             )
             construction_metrics = daemon_metrics(executable)
-            require_resident_interval_view(before, construction_metrics)
+            require_resident_interval_index(before, construction_metrics)
         finally:
             run(executable, ["daemon", "stop"])
 
     run(executable, ["daemon", "start"])
     try:
         run(executable, ["summary", str(trace), "--daemon", "required"])
+        run(executable, [*interest_variant, "--daemon", "required"])
         before = daemon_metrics(executable)
-        measure(executable, [*variants[0], "--daemon", "required"])
+        measure(executable, [*construction_variant, "--daemon", "required"])
         after_construction = daemon_metrics(executable)
-        require_resident_interval_view(before, after_construction)
+        require_resident_interval_index(before, after_construction)
         warm_miss = [
             measure(executable, [*arguments, "--daemon", "required"])
             for arguments in measured_variants
@@ -376,15 +382,14 @@ def benchmark_interval_workload(
     eviction_metrics = None
     run(executable, ["daemon", "start", "--max-sessions", "1"])
     try:
-        for index, arguments in enumerate(measured_variants):
-            run(
-                executable,
-                [*variants[index], "--daemon", "required"],
-            )
+        run(executable, [*interest_variant, "--daemon", "required"])
+        run(executable, [*construction_variant, "--daemon", "required"])
+        for arguments in measured_variants:
             run(
                 executable,
                 ["summary", str(eviction_trace), "--daemon", "required"],
             )
+            run(executable, [*interest_variant, "--daemon", "required"])
             eviction_rebuild.append(
                 measure(executable, [*arguments, "--daemon", "required"])
             )

@@ -25,6 +25,13 @@ use veloq_nsys_data::{SyntheticId, Trace};
 use veloq_query::duckdb::list::{TotalCarrier, infallible_count_error, total_matched};
 use veloq_query::sql::{name, total_matched_bigint_expr};
 
+const RESIDENT_GRAPH_TRACE_TABLE: &str = "veloq_resident_graph_trace_rows";
+const RESIDENT_GRAPH_NODE_TABLE: &str = "veloq_resident_graph_node_rows";
+const RESIDENT_REPLAY_SUMMARY_TABLE: &str = "veloq_resident_graph_replay_summaries";
+const RESIDENT_LAUNCHER_TABLE: &str = "veloq_resident_graph_replay_launchers";
+const RESIDENT_BUSY_TABLE: &str = "veloq_resident_graph_replay_busy";
+const RESIDENT_NODE_AGGREGATE_TABLE: &str = "veloq_resident_graph_replay_node_aggregates";
+
 #[derive(Debug, Clone)]
 pub struct GraphReplaysRequest {
     pub time_window: Option<TimeWindow>,
@@ -200,6 +207,8 @@ struct ReplaySelection {
     start_ns: i64,
 }
 
+type ReplayDecomposition = HashMap<ReplaySelection, (i64, Vec<GraphReplayNode>)>;
+
 impl ReplaySummary {
     fn selection(&self) -> ReplaySelection {
         ReplaySelection {
@@ -226,20 +235,27 @@ pub fn run<P: AsRef<Path>>(
     path: P,
     req: GraphReplaysRequest,
 ) -> NsysQueryResult<GraphReplaysResponse> {
+    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
+    run_with_trace(&trace, req)
+}
+
+pub fn run_with_trace(
+    trace: &Trace,
+    req: GraphReplaysRequest,
+) -> NsysQueryResult<GraphReplaysResponse> {
     crate::check_limit(req.limit)?;
     if req.top_nodes_limit == 0 {
         return Err(NsysQueryError::GraphReplaysTopNodesTooSmall);
     }
 
-    let trace = Trace::open(path).map_err(NsysQueryError::trace_open)?;
     let abs_window = trace
         .resolve_window(req.time_window)
         .map_err(NsysQueryError::time_window_resolve)?;
-    let mode = capture_mode(&trace)?;
+    let mode = capture_mode(trace)?;
 
     let mut rows = match mode {
-        CaptureMode::GraphTrace => query_graph_trace(&trace, &req, abs_window)?,
-        CaptureMode::GraphNodes => query_graph_nodes(&trace, &req, abs_window)?,
+        CaptureMode::GraphTrace => query_graph_trace(trace, &req, abs_window)?,
+        CaptureMode::GraphNodes => query_graph_nodes(trace, &req, abs_window)?,
         CaptureMode::None => Vec::new(),
     };
 
@@ -249,10 +265,18 @@ pub fn run<P: AsRef<Path>>(
         .iter()
         .map(|(summary, _)| summary.clone())
         .collect::<Vec<_>>();
-    let launchers = find_launchers(&trace, &summaries)?;
-    let mut node_events = match mode {
-        CaptureMode::GraphNodes => load_node_events(&trace, &summaries)?,
-        CaptureMode::GraphTrace | CaptureMode::None => HashMap::new(),
+    let launchers = find_launchers(trace, &summaries)?;
+    let mut resident_decomposition = match mode {
+        CaptureMode::GraphNodes if abs_window.is_none() => {
+            load_resident_decomposition(trace, &summaries, req.top_nodes_limit)?
+        }
+        CaptureMode::GraphTrace | CaptureMode::GraphNodes | CaptureMode::None => None,
+    };
+    let mut node_events = match (mode, resident_decomposition.is_some()) {
+        (CaptureMode::GraphNodes, false) => load_node_events(trace, &summaries)?,
+        (CaptureMode::GraphNodes, true) | (CaptureMode::GraphTrace | CaptureMode::None, _) => {
+            HashMap::new()
+        }
     };
     let mut out_rows = Vec::with_capacity(rows.len());
     for (summary, _) in rows.drain(..) {
@@ -272,14 +296,21 @@ pub fn run<P: AsRef<Path>>(
         let (busy_ns, top_nodes, decomposition_available) = match mode {
             CaptureMode::GraphTrace => (summary.end_ns - summary.start_ns, Vec::new(), false),
             CaptureMode::GraphNodes => {
-                let events = node_events.remove(&selection).unwrap_or_default();
-                let busy = busy_ns(events.iter().map(|e| (e.start_ns, e.end_ns)).collect());
-                let nodes = top_nodes(
-                    &events,
-                    summary.end_ns - summary.start_ns,
-                    req.top_nodes_limit,
-                );
-                (busy, nodes, true)
+                if let Some((busy, nodes)) = resident_decomposition
+                    .as_mut()
+                    .and_then(|decomposition| decomposition.remove(&selection))
+                {
+                    (busy, nodes, true)
+                } else {
+                    let events = node_events.remove(&selection).unwrap_or_default();
+                    let busy = busy_ns(events.iter().map(|e| (e.start_ns, e.end_ns)).collect());
+                    let nodes = top_nodes(
+                        &events,
+                        summary.end_ns - summary.start_ns,
+                        req.top_nodes_limit,
+                    );
+                    (busy, nodes, true)
+                }
             }
             CaptureMode::None => (0, Vec::new(), false),
         };
@@ -323,7 +354,61 @@ pub fn run<P: AsRef<Path>>(
     })
 }
 
+/// Materialize the normalized graph-replay evidence once in the resident
+/// DuckDB connection. The table is private to the daemon session and is
+/// covered by DuckDB's existing resident-memory accounting.
+///
+/// `Ok(false)` means the trace contains no replay evidence. Queries retain the
+/// established source path in either case.
+pub fn ensure_resident_index(trace: &Trace) -> NsysQueryResult<bool> {
+    if resident_table_available(trace, RESIDENT_GRAPH_TRACE_TABLE)
+        || resident_table_available(trace, RESIDENT_GRAPH_NODE_TABLE)
+    {
+        return Ok(true);
+    }
+
+    match capture_mode(trace)? {
+        CaptureMode::GraphTrace => {
+            let source = graph_trace_source_sql(trace);
+            let sql = format!(
+                "CREATE TEMP TABLE {RESIDENT_GRAPH_TRACE_TABLE} AS \
+                 SELECT * FROM ({source}) \
+                 ORDER BY process_id, device_id, context_id, correlation_id, start_ns, end_ns"
+            );
+            trace.conn().execute_batch(&sql).map_err(|source| {
+                NsysQueryError::sql_query("graph-replays", "resident graph-trace build", source)
+            })?;
+            build_resident_summaries(trace, CaptureMode::GraphTrace)?;
+            build_resident_launchers(trace)?;
+            Ok(true)
+        }
+        CaptureMode::GraphNodes => {
+            let source = source_node_event_subqueries(trace).join(" UNION ALL ");
+            let sql = format!(
+                "CREATE TEMP TABLE {RESIDENT_GRAPH_NODE_TABLE} AS \
+                 SELECT * FROM ({source}) \
+                 ORDER BY process_id, device_id, context_id, correlation_id, start_ns, end_ns, rowid"
+            );
+            trace.conn().execute_batch(&sql).map_err(|source| {
+                NsysQueryError::sql_query("graph-replays", "resident graph-node build", source)
+            })?;
+            build_resident_summaries(trace, CaptureMode::GraphNodes)?;
+            build_resident_decomposition(trace)?;
+            build_resident_launchers(trace)?;
+            Ok(true)
+        }
+        CaptureMode::None => Ok(false),
+    }
+}
+
 fn capture_mode(trace: &Trace) -> NsysQueryResult<CaptureMode> {
+    if resident_table_available(trace, RESIDENT_GRAPH_TRACE_TABLE) {
+        return Ok(CaptureMode::GraphTrace);
+    }
+    if resident_table_available(trace, RESIDENT_GRAPH_NODE_TABLE) {
+        return Ok(CaptureMode::GraphNodes);
+    }
+
     if trace.table_exists("CUPTI_ACTIVITY_KIND_GRAPH_TRACE") {
         let count = count_capture_mode_rows(
             trace.conn(),
@@ -359,58 +444,52 @@ fn query_graph_trace(
 ) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
     let mut params = Vec::new();
     let (scope_cte, scoped_join) = launch_scope_sql(trace, req.nvtx.as_deref(), &mut params)?;
-    let process = veloq_nsys_data::process_sql_projection(
-        trace,
-        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
-        "t",
-        "proc",
-        "t.start",
-    );
     let mut where_parts = vec![
-        "t.correlationId IS NOT NULL".to_string(),
-        "t.start IS NOT NULL".to_string(),
-        "t.\"end\" IS NOT NULL".to_string(),
+        "t.correlation_id IS NOT NULL".to_string(),
+        "t.start_ns IS NOT NULL".to_string(),
+        "t.end_ns IS NOT NULL".to_string(),
     ];
     if let Some((start, end)) = abs_window {
-        where_parts.push("t.\"end\" > ? AND t.start < ?".to_string());
+        where_parts.push("t.end_ns > ? AND t.start_ns < ?".to_string());
         params.push(Value::BigInt(start));
         params.push(Value::BigInt(end));
     }
     if let Some(process_id) = req.process_id {
-        where_parts.push(format!("{} = ?", process.expr));
+        where_parts.push("t.process_id = ?".to_string());
         params.push(Value::BigInt(process_id));
     }
     if let Some(device) = req.device {
-        where_parts.push("CAST(t.deviceId AS INTEGER) = ?".to_string());
+        where_parts.push("t.device_id = ?".to_string());
         params.push(Value::Int(device));
     }
     let where_sql = where_parts.join(" AND ");
     let order_by = order_by_sql(req.sort.as_ref())?;
     params.push(Value::BigInt(req.limit as i64));
+    let graph_trace_rows = graph_trace_source_sql(trace);
 
     let sql = format!(
         r#"
         WITH {scope_cte}
+        graph_trace_rows AS ({graph_trace_rows}),
         base AS (
             SELECT
-                {process_expr} AS process_id,
-                CAST(t.deviceId AS INTEGER) AS device_id,
-                CAST(t.contextId AS BIGINT) AS context_id,
-                CAST(t.correlationId AS BIGINT) AS correlation_id,
-                CAST(t.start AS BIGINT) AS start_ns,
-                CAST(t."end" AS BIGINT) AS end_ns,
-                CAST(t."end" - t.start AS BIGINT) AS wall_ns,
-                CAST(t."end" - t.start AS BIGINT) AS sum_gpu_ns,
+                t.process_id,
+                t.device_id,
+                t.context_id,
+                t.correlation_id,
+                t.start_ns,
+                t.end_ns,
+                CAST(t.end_ns - t.start_ns AS BIGINT) AS wall_ns,
+                CAST(t.end_ns - t.start_ns AS BIGINT) AS sum_gpu_ns,
                 CAST(1 AS BIGINT) AS event_count,
                 CAST(0 AS BIGINT) AS kernel_count,
                 CAST(0 AS BIGINT) AS memcpy_count,
                 CAST(0 AS BIGINT) AS memset_count,
                 CAST(1 AS BIGINT) AS graph_trace_count,
                 CAST(1 AS BIGINT) AS stream_count,
-                CAST(t.graphId AS BIGINT) AS graph_id,
-                CAST(t.graphExecId AS BIGINT) AS graph_exec_id
-            FROM nsight.CUPTI_ACTIVITY_KIND_GRAPH_TRACE t
-            {process_join}
+                t.graph_id,
+                t.graph_exec_id
+            FROM graph_trace_rows t
             WHERE {where_sql}
         ),
         scoped AS (
@@ -424,8 +503,6 @@ fn query_graph_trace(
         ORDER BY {order_by}
         LIMIT ?
         "#,
-        process_expr = process.expr,
-        process_join = process.join,
         total_matched = total_matched_bigint_expr(),
     );
 
@@ -437,6 +514,9 @@ fn query_graph_nodes(
     req: &GraphReplaysRequest,
     abs_window: Option<(i64, i64)>,
 ) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
+    if abs_window.is_none() && resident_table_available(trace, RESIDENT_REPLAY_SUMMARY_TABLE) {
+        return query_resident_graph_node_summaries(trace, req);
+    }
     let subqueries = node_event_subqueries(trace);
     if subqueries.is_empty() {
         return Ok(Vec::new());
@@ -503,6 +583,48 @@ fn query_graph_nodes(
     collect_replay_summaries(trace.conn(), &sql, &params)
 }
 
+fn query_resident_graph_node_summaries(
+    trace: &Trace,
+    req: &GraphReplaysRequest,
+) -> NsysQueryResult<Vec<(ReplaySummary, i64)>> {
+    let mut params = Vec::new();
+    let (scope_cte, scoped_join) = launch_scope_sql(trace, req.nvtx.as_deref(), &mut params)?;
+    let mut where_parts = Vec::new();
+    if let Some(process_id) = req.process_id {
+        where_parts.push("b.process_id = ?".to_string());
+        params.push(Value::BigInt(process_id));
+    }
+    if let Some(device) = req.device {
+        where_parts.push("b.device_id = ?".to_string());
+        params.push(Value::Int(device));
+    }
+    let where_sql = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_parts.join(" AND "))
+    };
+    let order_by = order_by_sql(req.sort.as_ref())?;
+    params.push(Value::BigInt(req.limit as i64));
+    let sql = format!(
+        r#"
+        WITH {scope_cte}
+        scoped AS (
+            SELECT b.*
+            FROM {RESIDENT_REPLAY_SUMMARY_TABLE} b
+            {scoped_join}
+            {where_sql}
+        )
+        SELECT *,
+               {total_matched}
+        FROM scoped
+        ORDER BY {order_by}
+        LIMIT ?
+        "#,
+        total_matched = total_matched_bigint_expr(),
+    );
+    collect_replay_summaries(trace.conn(), &sql, &params)
+}
+
 fn collect_replay_summaries(
     conn: &duckdb::Connection,
     sql: &str,
@@ -540,7 +662,49 @@ fn replay_summary_row(row: &duckdb::Row<'_>) -> Result<(ReplaySummary, i64), duc
     ))
 }
 
+fn graph_trace_source_sql(trace: &Trace) -> String {
+    if resident_table_available(trace, RESIDENT_GRAPH_TRACE_TABLE) {
+        return format!(
+            "SELECT process_id, device_id, context_id, correlation_id, \
+                    start_ns, end_ns, graph_id, graph_exec_id \
+             FROM {RESIDENT_GRAPH_TRACE_TABLE}"
+        );
+    }
+    let process = veloq_nsys_data::process_sql_projection(
+        trace,
+        "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
+        "t",
+        "proc",
+        "t.start",
+    );
+    format!(
+        "SELECT \
+            {process_expr} AS process_id, \
+            CAST(t.deviceId AS INTEGER) AS device_id, \
+            CAST(t.contextId AS BIGINT) AS context_id, \
+            CAST(t.correlationId AS BIGINT) AS correlation_id, \
+            CAST(t.start AS BIGINT) AS start_ns, \
+            CAST(t.\"end\" AS BIGINT) AS end_ns, \
+            CAST(t.graphId AS BIGINT) AS graph_id, \
+            CAST(t.graphExecId AS BIGINT) AS graph_exec_id \
+         FROM nsight.CUPTI_ACTIVITY_KIND_GRAPH_TRACE t \
+         {process_join} \
+         WHERE t.correlationId IS NOT NULL \
+           AND t.start IS NOT NULL \
+           AND t.\"end\" IS NOT NULL",
+        process_expr = process.expr,
+        process_join = process.join,
+    )
+}
+
 fn node_event_subqueries(trace: &Trace) -> Vec<String> {
+    if resident_table_available(trace, RESIDENT_GRAPH_NODE_TABLE) {
+        return vec![format!("SELECT * FROM {RESIDENT_GRAPH_NODE_TABLE}")];
+    }
+    source_node_event_subqueries(trace)
+}
+
+fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
     let mut out = Vec::new();
     if trace.table_exists("CUPTI_ACTIVITY_KIND_KERNEL") {
         let process = veloq_nsys_data::process_sql_projection(
@@ -654,6 +818,20 @@ fn node_event_subqueries(trace: &Trace) -> Vec<String> {
     out
 }
 
+fn resident_table_available(trace: &Trace, table: &str) -> bool {
+    trace
+        .conn()
+        .query_row(
+            "SELECT EXISTS(\
+                SELECT 1 FROM duckdb_tables() \
+                WHERE table_name = ? AND temporary\
+            )",
+            [table],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+}
+
 fn append_scope_filters(
     where_parts: &mut Vec<String>,
     params: &mut Vec<Value>,
@@ -760,7 +938,7 @@ fn order_by_sql(sort: Option<&SortSpec>) -> NsysQueryResult<String> {
     }
     Ok(build_order_by(
         &parts,
-        "device_id ASC, context_id ASC, correlation_id",
+        "process_id ASC, device_id ASC, context_id ASC, correlation_id",
     ))
 }
 
@@ -799,6 +977,22 @@ fn find_launchers(
         return Ok(HashMap::new());
     }
     let (selected_replays, params) = selected_replays_cte(replays);
+    if resident_table_available(trace, RESIDENT_LAUNCHER_TABLE) {
+        let sql = format!(
+            "WITH {selected_replays} \
+             SELECT \
+                q.process_id, q.device_id, q.context_id, q.correlation_id, \
+                q.replay_start_ns, l.launcher_rowid \
+             FROM selected_replays q \
+             JOIN {RESIDENT_LAUNCHER_TABLE} l \
+               ON l.process_id = q.process_id \
+              AND l.device_id = q.device_id \
+              AND l.context_id = q.context_id \
+              AND l.correlation_id = q.correlation_id \
+              AND l.replay_start_ns = q.replay_start_ns"
+        );
+        return hydrate_launchers(trace.conn(), &sql, &params);
+    }
     let sql = format!(
         r#"
         WITH {selected_replays},
@@ -846,6 +1040,235 @@ fn find_launchers(
         "#,
     );
     hydrate_launchers(trace.conn(), &sql, &params)
+}
+
+fn build_resident_summaries(trace: &Trace, mode: CaptureMode) -> NsysQueryResult<()> {
+    let select = match mode {
+        CaptureMode::GraphTrace => format!(
+            "SELECT \
+                process_id, device_id, context_id, correlation_id, \
+                start_ns, end_ns, \
+                CAST(end_ns - start_ns AS BIGINT) AS wall_ns, \
+                CAST(end_ns - start_ns AS BIGINT) AS sum_gpu_ns, \
+                CAST(1 AS BIGINT) AS event_count, \
+                CAST(0 AS BIGINT) AS kernel_count, \
+                CAST(0 AS BIGINT) AS memcpy_count, \
+                CAST(0 AS BIGINT) AS memset_count, \
+                CAST(1 AS BIGINT) AS graph_trace_count, \
+                CAST(1 AS BIGINT) AS stream_count, \
+                graph_id, graph_exec_id \
+             FROM {RESIDENT_GRAPH_TRACE_TABLE}"
+        ),
+        CaptureMode::GraphNodes => format!(
+            "SELECT \
+                process_id, device_id, context_id, correlation_id, \
+                MIN(start_ns) AS start_ns, MAX(end_ns) AS end_ns, \
+                CAST(MAX(end_ns) - MIN(start_ns) AS BIGINT) AS wall_ns, \
+                CAST(SUM(end_ns - start_ns) AS BIGINT) AS sum_gpu_ns, \
+                CAST(COUNT(*) AS BIGINT) AS event_count, \
+                CAST(SUM(CASE WHEN kind = 'kernel' THEN 1 ELSE 0 END) AS BIGINT) AS kernel_count, \
+                CAST(SUM(CASE WHEN kind = 'memcpy' THEN 1 ELSE 0 END) AS BIGINT) AS memcpy_count, \
+                CAST(SUM(CASE WHEN kind = 'memset' THEN 1 ELSE 0 END) AS BIGINT) AS memset_count, \
+                CAST(0 AS BIGINT) AS graph_trace_count, \
+                CAST(COUNT(DISTINCT stream_id) AS BIGINT) AS stream_count, \
+                CAST(arbitrary(graph_id) AS BIGINT) AS graph_id, \
+                CAST(NULL AS BIGINT) AS graph_exec_id \
+             FROM {RESIDENT_GRAPH_NODE_TABLE} \
+             GROUP BY process_id, device_id, context_id, correlation_id"
+        ),
+        CaptureMode::None => return Ok(()),
+    };
+    let sql = format!(
+        "CREATE TEMP TABLE {RESIDENT_REPLAY_SUMMARY_TABLE} AS \
+         SELECT * FROM ({select}) \
+         ORDER BY process_id, device_id, context_id, correlation_id, start_ns"
+    );
+    trace.conn().execute_batch(&sql).map_err(|source| {
+        NsysQueryError::sql_query("graph-replays", "resident replay-summary build", source)
+    })
+}
+
+fn build_resident_decomposition(trace: &Trace) -> NsysQueryResult<()> {
+    let node_aggregate_sql = format!(
+        r#"
+        CREATE TEMP TABLE {RESIDENT_NODE_AGGREGATE_TABLE} AS
+        SELECT
+            e.process_id,
+            e.device_id,
+            e.context_id,
+            e.correlation_id,
+            s.start_ns AS replay_start_ns,
+            s.wall_ns AS replay_wall_ns,
+            e.graph_node_id,
+            e.kind,
+            e.name,
+            CAST(COUNT(*) AS BIGINT) AS count,
+            CAST(COUNT(DISTINCT e.stream_id) AS BIGINT) AS stream_count,
+            CAST(MIN(e.start_ns) AS BIGINT) AS start_ns,
+            CAST(MAX(e.end_ns) AS BIGINT) AS end_ns,
+            CAST(SUM(e.end_ns - e.start_ns) AS BIGINT) AS sum_ns,
+            CAST(MAX(e.end_ns - e.start_ns) AS BIGINT) AS max_ns
+        FROM {RESIDENT_GRAPH_NODE_TABLE} e
+        JOIN {RESIDENT_REPLAY_SUMMARY_TABLE} s
+          USING (process_id, device_id, context_id, correlation_id)
+        GROUP BY
+            e.process_id,
+            e.device_id,
+            e.context_id,
+            e.correlation_id,
+            s.start_ns,
+            s.wall_ns,
+            e.graph_node_id,
+            e.kind,
+            e.name
+        ORDER BY
+            e.process_id,
+            e.device_id,
+            e.context_id,
+            e.correlation_id,
+            s.start_ns,
+            sum_ns DESC,
+            max_ns DESC,
+            start_ns,
+            e.graph_node_id
+        "#
+    );
+    trace
+        .conn()
+        .execute_batch(&node_aggregate_sql)
+        .map_err(|source| {
+            NsysQueryError::sql_query("graph-replays", "resident node-aggregate build", source)
+        })?;
+
+    let busy_sql = format!(
+        r#"
+        CREATE TEMP TABLE {RESIDENT_BUSY_TABLE} AS
+        WITH ordered AS (
+            SELECT
+                *,
+                MAX(end_ns) OVER (
+                    PARTITION BY process_id, device_id, context_id, correlation_id
+                    ORDER BY start_ns, end_ns, rowid
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                ) AS prior_max_end
+            FROM {RESIDENT_GRAPH_NODE_TABLE}
+            WHERE end_ns > start_ns
+        ),
+        marked AS (
+            SELECT
+                *,
+                CASE WHEN prior_max_end IS NULL OR start_ns > prior_max_end
+                     THEN 1 ELSE 0 END AS island_start
+            FROM ordered
+        ),
+        islanded AS (
+            SELECT
+                *,
+                SUM(island_start) OVER (
+                    PARTITION BY process_id, device_id, context_id, correlation_id
+                    ORDER BY start_ns, end_ns, rowid
+                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                ) AS island_id
+            FROM marked
+        ),
+        merged AS (
+            SELECT
+                process_id,
+                device_id,
+                context_id,
+                correlation_id,
+                island_id,
+                MIN(start_ns) AS start_ns,
+                MAX(end_ns) AS end_ns
+            FROM islanded
+            GROUP BY process_id, device_id, context_id, correlation_id, island_id
+        )
+        SELECT
+            m.process_id,
+            m.device_id,
+            m.context_id,
+            m.correlation_id,
+            s.start_ns AS replay_start_ns,
+            CAST(SUM(m.end_ns - m.start_ns) AS BIGINT) AS busy_ns
+        FROM merged m
+        JOIN {RESIDENT_REPLAY_SUMMARY_TABLE} s
+          USING (process_id, device_id, context_id, correlation_id)
+        GROUP BY
+            m.process_id,
+            m.device_id,
+            m.context_id,
+            m.correlation_id,
+            s.start_ns
+        ORDER BY
+            m.process_id,
+            m.device_id,
+            m.context_id,
+            m.correlation_id,
+            s.start_ns
+        "#
+    );
+    trace
+        .conn()
+        .execute_batch(&busy_sql)
+        .map_err(|source| NsysQueryError::sql_query("graph-replays", "resident busy build", source))
+}
+
+fn build_resident_launchers(trace: &Trace) -> NsysQueryResult<()> {
+    if !trace.table_exists("CUPTI_ACTIVITY_KIND_RUNTIME")
+        || !trace.table_exists("TARGET_INFO_CUDA_CONTEXT_INFO")
+    {
+        return Ok(());
+    }
+    let sql = format!(
+        r#"
+        CREATE TEMP TABLE {RESIDENT_LAUNCHER_TABLE} AS
+        WITH ranked AS (
+            SELECT
+                q.process_id,
+                q.device_id,
+                q.context_id,
+                q.correlation_id,
+                q.start_ns AS replay_start_ns,
+                CAST(r.rowid AS BIGINT) AS launcher_rowid,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        q.process_id,
+                        q.device_id,
+                        q.context_id,
+                        q.correlation_id,
+                        q.start_ns
+                    ORDER BY
+                        CASE WHEN COALESCE(s.value, '') LIKE 'cudaGraphLaunch%'
+                             THEN 0 ELSE 1 END ASC,
+                        CASE WHEN r.start <= q.start_ns THEN 0 ELSE 1 END ASC,
+                        ABS(r.start - q.start_ns) ASC,
+                        r.rowid ASC
+                ) AS candidate_rank
+            FROM {RESIDENT_REPLAY_SUMMARY_TABLE} q
+            JOIN nsight.TARGET_INFO_CUDA_CONTEXT_INFO c
+              ON CAST(c.processId AS BIGINT) = q.process_id
+             AND CAST(c.deviceId AS INTEGER) = q.device_id
+             AND CAST(c.contextId AS BIGINT) = q.context_id
+            JOIN nsight.CUPTI_ACTIVITY_KIND_RUNTIME r
+              ON CAST(((r.globalTid >> 24) & 16777215) AS BIGINT) = q.process_id
+             AND CAST(r.correlationId AS BIGINT) = q.correlation_id
+            LEFT JOIN nsight.StringIds s ON r.nameId = s.id
+        )
+        SELECT
+            process_id,
+            device_id,
+            context_id,
+            correlation_id,
+            replay_start_ns,
+            launcher_rowid
+        FROM ranked
+        WHERE candidate_rank = 1
+        ORDER BY process_id, device_id, context_id, correlation_id, replay_start_ns
+        "#
+    );
+    trace.conn().execute_batch(&sql).map_err(|source| {
+        NsysQueryError::sql_query("graph-replays", "resident launcher build", source)
+    })
 }
 
 fn hydrate_launchers(
@@ -915,6 +1338,145 @@ fn load_node_events(
         "#
     );
     hydrate_node_events(trace.conn(), &sql, &params)
+}
+
+fn load_resident_decomposition(
+    trace: &Trace,
+    replays: &[ReplaySummary],
+    top_nodes_limit: usize,
+) -> NsysQueryResult<Option<ReplayDecomposition>> {
+    if replays.is_empty()
+        || !resident_table_available(trace, RESIDENT_BUSY_TABLE)
+        || !resident_table_available(trace, RESIDENT_NODE_AGGREGATE_TABLE)
+    {
+        return Ok(None);
+    }
+    let (selected_replays, mut params) = selected_replays_cte(replays);
+    let busy_sql = format!(
+        "WITH {selected_replays} \
+         SELECT \
+            q.process_id, q.device_id, q.context_id, q.correlation_id, \
+            q.replay_start_ns, b.busy_ns \
+         FROM selected_replays q \
+         JOIN {RESIDENT_BUSY_TABLE} b \
+           ON b.process_id = q.process_id \
+          AND b.device_id = q.device_id \
+          AND b.context_id = q.context_id \
+          AND b.correlation_id = q.correlation_id \
+          AND b.replay_start_ns = q.replay_start_ns"
+    );
+    let busy_rows = crate::query_sql::exec::query_rows(
+        trace.conn(),
+        &busy_sql,
+        &params,
+        crate::query_sql::exec::GRAPH_REPLAYS_NODE_EVENT,
+        |row| Ok((replay_selection_row(row)?, row.get::<_, i64>("busy_ns")?)),
+    )?;
+    let mut decomposition = replays
+        .iter()
+        .map(|replay| (replay.selection(), (0, Vec::new())))
+        .collect::<HashMap<_, _>>();
+    for (selection, busy) in busy_rows {
+        if let Some((resident_busy, _)) = decomposition.get_mut(&selection) {
+            *resident_busy = busy;
+        }
+    }
+
+    params.push(Value::BigInt(top_nodes_limit as i64));
+    let node_sql = format!(
+        r#"
+        WITH {selected_replays},
+        ranked AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        process_id,
+                        device_id,
+                        context_id,
+                        correlation_id,
+                        replay_start_ns
+                    ORDER BY
+                        sum_ns DESC,
+                        max_ns DESC,
+                        start_ns ASC,
+                        graph_node_id ASC
+                ) AS node_rank
+            FROM {RESIDENT_NODE_AGGREGATE_TABLE}
+        )
+        SELECT
+            q.process_id,
+            q.device_id,
+            q.context_id,
+            q.correlation_id,
+            q.replay_start_ns,
+            n.graph_node_id,
+            n.kind,
+            n.name,
+            n.count,
+            n.stream_count,
+            n.start_ns,
+            n.end_ns,
+            n.sum_ns,
+            n.max_ns,
+            n.replay_wall_ns
+        FROM selected_replays q
+        JOIN ranked n
+          ON n.process_id = q.process_id
+         AND n.device_id = q.device_id
+         AND n.context_id = q.context_id
+         AND n.correlation_id = q.correlation_id
+         AND n.replay_start_ns = q.replay_start_ns
+        WHERE n.node_rank <= ?
+        ORDER BY
+            q.process_id,
+            q.device_id,
+            q.context_id,
+            q.correlation_id,
+            q.replay_start_ns,
+            n.node_rank
+        "#
+    );
+    let node_rows = crate::query_sql::exec::query_rows(
+        trace.conn(),
+        &node_sql,
+        &params,
+        crate::query_sql::exec::GRAPH_REPLAYS_NODE_EVENT,
+        |row| {
+            let replay_wall_ns = row.get::<_, i64>("replay_wall_ns")?;
+            let start_ns = row.get::<_, i64>("start_ns")?;
+            let end_ns = row.get::<_, i64>("end_ns")?;
+            let sum_ns = row.get::<_, i64>("sum_ns")?;
+            Ok((
+                replay_selection_row(row)?,
+                GraphReplayNode {
+                    graph_node_id: row.get("graph_node_id")?,
+                    kind: row.get("kind")?,
+                    name: row.get("name")?,
+                    count: row.get("count")?,
+                    stream_count: row.get("stream_count")?,
+                    start_ns,
+                    end_ns,
+                    wall_ns: end_ns - start_ns,
+                    sum_ns,
+                    max_ns: row.get("max_ns")?,
+                    sum_share_of_replay_wall: if replay_wall_ns > 0 {
+                        sum_ns as f64 / replay_wall_ns as f64
+                    } else {
+                        0.0
+                    },
+                },
+            ))
+        },
+    )?;
+    for (selection, node) in node_rows {
+        decomposition
+            .entry(selection)
+            .or_insert_with(|| (0, Vec::new()))
+            .1
+            .push(node);
+    }
+    Ok(Some(decomposition))
 }
 
 fn hydrate_node_events(

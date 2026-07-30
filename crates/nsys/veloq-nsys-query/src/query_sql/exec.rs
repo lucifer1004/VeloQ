@@ -41,6 +41,7 @@ pub(crate) const NVTX_REVERSE_COLD_FALLBACK: SqlLabel =
     SqlLabel::new("reverse NVTX attribution", "cold fallback");
 pub(crate) const NVTX_REVERSE_GPU_LOOKUP: SqlLabel =
     SqlLabel::new("reverse NVTX attribution", "GPU lookup");
+pub(crate) const RESIDENT_INTERVAL: SqlLabel = SqlLabel::new("resident intervals", "interval load");
 pub(crate) const STATS_AGGREGATE: SqlLabel = SqlLabel::new("stats", "aggregate");
 pub(crate) const STATS_BY_SIZE_AGGREGATE: SqlLabel = SqlLabel::new("stats-by-size", "aggregate");
 pub(crate) const TIMELINE_AGGREGATE: SqlLabel = SqlLabel::new("timeline", "aggregate");

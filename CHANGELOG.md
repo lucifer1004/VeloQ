@@ -15,11 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   responses, admission, cancellation, idle expiry, freshness invalidation, and
   result-first/cost-aware session eviction are bounded by explicit daemon
   resource settings.
-- **Daemon-resident NSys interval reuse** — eligible NSys sessions register one
-  disposable, process-aware interval view over the existing fresh
-  `gpu-work-events` sidecar. Changing `timeline`, `concurrency`, and `gaps`
-  requests can reuse that normalized evidence while stale, missing, or
-  ineligible sidecars retain the established source/sidecar path.
+- **Daemon-resident NSys interval index** — after a second changing scan miss,
+  eligible NSys sessions build one disposable, process-partitioned index over
+  the existing fresh `gpu-work-events` sidecar. Start frontiers, compact gap
+  references, and activity summaries accelerate varying `timeline`,
+  `concurrency`, and `gaps` requests while one-off, stale, missing,
+  over-capacity, or ineligible inputs retain the established path.
+- **Daemon-resident NSys graph replay reuse** — graph replay sessions
+  materialize process-qualified summaries, launchers, busy-time decomposition,
+  and ranked node aggregates once. Changing windows, sorting, limits, and NVTX
+  scopes reuse session-local evidence without creating persistent artifacts.
 - **Daemon benchmark gate** — extend the leak-safe local benchmark to separate
   one-shot execution, resident construction, varying-argument cache misses,
   exact-response hits, and optional session-eviction rebuilds while reporting
@@ -30,11 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Source execution boundary** — render source-owned JSON, CSV, table, and
   contextual errors into transport-neutral buffers so one-shot and daemon
   execution share the same typed dispatch and byte-for-byte output contract.
+- **Daemon private framing** — replace newline-delimited JSON frames with a
+  version-coupled, length-prefixed binary protocol. Bounded stdout and stderr
+  chunks retain their native bytes instead of expanding each byte into a JSON
+  number.
 - **Daemon default resource budgets** — default to one active query, use the
   shared host-aware query-worker cap, and derive the resident-memory ceiling
   from the effective host or cgroup memory capacity. A single active query
   retains its source engine's machine-aware memory default; an explicit query
   memory ceiling remains available and is required when enabling concurrency.
+- **Reuse-aware exact response admission** — exact responses that fit unused
+  resident capacity remain immediately reusable. A first successful result
+  that would require pressure eviction retains only small, accounted key
+  evidence; the same exact query must succeed again before it may displace
+  colder results or idle sessions under the existing eviction order.
 
 ### Fixed
 
@@ -49,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   private-protocol chunks, preserve known source failures as completed CLI
   outcomes, cache only successful responses, and account retained exact keys
   and payloads.
+- **Daemon raw output routing** — enable resident routing for NSys
+  `ncu-command`, including byte-identical `--print` stdout and pipe-safe
+  handled errors on stderr.
 
 ## [0.5.1] - 2026-07-28
 

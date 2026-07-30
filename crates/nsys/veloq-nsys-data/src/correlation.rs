@@ -326,10 +326,10 @@ impl CorrelationIndex {
         let mut current_id = None;
         let mut current_group = CorrelatedRowIds::default();
         for item in items {
-            if current_id != Some(item.syn_id) {
-                if let Some(id) = current_id.replace(item.syn_id) {
-                    self.groups.insert(id, std::mem::take(&mut current_group));
-                }
+            if current_id != Some(item.syn_id)
+                && let Some(id) = current_id.replace(item.syn_id)
+            {
+                self.groups.insert(id, std::mem::take(&mut current_group));
             }
             current_group.push(item);
         }

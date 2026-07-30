@@ -1,6 +1,6 @@
 //! Differential coverage for the daemon session's disposable GPU interval
-//! view. The same resident `Trace` first exercises the established paths,
-//! then registers the TEMP view and repeats changing-argument scan queries.
+//! index. The same resident `Trace` first exercises the established paths,
+//! then builds the index and repeats changing-argument scan queries.
 
 mod fixture;
 
@@ -15,14 +15,21 @@ use veloq_core::{SortSpec, artifact_dir_for, time::TimeWindow};
 use veloq_nsys_data::Trace;
 use veloq_nsys_query::{
     EventKind, KindFilter,
-    concurrency::{ConcurrencyRequest, run_with_trace as run_concurrency},
-    gaps::{GapsRequest, run_with_trace as run_gaps},
+    concurrency::{
+        ConcurrencyRequest, run_with_index as run_indexed_concurrency,
+        run_with_trace as run_concurrency,
+    },
+    gaps::{GapScope, GapsRequest, run_with_index as run_indexed_gaps, run_with_trace as run_gaps},
     resident_intervals,
-    timeline::{TimelineRequest, run_with_trace as run_timeline},
+    timeline::{
+        TimelineRequest, run_with_index as run_indexed_timeline, run_with_trace as run_timeline,
+    },
 };
 
+const UNBOUNDED_TEST_CAPACITY_BYTES: u64 = u64::MAX;
+
 #[test]
-fn resident_view_reuses_one_exact_process_qualified_interval_set() -> Result<()> {
+fn resident_index_reuses_one_exact_process_qualified_interval_set() -> Result<()> {
     let fixture = fixture::minimal_gpu()?;
     let trace = Trace::open(fixture.path())?;
 
@@ -60,26 +67,28 @@ fn resident_view_reuses_one_exact_process_qualified_interval_set() -> Result<()>
     veloq_nsys_data::gpu_work_events::ensure_sidecar(&trace)?;
     let artifact_root = artifact_dir_for(trace.path());
     let artifacts_before = relative_files(&artifact_root)?;
-    let first = resident_intervals::ensure(&trace)?
-        .context("fixture intervals should be representable by the resident view")?;
-    let second = resident_intervals::ensure(&trace)?
-        .context("the already-built resident view should remain available")?;
-    assert_eq!(
-        first, second,
-        "ensure must reuse the same session-local view"
+    assert!(
+        resident_intervals::build(&trace, 0)?.is_none(),
+        "an index that cannot fit the configured resident capacity must be bypassed"
     );
-    assert!(first.accounted_bytes > 0);
+    let index = resident_intervals::build(&trace, UNBOUNDED_TEST_CAPACITY_BYTES)?
+        .context("fixture intervals should be representable by the resident index")?;
+    assert!(index.retained_memory_estimate_bytes() > 0);
 
     assert_eq!(
-        serde_json::to_value(run_timeline(&trace, timeline_request)?)?,
+        serde_json::to_value(run_indexed_timeline(&trace, &index, timeline_request)?)?,
         expected_timeline
     );
     assert_eq!(
-        serde_json::to_value(run_concurrency(&trace, concurrency_request)?)?,
+        serde_json::to_value(run_indexed_concurrency(
+            &trace,
+            &index,
+            concurrency_request
+        )?)?,
         expected_concurrency
     );
     assert_eq!(
-        serde_json::to_value(run_gaps(&trace, gaps_request)?)?,
+        serde_json::to_value(run_indexed_gaps(&trace, &index, gaps_request)?)?,
         expected_gaps
     );
     assert_eq!(
@@ -87,6 +96,130 @@ fn resident_view_reuses_one_exact_process_qualified_interval_set() -> Result<()>
         artifacts_before,
         "the resident view must not publish a persistent artifact"
     );
+    Ok(())
+}
+
+#[test]
+fn resident_index_preserves_multistream_windows_and_all_gap_scopes() -> Result<()> {
+    let fixture = fixture::concurrency_overlap()?;
+    let trace = Trace::open(fixture.path())?;
+    let index = build_index(&trace)?;
+
+    for request in [
+        TimelineRequest {
+            interval_ns: 25_000_000,
+            limit: 3,
+            ..Default::default()
+        },
+        TimelineRequest {
+            interval_ns: 17_000_000,
+            kinds: KindFilter::Only(vec![EventKind::Kernel]),
+            time_window: Some(TimeWindow::parse("@25ms-@105ms")?),
+            process_id: Some(12345),
+            device: Some(0),
+            stream: Some(8),
+            limit: 2,
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            serde_json::to_value(run_indexed_timeline(&trace, &index, request.clone())?)?,
+            serde_json::to_value(run_timeline(&trace, request)?)?
+        );
+    }
+
+    for request in [
+        ConcurrencyRequest::default(),
+        ConcurrencyRequest {
+            process_id: Some(12345),
+            device: Some(0),
+            time_window: Some(TimeWindow::parse("@30ms-@90ms")?),
+            limit: 1,
+        },
+        ConcurrencyRequest {
+            process_id: None,
+            device: None,
+            time_window: Some(TimeWindow::parse("@200ms-@300ms")?),
+            limit: 10,
+        },
+    ] {
+        assert_eq!(
+            serde_json::to_value(run_indexed_concurrency(&trace, &index, request.clone())?)?,
+            serde_json::to_value(run_concurrency(&trace, request)?)?
+        );
+    }
+
+    for request in [
+        GapsRequest {
+            min_ns: 1,
+            scope: GapScope::Device,
+            sort: Some(SortSpec::parse("start:asc")?),
+            ..Default::default()
+        },
+        GapsRequest {
+            min_ns: 1,
+            scope: GapScope::Stream,
+            process_id: Some(12345),
+            device: Some(0),
+            stream: Some(8),
+            time_window: Some(TimeWindow::parse("@30ms-@120ms")?),
+            sort: Some(SortSpec::parse("duration:desc,start:asc")?),
+            limit: 1,
+        },
+        GapsRequest {
+            min_ns: 1,
+            scope: GapScope::Trace,
+            process_id: Some(12345),
+            sort: Some(SortSpec::parse("start:desc")?),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(
+            serde_json::to_value(run_indexed_gaps(&trace, &index, request.clone())?)?,
+            serde_json::to_value(run_gaps(&trace, request)?)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn resident_index_preserves_multidevice_and_process_private_scopes() -> Result<()> {
+    for fixture in [
+        fixture::concurrency_two_devices()?,
+        fixture::process_private_cuda_identity_collision()?,
+    ] {
+        let trace = Trace::open(fixture.path())?;
+        let index = build_index(&trace)?;
+        for process_id in [None, Some(1001), Some(2002), Some(12345)] {
+            let concurrency = ConcurrencyRequest {
+                process_id,
+                device: None,
+                time_window: None,
+                limit: 10,
+            };
+            assert_eq!(
+                serde_json::to_value(run_indexed_concurrency(
+                    &trace,
+                    &index,
+                    concurrency.clone()
+                )?)?,
+                serde_json::to_value(run_concurrency(&trace, concurrency)?)?
+            );
+
+            let gaps = GapsRequest {
+                min_ns: 1,
+                scope: GapScope::Trace,
+                process_id,
+                sort: Some(SortSpec::single("start")),
+                limit: 10,
+                ..Default::default()
+            };
+            assert_eq!(
+                serde_json::to_value(run_indexed_gaps(&trace, &index, gaps.clone())?)?,
+                serde_json::to_value(run_gaps(&trace, gaps)?)?
+            );
+        }
+    }
     Ok(())
 }
 
@@ -113,8 +246,8 @@ fn unrepresentable_rows_leave_the_established_query_path_active() -> Result<()> 
     )?;
 
     assert!(
-        resident_intervals::ensure(&trace)?.is_none(),
-        "unresolved process ownership or a non-positive interval must reject the whole view"
+        resident_intervals::build(&trace, UNBOUNDED_TEST_CAPACITY_BYTES)?.is_none(),
+        "unresolved process ownership or a non-positive interval must reject the whole index"
     );
     assert_eq!(
         serde_json::to_value(run_timeline(&trace, request)?)?,
@@ -131,6 +264,12 @@ fn relative_files(root: &Path) -> Result<BTreeSet<PathBuf>> {
     }
     collect_relative_files(root, root, &mut files)?;
     Ok(files)
+}
+
+fn build_index(trace: &Trace) -> Result<resident_intervals::ResidentIntervalIndex> {
+    veloq_nsys_data::gpu_work_events::ensure_sidecar(trace)?;
+    resident_intervals::build(trace, UNBOUNDED_TEST_CAPACITY_BYTES)?
+        .context("fixture intervals should build a resident index")
 }
 
 fn collect_relative_files(

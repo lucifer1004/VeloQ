@@ -1,0 +1,50 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-018"
+title = "Remove daemon output byte-array amplification"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011:C-PROTOCOL",
+    "RFC-0011:C-EQUIVALENCE",
+    "RFC-0011:C-DIAGNOSTICS",
+    "RFC-0011:C-ROUTING",
+    "ADR-0002",
+]
+
+[content]
+description = "Remove JSON numeric-array amplification from the private local-daemon output path so large stdout and stderr payloads are transported with bounded framing and byte-exact CLI projection while retaining the existing compatibility and execution-ownership guarantees."
+
+[[content.acceptance_criteria]]
+text = "The version-coupled private protocol transports bounded stdout and stderr chunks without serializing every payload byte as a JSON number."
+status = "done"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "Daemon-routed JSON, CSV, table, raw stdout, handled-error, and stderr projections remain byte-identical to one-shot execution for empty, boundary-sized, multi-chunk, and arbitrary binary-safe payloads."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Compatibility negotiation, pre-acceptance rejection, post-acceptance ownership, terminal completion, indeterminate execution, and auto versus required fallback behavior remain correct across the protocol change."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Prof-profile transport measurements report elapsed time, encoded byte volume, and peak retained transport memory for representative small, approximately 1 MiB, and tens-of-MiB payloads before and after the change."
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "The transport encoder and decoder process chunks with bounded per-frame scratch memory instead of materializing an amplified wire representation; source execution and admitted exact-response storage remain outside this transport-memory claim."
+status = "done"
+category = "changed"
+
+[verification]
+required_guards = [
+    "GUARD-DAEMON-CONTRACT",
+    "GUARD-CLI-IO-CONTRACT",
+]

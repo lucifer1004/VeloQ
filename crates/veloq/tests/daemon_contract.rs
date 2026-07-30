@@ -662,6 +662,47 @@ fn core_nsys_daemon_commands_match_one_shot_outputs() -> Result<()> {
 }
 
 #[test]
+fn daemon_raw_stdout_and_handled_error_stderr_match_one_shot() -> Result<()> {
+    let daemon = DaemonFixture::new()?;
+    let (_trace_root, trace) = build_minimal_trace()?;
+    let trace_path = trace.to_string_lossy().into_owned();
+    let (start, _) = daemon.json(&["daemon", "start", "--timeout-ms", "5000"])?;
+    assert!(start.status.success());
+
+    for command in [
+        vec!["ncu-command", trace_path.as_str(), "kernel:1", "--print"],
+        vec!["ncu-command", trace_path.as_str(), "runtime:1", "--print"],
+    ] {
+        let one_shot = daemon.run(
+            &command
+                .iter()
+                .copied()
+                .chain(["--daemon", "off"])
+                .collect::<Vec<_>>(),
+        )?;
+        let routed = daemon.run(
+            &command
+                .iter()
+                .copied()
+                .chain(["--daemon", "required"])
+                .collect::<Vec<_>>(),
+        )?;
+        assert_eq!(
+            routed.status.code(),
+            one_shot.status.code(),
+            "status differs for {command:?}\none-shot stdout={}\none-shot stderr={}\nrouted stdout={}\nrouted stderr={}",
+            String::from_utf8_lossy(&one_shot.stdout),
+            String::from_utf8_lossy(&one_shot.stderr),
+            String::from_utf8_lossy(&routed.stdout),
+            String::from_utf8_lossy(&routed.stderr),
+        );
+        assert_eq!(routed.stdout, one_shot.stdout);
+        assert_eq!(routed.stderr, one_shot.stderr);
+    }
+    Ok(())
+}
+
+#[test]
 fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
     let daemon = DaemonFixture::new()?;
     let trace = nsys_fixture::minimal_gpu()?;
@@ -692,8 +733,8 @@ fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
         .context("daemon status must identify its resident session")?
         .to_string();
 
-    let mut first_scan_seen = false;
-    for command in [
+    let mut first_scan_memory = None;
+    for (command_index, command) in [
         vec![
             "timeline",
             trace_path.as_str(),
@@ -730,7 +771,17 @@ fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
             "--limit",
             "2",
         ],
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let one_shot = daemon.run(
+            &command
+                .iter()
+                .copied()
+                .chain(["--daemon", "off"])
+                .collect::<Vec<_>>(),
+        )?;
         let output = daemon.run(
             &command
                 .iter()
@@ -744,6 +795,15 @@ fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert_eq!(output.status.code(), one_shot.status.code());
+        assert_eq!(
+            output.stdout, one_shot.stdout,
+            "resident scan stdout differs for {command:?}"
+        );
+        assert_eq!(
+            output.stderr, one_shot.stderr,
+            "resident scan stderr differs for {command:?}"
+        );
         let (_, snapshot) = daemon.json(&["daemon", "status", "--timeout-ms", "2000"])?;
         let current = session_non_response_memory(&snapshot)?;
         assert_eq!(
@@ -753,12 +813,31 @@ fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
             Some(session_id.as_str()),
             "changing scan commands must reuse the freshness-equivalent session"
         );
-        if !first_scan_seen {
+        if command_index == 0 {
             assert!(
                 current > before,
                 "the first scan query must account for retained query-engine state"
             );
-            first_scan_seen = true;
+            first_scan_memory = Some(current);
+            let exact = daemon.run(
+                &command
+                    .iter()
+                    .copied()
+                    .chain(["--daemon", "required"])
+                    .collect::<Vec<_>>(),
+            )?;
+            assert!(exact.status.success());
+            let (_, after_exact) = daemon.json(&["daemon", "status", "--timeout-ms", "2000"])?;
+            assert_eq!(
+                session_non_response_memory(&after_exact)?,
+                current,
+                "an exact hit must not build the varying-query interval index"
+            );
+        } else if command_index == 1 {
+            assert!(
+                current > first_scan_memory.context("first scan memory missing")?,
+                "the first changing scan miss must build and account the resident interval index"
+            );
         }
     }
 
@@ -767,8 +846,116 @@ fn daemon_reuses_one_session_across_changing_scan_queries() -> Result<()> {
         snapshot
             .pointer("/data/rows/0/usage/cache_hits")
             .and_then(Value::as_u64),
-        Some(0),
-        "changing commands must not be mistaken for exact response hits"
+        Some(1),
+        "only the deliberate exact repeat may count as a hit; changing commands remain misses"
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_graph_replays_matches_one_shot_across_varying_queries() -> Result<()> {
+    let daemon = DaemonFixture::new()?;
+    let trace = nsys_fixture::with_graph_nodes()?;
+    let trace_path = trace.path().to_string_lossy().into_owned();
+    let (start, _) = daemon.json(&["daemon", "start", "--timeout-ms", "5000"])?;
+    assert!(start.status.success());
+
+    let commands = [
+        vec![
+            "graph-replays",
+            trace_path.as_str(),
+            "--process",
+            "12345",
+            "--device",
+            "0",
+            "--sort",
+            "start:asc",
+            "--limit",
+            "3",
+        ],
+        vec![
+            "graph-replays",
+            trace_path.as_str(),
+            "--process",
+            "12345",
+            "--device",
+            "0",
+            "--from",
+            "@200ms",
+            "--to",
+            "@216ms",
+            "--sort",
+            "sum:desc",
+            "--top-nodes",
+            "1",
+            "--limit",
+            "2",
+        ],
+        vec![
+            "graph-replays",
+            trace_path.as_str(),
+            "--process",
+            "12345",
+            "--device",
+            "0",
+            "--nvtx",
+            "frame",
+            "--limit",
+            "3",
+        ],
+    ];
+
+    for command in &commands {
+        let one_shot = daemon.run(
+            &command
+                .iter()
+                .copied()
+                .chain(["--daemon", "off"])
+                .collect::<Vec<_>>(),
+        )?;
+        let routed = daemon.run(
+            &command
+                .iter()
+                .copied()
+                .chain(["--daemon", "required"])
+                .collect::<Vec<_>>(),
+        )?;
+        assert!(
+            one_shot.status.success(),
+            "one-shot graph query failed: stdout={}\nstderr={}",
+            String::from_utf8_lossy(&one_shot.stdout),
+            String::from_utf8_lossy(&one_shot.stderr)
+        );
+        assert_eq!(routed.status.code(), one_shot.status.code());
+        assert_eq!(routed.stdout, one_shot.stdout);
+        assert_eq!(routed.stderr, one_shot.stderr);
+    }
+
+    let (_, before_exact) = daemon.json(&["daemon", "status", "--timeout-ms", "2000"])?;
+    assert_eq!(
+        before_exact
+            .pointer("/data/rows/0/usage/cache_hits")
+            .and_then(Value::as_u64),
+        Some(0)
+    );
+
+    let repeated = commands
+        .last()
+        .context("graph replay command set must not be empty")?;
+    let repeat = daemon.run(
+        &repeated
+            .iter()
+            .copied()
+            .chain(["--daemon", "required"])
+            .collect::<Vec<_>>(),
+    )?;
+    assert!(repeat.status.success());
+    let (_, after_exact) = daemon.json(&["daemon", "status", "--timeout-ms", "2000"])?;
+    assert_eq!(
+        after_exact
+            .pointer("/data/rows/0/usage/cache_hits")
+            .and_then(Value::as_u64),
+        Some(1)
     );
     Ok(())
 }
@@ -902,6 +1089,8 @@ fn build_minimal_trace() -> Result<(TempDir, PathBuf)> {
         r#"
         CREATE TABLE StringIds (id BIGINT PRIMARY KEY, value TEXT);
         CREATE TABLE META_DATA_EXPORT (name TEXT, value TEXT);
+        CREATE TABLE META_DATA_CAPTURE (name TEXT, value TEXT);
+        CREATE TABLE PROCESSES (globalPid BIGINT, pid BIGINT, name TEXT);
         CREATE TABLE TARGET_INFO_CUDA_CONTEXT_INFO (
             deviceId BIGINT, contextId BIGINT, processId BIGINT
         );
@@ -936,6 +1125,20 @@ fn build_minimal_trace() -> Result<(TempDir, PathBuf)> {
             "0",
         ],
     )?;
+    connection.execute(
+        "INSERT INTO PROCESSES (globalPid, pid, name) VALUES (?, ?, ?)",
+        params![12345_i64, 12345_i64, "/opt/work/app"],
+    )?;
+    for (name, value) in [
+        ("PROCESS_0:COMMAND", "/usr/bin/app"),
+        ("PROCESS_0:ARGUMENT_0", "--size"),
+        ("PROCESS_0:WORKING_DIR", "/workspace/case"),
+    ] {
+        connection.execute(
+            "INSERT INTO META_DATA_CAPTURE (name, value) VALUES (?, ?)",
+            params![name, value],
+        )?;
+    }
     connection.execute(
         "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO \
          (deviceId, contextId, processId) VALUES (?, ?, ?)",
