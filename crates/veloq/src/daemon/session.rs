@@ -3,13 +3,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{Pid, ProcessesToUpdate, System};
 use veloq_core::{
     CancellationToken, OutputFormat, ProfileSession, SourceExecution, SourceRunResult,
 };
 
 use super::config::DaemonLimits;
 use super::protocol::SemanticInvocationKey;
+use super::state::process_resident_memory;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSpec {
@@ -1316,18 +1316,11 @@ fn snapshot(state: &State) -> DaemonSnapshot {
                 .sum(),
             cache_hits: state.cache_hits,
             cache_misses: state.cache_misses,
-            process_resident_memory_bytes: process_resident_memory(),
+            process_resident_memory_bytes: process_resident_memory(std::process::id()),
         },
         sessions,
         evictions: state.evictions.clone(),
     }
-}
-
-fn process_resident_memory() -> Option<u64> {
-    let pid = Pid::from_u32(std::process::id());
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system.process(pid).map(|process| process.memory())
 }
 
 #[cfg(test)]

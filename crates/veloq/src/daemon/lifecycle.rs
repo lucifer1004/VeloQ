@@ -18,7 +18,7 @@ use super::runtime;
 use super::session::{DaemonSnapshot, DaemonUsage, EvictionCounters, SessionStatus};
 use super::state::{
     OwnerPhase, OwnerRecord, RuntimePaths, create_owner, new_owner_token, process_matches,
-    read_owner, remove_owner, remove_stale_endpoint,
+    process_resident_memory, read_owner, remove_owner, remove_stale_endpoint,
 };
 use super::{DAEMON_SOURCE, DaemonError, DaemonResult, emit_error};
 
@@ -536,12 +536,4 @@ fn wait_step(deadline: Instant) -> DaemonResult<()> {
     let remaining = remaining(deadline)?;
     thread::sleep(remaining.min(LIFECYCLE_POLL_INTERVAL));
     Ok(())
-}
-
-fn process_resident_memory(process_id: u32) -> Option<u64> {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-    let pid = Pid::from_u32(process_id);
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system.process(pid).map(|process| process.memory())
 }

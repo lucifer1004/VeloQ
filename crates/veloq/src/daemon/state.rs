@@ -2,6 +2,8 @@ use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
@@ -10,7 +12,8 @@ use interprocess::local_socket::GenericFilePath;
 use interprocess::local_socket::GenericNamespaced;
 use interprocess::local_socket::{Name, prelude::*};
 use serde::{Deserialize, Serialize};
-use sysinfo::{Pid, ProcessesToUpdate, System};
+#[cfg(not(target_os = "linux"))]
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use super::config::DaemonLimits;
 use super::protocol::PROTOCOL_VERSION;
@@ -22,6 +25,8 @@ const STOPPING_FILE_PREFIX: &str = ".owner-stopping-v1-";
 const SOCKET_FILE_PREFIX: &str = "daemon-v1-";
 const MIN_OWNER_TOKEN_BYTES: usize = 32;
 const MAX_OWNER_TOKEN_BYTES: usize = 128;
+#[cfg(target_os = "linux")]
+const PROC_STAT_START_TIME_INDEX_AFTER_COMM: usize = 19;
 
 #[derive(Debug, Clone)]
 pub struct RuntimePaths {
@@ -339,12 +344,32 @@ pub fn remove_stale_endpoint(paths: &RuntimePaths, owner_token: &str) -> DaemonR
 }
 
 pub fn process_matches(record: &OwnerRecord) -> bool {
-    let pid = Pid::from_u32(record.process_id);
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system
-        .process(pid)
-        .is_some_and(|process| process.start_time() == record.process_start_time)
+    process_start_time(record.process_id) == Some(record.process_start_time)
+}
+
+pub fn process_resident_memory(process_id: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let statm = fs::read_to_string(format!("/proc/{process_id}/statm")).ok()?;
+        let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+        let page_size = unsafe {
+            // SAFETY: sysconf only reads the process-wide page-size constant.
+            libc::sysconf(libc::_SC_PAGESIZE)
+        };
+        let page_size = u64::try_from(page_size).ok().filter(|size| *size > 0)?;
+        return resident_pages.checked_mul(page_size);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let pid = Pid::from_u32(process_id);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_memory().without_tasks(),
+        );
+        system.process(pid).map(|process| process.memory())
+    }
 }
 
 pub fn new_owner_token() -> DaemonResult<String> {
@@ -362,13 +387,56 @@ pub fn new_owner_token() -> DaemonResult<String> {
 }
 
 fn current_process_start_time() -> DaemonResult<u64> {
-    let pid = Pid::from_u32(std::process::id());
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-    system
-        .process(pid)
-        .map(|process| process.start_time())
+    process_start_time(std::process::id())
         .ok_or_else(|| DaemonError::lifecycle("cannot establish current process identity"))
+}
+
+fn process_start_time(process_id: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
+        let fields = stat.rsplit_once(") ")?.1;
+        // `fields` starts at proc stat field 3; field 22 is the process start time.
+        let start_ticks = fields
+            .split_whitespace()
+            .nth(PROC_STAT_START_TIME_INDEX_AFTER_COMM)?
+            .parse::<u64>()
+            .ok()?;
+        let (boot_time, clock_ticks_per_second) = *linux_process_clock()?;
+        // Preserve sysinfo's historical seconds-since-epoch owner-record representation.
+        return Some(boot_time.saturating_add(start_ticks.checked_div(clock_ticks_per_second)?));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let pid = Pid::from_u32(process_id);
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        system.process(pid).map(|process| process.start_time())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_clock() -> Option<&'static (u64, u64)> {
+    static CLOCK: OnceLock<Option<(u64, u64)>> = OnceLock::new();
+    CLOCK
+        .get_or_init(|| {
+            let proc_stat = fs::read_to_string("/proc/stat").ok()?;
+            let boot_time = proc_stat.lines().find_map(|line| {
+                line.strip_prefix("btime ")
+                    .and_then(|value| value.parse::<u64>().ok())
+            })?;
+            let clock_ticks_per_second = unsafe {
+                // SAFETY: sysconf only reads the process-wide clock-tick constant.
+                libc::sysconf(libc::_SC_CLK_TCK)
+            };
+            let clock_ticks_per_second = u64::try_from(clock_ticks_per_second).ok()?;
+            (clock_ticks_per_second > 0).then_some((boot_time, clock_ticks_per_second))
+        })
+        .as_ref()
 }
 
 fn write_record(file: &mut File, record: &OwnerRecord) -> DaemonResult<()> {
@@ -510,4 +578,51 @@ fn validate_private_file(metadata: &fs::Metadata) -> DaemonResult<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_process_identity_rejects_a_reused_start_time() -> DaemonResult<()> {
+        let start_time = current_process_start_time()?;
+        let mut record = OwnerRecord {
+            owner_format: 1,
+            token: "0".repeat(MIN_OWNER_TOKEN_BYTES),
+            phase: OwnerPhase::Ready,
+            process_id: std::process::id(),
+            process_start_time: start_time,
+            veloq_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: PROTOCOL_VERSION.to_string(),
+            limits: DaemonLimits::default(),
+        };
+        assert!(process_matches(&record));
+        record.process_start_time = start_time.saturating_add(1);
+        assert!(!process_matches(&record));
+        Ok(())
+    }
+
+    #[test]
+    fn current_process_resident_memory_is_observable() {
+        assert!(process_resident_memory(std::process::id()).is_some_and(|bytes| bytes > 0));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_process_start_time_matches_existing_owner_record_units() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+        let pid = Pid::from_u32(std::process::id());
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().without_tasks(),
+        );
+        assert_eq!(
+            process_start_time(std::process::id()),
+            system.process(pid).map(|process| process.start_time())
+        );
+    }
 }

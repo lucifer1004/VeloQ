@@ -5,14 +5,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{
-    ConnectOptions, ListenerNonblockingMode, ListenerOptions, prelude::*,
-};
+use interprocess::local_socket::{ConnectOptions, ListenerOptions, prelude::*};
 #[cfg(unix)]
 use interprocess::os::unix::local_socket::ListenerOptionsExt;
 use interprocess::{ConnectWaitMode, TryClone};
 #[cfg(windows)]
-use sysinfo::{Pid, ProcessesToUpdate, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use super::config::MAX_LIFECYCLE_TIMEOUT_MS;
 use super::protocol::{
@@ -29,7 +27,6 @@ use veloq_core::{
 };
 
 const CONNECTION_IO_TIMEOUT: Duration = Duration::from_secs(30);
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CLIENT_DISCONNECT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const LIFECYCLE_CONNECTION_RESERVE: u64 = 1;
 
@@ -114,21 +111,13 @@ pub fn serve(owner_token: &str, sources: &[Arc<dyn ProfileSource>]) -> DaemonRes
     let sources = Arc::new(sources.to_vec());
     let limiter = ConnectionLimiter::new(&ready.limits);
     let (stop_sender, stop_receiver) = mpsc::sync_channel(1);
-    listener
-        .set_nonblocking(ListenerNonblockingMode::Accept)
-        .map_err(|source| {
-            DaemonError::lifecycle(format!(
-                "cannot make daemon admission loop interruptible: {source}"
-            ))
-        })?;
 
     let shutdown_timeout = loop {
-        if let Ok(timeout) = stop_receiver.try_recv() {
-            break timeout;
-        }
-
         match listener.accept() {
             Ok(mut stream) => {
+                if let Ok(timeout) = stop_receiver.try_recv() {
+                    break timeout;
+                }
                 let Some(permit) = limiter.try_acquire() else {
                     log::debug!("daemon connection limit reached; dropping excess local client");
                     continue;
@@ -144,7 +133,7 @@ pub fn serve(owner_token: &str, sources: &[Arc<dyn ProfileSource>]) -> DaemonRes
                         handle_accepted_connection(&paths, &ready, &engine, &sources, &mut stream);
                     match action {
                         Ok(Some(timeout)) => {
-                            let _ = stop_sender.try_send(timeout);
+                            signal_shutdown(&stop_sender, &paths, &ready.token, timeout);
                         }
                         Ok(None) => {}
                         Err(source) => {
@@ -153,20 +142,22 @@ pub fn serve(owner_token: &str, sources: &[Arc<dyn ProfileSource>]) -> DaemonRes
                                 owner.token == ready.token && owner.phase == OwnerPhase::Stopping
                             });
                             if stopping {
-                                let _ = stop_sender.try_send(Duration::from_millis(
-                                    ready.limits.shutdown_grace_ms,
-                                ));
+                                signal_shutdown(
+                                    &stop_sender,
+                                    &paths,
+                                    &ready.token,
+                                    Duration::from_millis(ready.limits.shutdown_grace_ms),
+                                );
                             }
                         }
                     }
                 });
             }
-            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(ACCEPT_POLL_INTERVAL);
-            }
+            Err(source) if source.kind() == io::ErrorKind::Interrupted => continue,
             Err(source) => {
-                log::warn!("daemon local IPC accept failed: {source}");
-                std::thread::sleep(ACCEPT_POLL_INTERVAL);
+                return Err(DaemonError::lifecycle(format!(
+                    "daemon local IPC accept failed: {source}"
+                )));
             }
         }
     };
@@ -181,6 +172,19 @@ pub fn serve(owner_token: &str, sources: &[Arc<dyn ProfileSource>]) -> DaemonRes
     }
     remove_owner(&paths, owner_token)?;
     Ok(0)
+}
+
+fn signal_shutdown(
+    sender: &mpsc::SyncSender<Duration>,
+    paths: &RuntimePaths,
+    owner_token: &str,
+    timeout: Duration,
+) {
+    let _ = sender.try_send(timeout);
+    let Ok(name) = paths.socket_name(owner_token) else {
+        return;
+    };
+    let _ = ConnectOptions::new().name(name).connect_sync();
 }
 
 fn handle_accepted_connection(
@@ -941,7 +945,13 @@ fn peer_is_current_user(stream: &LocalSocketStream) -> DaemonResult<bool> {
     let self_pid = std::process::id();
     let pids = [Pid::from_u32(peer_pid), Pid::from_u32(self_pid)];
     let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&pids), true);
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&pids),
+        true,
+        ProcessRefreshKind::nothing()
+            .with_user(UpdateKind::Always)
+            .without_tasks(),
+    );
     let peer_user = system
         .process(pids[0])
         .and_then(|process| process.user_id());

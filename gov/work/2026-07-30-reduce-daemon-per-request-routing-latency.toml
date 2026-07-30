@@ -1,0 +1,39 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-015"
+title = "Reduce daemon per-request routing latency"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0011",
+    "ADR-0002",
+]
+
+[content]
+description = "Remove avoidable fixed latency from local daemon control and query routing, with a Linux hot path that preserves current-user endpoint isolation, live-owner validation, process-reuse protection, lifecycle behavior, and query protocol semantics."
+
+[[content.acceptance_criteria]]
+text = "Linux daemon requests avoid system-wide CPU and task inventory work for live-owner validation and resident-memory observation while retaining PID-reuse protection and status accounting."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "The daemon listener admits local requests without a periodic polling latency floor and remains cleanly stoppable within the lifecycle contract."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Prof-profile microbenchmarks separate CLI startup from live-daemon routing and demonstrate materially lower repeated control and exact-hit latency on the same machine."
+status = "done"
+category = "chore"
+
+[[content.acceptance_criteria]]
+text = "Daemon lifecycle, routing, cancellation, singleton, and output-equivalence contract tests pass on the changed implementation."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-DAEMON-CONTRACT"]
