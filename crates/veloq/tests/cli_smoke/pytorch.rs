@@ -143,6 +143,28 @@ fn pytorch_summary_emits_source_identity_and_trace_rows() -> Result<()> {
 }
 
 #[test]
+fn explicit_pytorch_summary_accepts_generic_json_filename() -> Result<()> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let trace = dir.path().join("profile.json");
+    std::fs::write(&trace, r#"{ "traceEvents": [] }"#)?;
+    let trace_arg = trace.to_string_lossy().into_owned();
+
+    let out = run_veloq(["pytorch", "summary", trace_arg.as_str()])?;
+    assert!(
+        out.status.success(),
+        "pytorch summary failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value =
+        serde_json::from_slice(&out.stdout).context("pytorch summary stdout must be valid JSON")?;
+    assert_eq!(
+        value.get("command").and_then(Value::as_str),
+        Some("pytorch.summary")
+    );
+    Ok(())
+}
+
+#[test]
 fn pytorch_search_and_stats_rank_scope_errors_are_recoverable() -> Result<()> {
     let dir = tempfile::tempdir().context("create tempdir")?;
     let trace = write_multi_rank_pytorch_trace(&dir)?;
@@ -235,7 +257,7 @@ fn pytorch_prep_status_reports_without_building_sidecars() -> Result<()> {
 #[test]
 fn pytorch_input_errors_emit_handled_envelopes() -> Result<()> {
     let dir = tempfile::tempdir().context("create tempdir")?;
-    let unsupported = dir.path().join("trace.json");
+    let unsupported = dir.path().join("trace.txt");
     std::fs::write(&unsupported, r#"{ "traceEvents": [] }"#)?;
     let unsupported_arg = unsupported.to_string_lossy().into_owned();
     let unsupported_out = run_veloq(["pytorch", "summary", unsupported_arg.as_str()])?;
@@ -250,7 +272,7 @@ fn pytorch_input_errors_emit_handled_envelopes() -> Result<()> {
         String::from_utf8_lossy(&unsupported_out.stderr)
     );
 
-    let invalid = dir.path().join("invalid.pt.trace.json");
+    let invalid = dir.path().join("invalid.json");
     std::fs::write(&invalid, "{")?;
     let invalid_arg = invalid.to_string_lossy().into_owned();
     let invalid_out = run_veloq(["pytorch", "summary", invalid_arg.as_str()])?;

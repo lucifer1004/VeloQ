@@ -1,6 +1,6 @@
 ---
 name: pytorch-profile-analysis
-description: "Analyze single-file PyTorch/Kineto `.pt.trace.json(.gz)` Chrome traces using the VeloQ CLI. Use for CPU/CUDA/kernel correlation, ProfilerStep/annotation slicing, memory/shape grouping, and single-trace NCCL evidence."
+description: "Analyze single-file PyTorch/Kineto Chrome trace `.json(.gz)` files using the VeloQ CLI. Use for CPU/CUDA/kernel correlation, ProfilerStep/annotation slicing, memory/shape grouping, and single-trace NCCL evidence."
 ---
 
 # PyTorch Profile Analysis
@@ -33,7 +33,10 @@ with `summary`, `search`, `inspect`, `stats`, `correlate`, `timeline`,
 
 ## Inputs
 
-- Single trace: `.pt.trace.json` or `.pt.trace.json.gz`.
+- Explicit `veloq pytorch` commands accept one Chrome trace named `.json`
+  or `.json.gz`.
+- Automatic source detection only claims `.pt.trace.json` and
+  `.pt.trace.json.gz`; explicitly select `pytorch` for other JSON filenames.
 - Directory inputs are not supported in PyTorch v0. Ask the user to
   choose one trace file if they point at a directory.
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Official PyPI NCU reader support** — use an `ncu_report` module already
+  importable by the selected Python interpreter, including NVIDIA's
+  `ncu-report` package, before falling back to full Nsight Compute
+  installation discovery.
+- **Explicit PyTorch Chrome trace filenames** — accept `.json` and
+  `.json.gz` inputs under `veloq pytorch` while keeping automatic source
+  detection restricted to `.pt.trace.json` and `.pt.trace.json.gz`.
 - **Compressed NCU reports** — recognize and query zstd-compressed
   `.ncu-repz` reports alongside `.ncu-rep`, including cubin-backed
   disassembly and an explicit diagnostic for report readers that predate

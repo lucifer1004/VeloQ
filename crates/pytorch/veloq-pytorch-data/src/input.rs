@@ -4,13 +4,15 @@ use std::path::{Path, PathBuf};
 use veloq_data::file::{fingerprint_paths, read_text_maybe_gz_as};
 
 pub fn detect_path(path: &Path) -> bool {
-    is_trace_file(path)
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".pt.trace.json") || name.ends_with(".pt.trace.json.gz"))
 }
 
 pub fn is_trace_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".pt.trace.json") || name.ends_with(".pt.trace.json.gz"))
+        .is_some_and(|name| name.ends_with(".json") || name.ends_with(".json.gz"))
 }
 
 pub(crate) fn discover_trace_files(input: &Path) -> PytorchDataResult<Vec<PathBuf>> {

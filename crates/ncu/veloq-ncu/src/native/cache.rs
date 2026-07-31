@@ -23,14 +23,16 @@
 //!
 //! ## Discovery (cross-platform)
 //!
-//! [`locate_ncu_report`] returns the directory holding `ncu_report.py`
-//! (set as `PYTHONPATH`); the interpreter is resolved separately in
-//! [`run_helper`]. Precedence: the `VELOQ_NCU_REPORT_DIR` override, then
-//! per-OS install roots (Linux `/usr/local`, `/opt/nvidia`, `/opt/cuda`;
-//! macOS the `NVIDIA Nsight Compute*.app` bundle under `/Applications`;
-//! Windows `Nsight Compute *` under the `Program Files` roots), newest by
-//! natural version order, then `ncu` on `PATH` (no shell). The interpreter
-//! is `VELOQ_PYTHON`, else `python3`/`python` on unix or
+//! The helper first uses `ncu_report` from the selected interpreter's
+//! normal import path, including NVIDIA's official PyPI package. When a
+//! full Nsight Compute installation is discoverable, [`locate_ncu_report`]
+//! returns its module directory as an import fallback. Precedence:
+//! the `VELOQ_NCU_REPORT_DIR` override, then per-OS install roots (Linux
+//! `/usr/local`, `/opt/nvidia`, `/opt/cuda`; macOS the
+//! `NVIDIA Nsight Compute*.app` bundle under `/Applications`; Windows
+//! `Nsight Compute *` under the `Program Files` roots), newest by natural
+//! version order, then `ncu` on `PATH` (no shell). The interpreter is
+//! `VELOQ_PYTHON`, else `python3`/`python` on unix or
 //! `python`/`python3`/`py -3` on Windows.
 //!
 //! ## Committed-sidecar mode (report absent)
@@ -62,7 +64,7 @@ use super::{NATIVE_SCHEMA, NativeSidecar};
 const HELPER_PY: &str = include_str!("../../scripts/ncu_export.py");
 
 /// Override: a directory that directly contains
-/// `ncu_report.py`. Set as `PYTHONPATH`; skips all platform discovery —
+/// `ncu_report.py`. Used as an import fallback; skips platform discovery —
 /// for containers, non-standard installs, and CI.
 const ENV_NCU_REPORT_DIR: &str = "VELOQ_NCU_REPORT_DIR";
 
@@ -150,12 +152,10 @@ pub fn build_or_load(report: &Path) -> NcuSourceResult<NativeSidecar> {
         return Ok(sc);
     }
 
-    // (Re)build requires NCU. Absent → structured error (don't serve a
-    // stale cache for a changed report).
-    let pythonpath = locate_ncu_report()
-        .map_err(|source| NcuSourceError::native_ingest_unavailable(report, source))?;
-
-    let payload = run_helper(report, &pythonpath)?;
+    // An official PyPI install does not depend on discovery: its interpreter
+    // imports `ncu_report` normally. A full NCU install is only a fallback.
+    let module_dir = locate_ncu_report()?;
+    let payload = run_helper(report, module_dir.as_deref())?;
     let sidecar: NativeSidecar =
         serde_json::from_str(&payload).map_err(NcuSourceError::native_helper_output_deserialize)?;
     if sidecar.schema != NATIVE_SCHEMA {
@@ -281,10 +281,10 @@ impl Drop for TempScript {
     }
 }
 
-/// Run the bundled helper against `report` with `PYTHONPATH` pointed at
-/// the located `extras/python`. Returns the helper's stdout (the native
-/// sidecar JSON). A non-zero exit surfaces the helper's stderr.
-fn run_helper(report: &Path, pythonpath: &Path) -> NcuSourceResult<String> {
+/// Run the bundled helper against `report`, optionally providing a discovered
+/// full-install module directory as a fallback. The helper always tries the
+/// interpreter's normal import path (including PyPI installs) first.
+fn run_helper(report: &Path, module_dir: Option<&Path>) -> NcuSourceResult<String> {
     // Unique per call (pid + process-global counter) so concurrent
     // in-process callers can't clobber each other's script; RAII removes
     // it even when `?` returns early.
@@ -296,22 +296,26 @@ fn run_helper(report: &Path, pythonpath: &Path) -> NcuSourceResult<String> {
     fs::write(&tmp.0, HELPER_PY)
         .map_err(|source| NcuSourceError::native_helper_materialize(tmp.0.display(), source))?;
 
-    // Try interpreter candidates in order. Advance to the next ONLY when
-    // the interpreter binary itself is not found (spawn `NotFound`); a
-    // helper that ran and exited non-zero surfaces verbatim.
+    // Try interpreter candidates in order. A missing interpreter or the
+    // helper's reserved "module not importable" exit advances to the next
+    // candidate; all other helper failures surface verbatim.
     let candidates = python_candidates(std::env::var_os(ENV_PYTHON));
     let mut not_found = Vec::new();
+    let mut module_missing = Vec::new();
     for (prog, pre_args) in &candidates {
-        let out = Command::new(prog)
-            .args(pre_args)
-            .arg(&tmp.0)
-            .arg(report)
-            .env("PYTHONPATH", pythonpath)
-            .output();
+        let mut command = Command::new(prog);
+        command.args(pre_args).arg(&tmp.0).arg(report);
+        if let Some(path) = module_dir {
+            command.env(ENV_NCU_REPORT_DIR, path);
+        }
+        let out = command.output();
         match out {
             Ok(out) if out.status.success() => {
                 return String::from_utf8(out.stdout)
                     .map_err(NcuSourceError::native_helper_stdout_utf8);
+            }
+            Ok(out) if out.status.code() == Some(3) => {
+                module_missing.push(prog.clone());
             }
             Ok(out) => {
                 return Err(NcuSourceError::native_helper_failed(
@@ -327,6 +331,13 @@ fn run_helper(report: &Path, pythonpath: &Path) -> NcuSourceResult<String> {
                 return Err(NcuSourceError::native_helper_spawn(prog.clone(), e));
             }
         }
+    }
+    if !module_missing.is_empty() {
+        return Err(NcuSourceError::native_ncu_report_module_missing(format!(
+            "ncu_report Python module is not importable by {}. Install the official `ncu-report` \
+             package or set {ENV_PYTHON} to an interpreter that can import it",
+            module_missing.join(", ")
+        )));
     }
     Err(NcuSourceError::native_python_missing(not_found.join(", ")))
 }
@@ -353,37 +364,34 @@ fn python_candidates(override_py: Option<OsString>) -> Vec<(String, Vec<String>)
     }
 }
 
-/// Locate the directory that contains the `ncu_report` Python module, to
-/// set as `PYTHONPATH`. Uniform return contract across platforms: always a
-/// *directory* placed on `PYTHONPATH` (the interpreter is resolved
-/// separately in [`run_helper`]). Precedence:
+/// Locate an optional full-install `ncu_report` module directory. `None`
+/// means the selected interpreter should use its normal import path, which
+/// supports the official PyPI package. Precedence:
 /// `VELOQ_NCU_REPORT_DIR` override → per-platform install roots → `ncu` on
 /// `PATH`. Extends pre-deletion gate 4 to macOS/Windows.
-pub fn locate_ncu_report() -> NcuSourceResult<PathBuf> {
+pub fn locate_ncu_report() -> NcuSourceResult<Option<PathBuf>> {
     locate_ncu_report_impl(std::env::var_os(ENV_NCU_REPORT_DIR))
 }
 
 /// Discovery core, split out so the override path is unit-testable without
 /// mutating process env.
-fn locate_ncu_report_impl(override_dir: Option<OsString>) -> NcuSourceResult<PathBuf> {
+fn locate_ncu_report_impl(override_dir: Option<OsString>) -> NcuSourceResult<Option<PathBuf>> {
     if let Some(dir) = override_dir {
         let p = PathBuf::from(dir);
         if p.join("ncu_report.py").is_file() {
-            return Ok(p);
+            return Ok(Some(p));
         }
         return Err(NcuSourceError::native_ncu_report_override_invalid(&p));
     }
     for (base, pattern) in platform_search_roots() {
         if let Some(p) = newest_glob_with_module(&base, &pattern) {
-            return Ok(p);
+            return Ok(Some(p));
         }
     }
     if let Some(p) = ncu_on_path_module_dir() {
-        return Ok(p);
+        return Ok(Some(p));
     }
-    Err(NcuSourceError::native_ncu_report_module_missing(
-        discovery_failure_message(),
-    ))
+    Ok(None)
 }
 
 /// `(base, glob-pattern)` pairs to search, per host OS. The
@@ -447,20 +455,6 @@ fn windows_program_files() -> Vec<PathBuf> {
         v.push(PathBuf::from(r"C:\Program Files (x86)"));
     }
     v
-}
-
-/// Human-readable, platform-aware discovery failure: names the roots
-/// actually searched plus the override.
-fn discovery_failure_message() -> String {
-    let roots: Vec<String> = platform_search_roots()
-        .iter()
-        .map(|(b, p)| format!("{}/{p}", b.display()))
-        .collect();
-    format!(
-        "could not locate the ncu_report Python module. Set {ENV_NCU_REPORT_DIR} to the directory \
-         containing ncu_report.py, or install Nsight Compute. Searched: [{}]; and `ncu` on PATH.",
-        roots.join(", ")
-    )
 }
 
 fn newest_glob_with_module(base: &Path, pattern: &str) -> Option<PathBuf> {
@@ -740,7 +734,7 @@ mod tests {
         fs::create_dir_all(&good)?;
         fs::write(good.join("ncu_report.py"), b"# stub\n")?;
         let got = locate_ncu_report_impl(Some(good.clone().into_os_string()))?;
-        assert_eq!(got, good);
+        assert_eq!(got, Some(good.clone()));
 
         let empty = std::env::temp_dir().join(format!("veloq-ncu-report-empty-{pid}"));
         fs::create_dir_all(&empty)?;
@@ -787,14 +781,5 @@ mod tests {
             assert_eq!(names.first(), Some(&"python3"));
             assert!(names.contains(&"python"));
         }
-    }
-
-    /// The discovery-failure message names the override and is non-empty
-    /// on every platform.
-    #[test]
-    fn discovery_failure_message_mentions_override() {
-        let msg = discovery_failure_message();
-        assert!(msg.contains(ENV_NCU_REPORT_DIR));
-        assert!(msg.contains("ncu_report.py"));
     }
 }

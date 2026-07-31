@@ -11,12 +11,12 @@ pub type PytorchDataResult<T> = Result<T, PytorchDataError>;
 pub enum PytorchDataError {
     #[error(transparent)]
     Data(#[from] DataError),
-    #[error("pytorch source expects `.pt.trace.json` or `.pt.trace.json.gz`, got {path}")]
+    #[error("pytorch source expects a Chrome trace `.json` or `.json.gz` file, got {path}")]
     UnsupportedTraceExtension { path: String },
     #[error("trace input does not exist: {path}")]
     InputDoesNotExist { path: String },
     #[error(
-        "pytorch v0 supports one `.pt.trace.json` or `.pt.trace.json.gz` file; directory inputs are not supported yet: {path}"
+        "pytorch v0 supports one Chrome trace `.json` or `.json.gz` file; directory inputs are not supported yet: {path}"
     )]
     DirectoryInputsUnsupported { path: String },
     #[error("too many trace files in {path}")]

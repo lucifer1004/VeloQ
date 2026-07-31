@@ -168,6 +168,10 @@ VeloQ ingests `.ncu-rep` and `.ncu-repz` through NVIDIA's official `ncu_report` 
 API (required only at prep / first-touch; query-time is NCU-free).
 Coupling to the installed `ncu` version is bounded by design:
 
+- **Official Python distribution.** VeloQ first uses an `ncu_report`
+  module already importable by the selected interpreter, including
+  NVIDIA's `ncu-report` PyPI package. Full Nsight Compute installation
+  discovery remains the fallback.
 - **No silent misclassification.** The version-specific metric enums
   (`metric_type` / `metric_subtype` / `rollup`) are resolved to stable
   _names_ from the live `ncu_report` enum at export, not interpreted as

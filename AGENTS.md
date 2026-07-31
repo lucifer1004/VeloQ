@@ -357,6 +357,12 @@ Not shipped yet:
   shows up, add a new adapter rather than reintroducing a generic
   fallback.
 
+- **PyTorch input routing**: automatic source detection claims only
+  `.pt.trace.json` and `.pt.trace.json.gz`. Explicit `veloq pytorch`
+  trace-bearing commands accept Chrome trace `.json` and `.json.gz`
+  filenames. Keep these predicates separate so generic JSON is never
+  claimed automatically.
+
 - **Domain knowledge** (load-bearing for SQL implementers):
   - `globalTid` bit layout:
     `[bits 48-63: HW/Host ID] [bits 24-47: PID (24b)] [bits 16-23: Source Domain ID (8b)] [bits 0-15: TID (16b)]`.

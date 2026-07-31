@@ -3,12 +3,12 @@
 [govctl]
 id = "RFC-0007"
 title = "PyTorch source wire contract"
-version = "0.1.0"
+version = "0.2.0"
 status = "normative"
 phase = "stable"
 owners = ["@Zihua Wu"]
 created = "2026-06-08"
-updated = "2026-06-08"
+updated = "2026-07-30"
 refs = [
     "RFC-0001",
     "RFC-0002",
@@ -28,7 +28,7 @@ refs = [
     "RFC-0005:C-ARTIFACT-ROOT",
     "RFC-0005:C-FRESHNESS",
 ]
-signature = "250f6ccd0cd40ac00b204551b9c1e055f22318450f5f0684720647e9c8ddcf3b"
+signature = "9ef4eb5a4faeb085ed945e10e7b10491049387350bef3b98e1d339468fcbe777"
 
 [[sections]]
 title = "Summary"
@@ -47,6 +47,12 @@ clauses = [
     "clauses/C-ARTIFACTS.toml",
     "clauses/C-COMPATIBILITY.toml",
 ]
+
+[[changelog]]
+version = "0.2.0"
+date = "2026-07-30"
+notes = "Separate explicit PyTorch inputs from automatic detection"
+added = ["Accept Chrome trace .json and .json.gz files when callers explicitly select the PyTorch source while preserving canonical-suffix-only automatic detection"]
 
 [[changelog]]
 version = "0.1.0"

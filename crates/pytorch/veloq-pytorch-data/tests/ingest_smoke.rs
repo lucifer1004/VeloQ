@@ -145,6 +145,18 @@ fn detects_and_ingests_json_trace() -> TestResult {
 }
 
 #[test]
+fn explicit_json_input_ingests_without_automatic_detection() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let trace_path = dir.path().join("profile.json");
+    write_trace(&trace_path, 0, 0)?;
+
+    assert!(!detect_path(&trace_path));
+    let trace = build_or_load(&trace_path)?;
+    assert_eq!(trace.events.len(), 6);
+    Ok(())
+}
+
+#[test]
 fn query_trace_cache_does_not_require_full_meta_on_warm_path() -> TestResult {
     let dir = tempfile::tempdir()?;
     let trace_path = dir.path().join("worker0.pt.trace.json");
@@ -385,6 +397,21 @@ fn detects_and_ingests_gz_trace() -> TestResult {
     let _file = encoder.finish()?;
 
     assert!(detect_path(&trace_path));
+    let trace = build_or_load(&trace_path)?;
+    assert_eq!(trace.events.len(), 6);
+    Ok(())
+}
+
+#[test]
+fn explicit_gz_input_ingests_without_automatic_detection() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let trace_path = dir.path().join("profile.json.gz");
+    let file = fs::File::create(&trace_path)?;
+    let mut encoder = GzEncoder::new(file, Compression::default());
+    encoder.write_all(trace_json(0, 0).as_bytes())?;
+    let _file = encoder.finish()?;
+
+    assert!(!detect_path(&trace_path));
     let trace = build_or_load(&trace_path)?;
     assert_eq!(trace.events.len(), 6);
     Ok(())

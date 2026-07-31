@@ -50,7 +50,7 @@ impl ProfileSource for PytorchSource {
 
     fn cli(&self) -> Command {
         let parent = Command::new(Self::KIND)
-            .about("PyTorch Kineto/Profiler trace query verbs")
+            .about("Query PyTorch Kineto/Profiler Chrome trace .json(.gz) files")
             .subcommand_required(true)
             .arg_required_else_help(true);
         crate::help::inject_long_about(Cmd::augment_subcommands(parent))

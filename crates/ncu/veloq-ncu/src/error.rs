@@ -211,15 +211,6 @@ pub enum NcuSourceError {
     )]
     NativeSidecarUnsupportedCompressedReader { path: String, version: String },
 
-    #[error(
-        "cannot ingest `{report}` without Nsight Compute: {source}. A matching native sidecar would have been used, but none is fresh. Install NCU (provides the ncu_report Python module) or run `veloq ncu prep` on a machine with NCU, then commit/copy the <report>.veloq/ sidecar"
-    )]
-    NativeIngestUnavailable {
-        report: String,
-        #[source]
-        source: Box<NcuSourceError>,
-    },
-
     #[error("helper emitted schema `{actual}`, expected `{expected}`")]
     NativeHelperSchemaMismatch {
         actual: String,
@@ -525,13 +516,6 @@ impl NcuSourceError {
         Self::NativeSidecarUnsupportedCompressedReader {
             path: path.display().to_string(),
             version: version.to_string(),
-        }
-    }
-
-    pub fn native_ingest_unavailable(report: &std::path::Path, source: NcuSourceError) -> Self {
-        Self::NativeIngestUnavailable {
-            report: report.display().to_string(),
-            source: Box::new(source),
         }
     }
 
@@ -860,7 +844,6 @@ impl VeloqDiagnostic for NcuSourceError {
             Self::NativeSidecarUnsupportedCompressedReader { .. } => {
                 ErrorCode::new("ncu.input.native-sidecar-unsupported-reader")
             }
-            Self::NativeIngestUnavailable { .. } => ErrorCode::new("ncu.input.ingest-unavailable"),
             Self::NativeHelperSchemaMismatch { .. } => {
                 ErrorCode::new("ncu.input.native-helper-schema-mismatch")
             }

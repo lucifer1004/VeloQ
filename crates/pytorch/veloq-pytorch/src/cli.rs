@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 pub enum Cmd {
     /// Summarize one PyTorch trace file.
     Summary {
-        /// Path to `.pt.trace.json` or `.pt.trace.json.gz`.
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
     },
 
     /// Filter PyTorch/Kineto events into typed event refs.
     Search {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         #[command(flatten)]
         filters: EventArgs,
@@ -18,6 +19,7 @@ pub enum Cmd {
 
     /// Fetch full details for one or more row ids.
     Inspect {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         #[arg(required = true)]
         row_ids: Vec<String>,
@@ -25,6 +27,7 @@ pub enum Cmd {
 
     /// Aggregate event durations and counts by one or more axes.
     Stats {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         /// Comma-separated axes: name,type,step,rank,device,stream,shape,comm-kind,python-context,python-path.
         /// In multi-rank traces, `device` must be paired with `rank`;
@@ -37,6 +40,7 @@ pub enum Cmd {
 
     /// Walk CPU op / runtime / driver / GPU / flow causal chains.
     Correlate {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         #[arg(required = true)]
         row_ids: Vec<String>,
@@ -44,6 +48,7 @@ pub enum Cmd {
 
     /// Bucket CPU, GPU, and communication time.
     Timeline {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         /// Bucket width, e.g. `1ms`, `100us`, `1s`.
         #[arg(long, value_name = "TIME", required = true)]
@@ -54,6 +59,7 @@ pub enum Cmd {
 
     /// Query ProfilerStep and user annotation ranges.
     Slices {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         /// Glob-style annotation/step name pattern.
         #[arg(long)]
@@ -75,7 +81,7 @@ pub enum Cmd {
 
     /// Analyze communication collectives within one PyTorch trace file.
     Collectives {
-        /// Path to `.pt.trace.json` or `.pt.trace.json.gz`.
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         /// Restrict groups to one profiler step.
         #[arg(long)]
@@ -93,6 +99,7 @@ pub enum Cmd {
 
     /// Build or inspect PyTorch sidecars.
     Prep {
+        /// Path to a Chrome trace `.json` or `.json.gz` file.
         trace: PathBuf,
         /// Report cache state without building sidecars.
         #[arg(long)]

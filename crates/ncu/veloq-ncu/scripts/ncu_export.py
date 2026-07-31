@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """veloq NCU export helper — ncu_report-native sidecar.
 
-Drives NVIDIA's official `ncu_report` Python API (shipped in the NCU
-install under `extras/python/`) to emit veloq's ncu_report-native NCU
-sidecar as JSON on stdout. Uses ONLY the public API — no vendored
-protos, no NVIDIA files redistributed.
+Drives NVIDIA's official `ncu_report` Python API (available from the
+`ncu-report` PyPI package or an NCU install's `extras/python/`) to emit
+veloq's ncu_report-native NCU sidecar as JSON on stdout. Uses ONLY the
+public API — no vendored protos, no NVIDIA files redistributed.
 
 Usage:
     python3 ncu_export.py <report.ncu-rep[z]>          # JSON sidecar -> stdout
     python3 ncu_export.py <report.ncu-rep[z]> --probe   # capability probe only
 
-The Rust ingest path is authoritative: it sets PYTHONPATH to the located
-`ncu_report` module directory before invoking this. We also self-locate
-as a fallback so the helper runs standalone for fixture regeneration; the
-fallback mirrors the Rust-side cross-platform discovery so the
-two paths cannot diverge.
+The Rust ingest path is authoritative: it leaves an installed PyPI package
+on the interpreter's normal import path and, when available, passes a
+discovered full-install module directory as an import fallback.
 
 Tested against Nsight Compute 2026.1.1 and 2026.2.1 (`ncu_report` API).
 Other supported versions are expected to work: the helper resolves all
@@ -63,58 +61,20 @@ def _validate_report_reader(path: str, version: str) -> None:
         )
 
 
-# --- Locate + import ncu_report (cross-platform discovery) ---------
-# Mirrors the Rust ingest path's discovery (crates/.../native/cache.rs):
-# VELOQ_NCU_REPORT_DIR override, then per-platform NCU install roots. The
-# Linux pattern follows mit-han-lab/ncu-report-skill and Enigmatisms/tachyon.
-def _locate_ncu_report() -> str | None:
-    override = os.environ.get("VELOQ_NCU_REPORT_DIR")
-    if override and (Path(override) / "ncu_report.py").is_file():
-        return override
-    if sys.platform == "darwin":
-        roots = ["/Applications"]
-        globs = [
-            "NVIDIA Nsight Compute*.app/Contents/MacOS/python",
-            "NVIDIA Nsight Compute*/extras/python",
-        ]
-    elif sys.platform == "win32":
-        roots = [
-            os.environ.get("ProgramW6432", r"C:\Program Files"),
-            os.environ.get("ProgramFiles", r"C:\Program Files"),
-            os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
-        ]
-        globs = ["NVIDIA Corporation/Nsight Compute */extras/python"]
-    else:
-        roots = ["/usr/local", "/opt/nvidia", "/opt/cuda"]
-        globs = [
-            "cuda-*/nsight-compute-*/extras/python",
-            "nsight-compute-*/extras/python",
-            "nsight-compute/*/extras/python",
-            "nsight-compute/extras/python",
-        ]
-    for root in roots:
-        p = Path(root)
-        if not p.is_dir():
-            continue
-        for g in globs:
-            for sub in sorted(p.glob(g), reverse=True):  # newest-ish first
-                if (sub / "ncu_report.py").is_file():
-                    return str(sub)
-    return None
-
-
 try:
     import ncu_report  # noqa: F401
 except ImportError:
-    _found = _locate_ncu_report()
-    if _found:
-        sys.path.insert(0, _found)
+    _fallback = os.environ.get("VELOQ_NCU_REPORT_DIR")
+    if _fallback and (Path(_fallback) / "ncu_report.py").is_file():
+        sys.path.insert(0, _fallback)
     try:
         import ncu_report  # noqa: F401
     except ImportError:
         sys.stderr.write(
-            "error: ncu_report Python module not importable. Set PYTHONPATH to "
-            "<ncu-install>/extras/python, or install Nsight Compute.\n"
+            "error: ncu_report Python module not importable. Install the official "
+            "`ncu-report` package, set VELOQ_NCU_REPORT_DIR to "
+            "<ncu-install>/extras/python, or set VELOQ_PYTHON to a suitable "
+            "interpreter.\n"
         )
         sys.exit(3)
 

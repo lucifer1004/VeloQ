@@ -12,11 +12,14 @@ use veloq_pytorch::cli::Cmd;
 fn source_detects_pytorch_inputs() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let trace_path = dir.path().join("worker0.pt.trace.json");
+    let generic_path = dir.path().join("profile.json");
     fs::write(&trace_path, r#"{"traceEvents":[]}"#)?;
+    fs::write(&generic_path, r#"{"traceEvents":[]}"#)?;
     let source = PytorchSource;
     assert_eq!(source.kind(), "pytorch");
     assert_eq!(source.version(), "v0");
     assert!(source.detect(&trace_path));
+    assert!(!source.detect(&generic_path));
     assert!(!source.detect(dir.path()));
     assert!(!source.detect(&dir.path().join("report.ncu-rep")));
     Ok(())

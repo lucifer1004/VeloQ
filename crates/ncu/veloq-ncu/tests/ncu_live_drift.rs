@@ -48,15 +48,14 @@ fn helper_path() -> PathBuf {
 /// but always re-exports (the cache fast-path would serve the committed
 /// sidecar without touching `ncu_report`).
 fn run_helper_live(report: &Path) -> Result<NativeSidecar> {
-    let pythonpath = cache::locate_ncu_report()
-        .context("locate ncu_report (VELOQ_NCU_LIVE set but Nsight Compute not found)")?;
+    let pythonpath = cache::locate_ncu_report().context("resolve ncu_report import path")?;
     let python = std::env::var("VELOQ_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let out = Command::new(&python)
-        .arg(helper_path())
-        .arg(report)
-        .env("PYTHONPATH", &pythonpath)
-        .output()
-        .context("spawn export helper")?;
+    let mut command = Command::new(&python);
+    command.arg(helper_path()).arg(report);
+    if let Some(path) = pythonpath {
+        command.env("VELOQ_NCU_REPORT_DIR", path);
+    }
+    let out = command.output().context("spawn export helper")?;
     if !out.status.success() {
         bail!(
             "export helper failed ({}):\n{}",

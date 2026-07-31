@@ -1,0 +1,47 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-07-30-021"
+title = "Support official profiler distribution and trace inputs"
+status = "done"
+created = "2026-07-30"
+started = "2026-07-30"
+completed = "2026-07-30"
+refs = [
+    "RFC-0007",
+    "RFC-0008",
+]
+
+[content]
+description = "Accept profiler outputs in their official distribution forms: use an importable PyPI ncu-report package without requiring a full Nsight Compute installation, and accept Chrome trace .json/.json.gz filenames when callers explicitly select the PyTorch source while keeping automatic detection unambiguous."
+
+[[content.acceptance_criteria]]
+text = "NCU trace-bearing commands use an ncu_report module already importable by a supported Python interpreter even when no full Nsight Compute installation is discoverable."
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Existing full Nsight Compute Python module discovery and explicit VELOQ_NCU_REPORT_DIR overrides remain supported, with invalid overrides producing a handled diagnostic."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Explicit PyTorch trace-bearing commands accept valid Chrome trace files named with .json or .json.gz suffixes while automatic source detection remains limited to .pt.trace.json and .pt.trace.json.gz."
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Unsupported PyTorch extensions and malformed supported-extension inputs produce handled diagnostics without weakening automatic source detection."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "CLI help, user-facing profile-analysis guidance, maintainer guidance, and changelog describe the supported NCU module and PyTorch input forms."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-NCU-WIRE-CONTRACT",
+    "GUARD-PYTORCH-WIRE-CONTRACT",
+]

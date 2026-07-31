@@ -492,8 +492,11 @@ errors for malformed, unsupported-kind, or out-of-range launch row ids.
 ### PyTorch verbs (namespaced under `pytorch`)
 
 PyTorch is an experimental `source.version = "v0"` source for Kineto
-Chrome trace files (`.pt.trace.json` / `.pt.trace.json.gz`). Directory
-inputs and cross-rank collective skew are planned, not shipped in v0.
+Chrome trace files. Explicit `veloq pytorch ...` commands accept any
+`.json` / `.json.gz` filename; automatic source detection remains limited
+to `.pt.trace.json` / `.pt.trace.json.gz` so VeloQ does not claim unrelated
+JSON files. Directory inputs and cross-rank collective skew are planned,
+not shipped in v0.
 When one trace file contains multiple rank values, rank-scoped commands
 (`search`, `stats`, `timeline`, `slices`, and `collectives`) require
 `--rank <n>` or `--all-ranks`. `inspect` and `correlate` operate on
@@ -567,8 +570,9 @@ NVTX tree can be built.
 | NSys    | `<stem>_pqtdir/`            | Pre-exported parquetdir; opened directly                                                                      |
 | NSys    | `<trace>.veloq/parquetdir/` | Generated alias for the owning `.nsys-rep`; not a separate source                                             |
 | NCU     | `.ncu-rep`, `.ncu-repz`     | Nsight Compute kernel report, plain or zstd-compressed (ingested via NVIDIA's `ncu_report` API at prep time)   |
-| PyTorch | `.pt.trace.json`            | PyTorch/Kineto Chrome trace JSON                                                                              |
-| PyTorch | `.pt.trace.json.gz`         | Gzipped PyTorch/Kineto Chrome trace JSON                                                                      |
+| PyTorch | `.pt.trace.json`            | PyTorch/Kineto Chrome trace JSON; eligible for automatic detection                                            |
+| PyTorch | `.pt.trace.json.gz`         | Gzipped PyTorch/Kineto Chrome trace JSON; eligible for automatic detection                                    |
+| PyTorch | `.json`, `.json.gz`         | Accepted when explicitly routed through `veloq pytorch`; not claimed by automatic source detection            |
 
 `veloq info <trace>` reports which source claims the file based on
 the same `detect()` heuristic the dispatcher uses, so an agent can
@@ -576,8 +580,10 @@ probe a path without having to maintain its own extension list.
 
 NCU ingestion runs NVIDIA's `ncu_report` Python API at **prep time only**;
 query-time is NCU-free and the generated `<report>.veloq/` sidecar is
-portable across Linux/macOS/Windows. VeloQ auto-discovers the Nsight
-Compute install (`extras/python`, or the macOS app bundle's
+portable across Linux/macOS/Windows. VeloQ first uses an `ncu_report`
+module already importable by the selected interpreter, including NVIDIA's
+official `ncu-report` PyPI package. It otherwise auto-discovers a full
+Nsight Compute install (`extras/python`, or the macOS app bundle's
 `Contents/MacOS/python`). For a non-standard location, set
 `VELOQ_NCU_REPORT_DIR` to the directory containing `ncu_report.py`, and/or
 `VELOQ_PYTHON` to the interpreter to run the helper with.
