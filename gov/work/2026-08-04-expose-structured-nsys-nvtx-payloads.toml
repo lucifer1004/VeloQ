@@ -1,0 +1,52 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-04-002"
+title = "Expose structured NSys NVTX payloads"
+status = "queue"
+created = "2026-08-04"
+refs = [
+    "RFC-0001:C-AGENT-CONTRACT",
+    "RFC-0001:C-SOURCE-MODEL",
+    "RFC-0005:C-FRESHNESS",
+    "RFC-0005:C-CACHE-REUSE",
+    "RFC-0006:C-SUPPORTED-INPUTS",
+    "RFC-0006:C-EVENT-REF",
+    "RFC-0006:C-COMPATIBILITY",
+    "RFC-0006:C-ARTIFACTS",
+]
+
+[content]
+description = "Preserve and expose structured dynamic NVTX payload evidence from supported Nsight Systems reports so agents can inspect profiler-emitted schemas such as PyTorch tensor shapes without weakening older-exporter, direct-parquetdir, or cache-freshness behavior."
+notes = ["Implementation is deferred while structured NVTX payload export remains experimental and no observed workflow requires same-trace payload evidence beyond existing PyTorch/Kineto shape and args queries, NVTX labels, or raw nsys export. Re-evaluate when a real profile question cannot be answered by those alternatives and requires payload-to-NSys-timeline correlation."]
+
+[[content.acceptance_criteria]]
+text = "Generated parquetdir exports preserve profiler-supported structured dynamic NVTX payload tables and remain compatible with NSys exporters that do not offer dynamic-table export."
+status = "pending"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "NSys inspect returns typed, schema-qualified structured payload evidence for an NVTX event without flattening arbitrary schema fields into fixed top-level response fields."
+status = "pending"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "NVTX events without structured payloads and direct parquetdir inputs without dynamic tables retain their existing successful query behavior."
+status = "pending"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Generated parquetdir freshness distinguishes the export capability and policy needed for structured payloads so a previously payload-less cache is not silently accepted as payload-complete."
+status = "pending"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Tests cover dynamic-schema metadata joins, representative typed payload fields, absent payloads, and older-exporter fallback, while user guidance and the changelog document the optional evidence."
+status = "pending"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-ARTIFACT-CACHE-CONTRACT",
+    "GUARD-NSYS-WIRE-CONTRACT",
+]

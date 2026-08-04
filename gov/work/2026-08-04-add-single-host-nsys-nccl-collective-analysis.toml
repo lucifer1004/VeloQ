@@ -1,0 +1,57 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-04-003"
+title = "Add single-host NSys NCCL collective analysis"
+status = "queue"
+created = "2026-08-04"
+refs = [
+    "RFC-0001:C-PRODUCT-IDENTITY",
+    "RFC-0001:C-AGENT-CONTRACT",
+    "RFC-0001:C-NON-GOALS",
+    "RFC-0001:C-SOURCE-MODEL",
+    "RFC-0004:C-SOURCE-EXCEPTIONS",
+    "RFC-0006:C-COMMAND-SURFACE",
+    "RFC-0006:C-CUDA-IDENTITY",
+    "RFC-0006:C-ROW-KEYS",
+    "RFC-0006:C-COMPATIBILITY",
+]
+
+[content]
+description = "Expose structured same-host NCCL collective and GPU-operation evidence from Nsight Systems traces so agents can identify locally observed rank imbalance and straggler candidates without introducing cross-host aggregation, clock synchronization, remote operation, or unqualified performance verdicts."
+
+[[content.acceptance_criteria]]
+text = "Before any new stable public query surface is enabled, [[RFC-0006]] defines its command identity, response fields, row-key semantics, compatibility boundary, and single-host scope."
+status = "pending"
+category = "changed"
+
+[[content.acceptance_criteria]]
+text = "A canonical NSys list query returns locally observed NCCL collective and corresponding GPU-operation evidence from supported Nsight Systems schemas."
+status = "pending"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Results preserve recorded communicator, collective kind, rank, native process, device, timing, and matching GPU-operation identity when available, without inferring distributed rank from a PID or logical device ordinal."
+status = "pending"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "Straggler evidence reports reproducible measured durations and an explicit comparison basis among ranks observed in the same trace, while incomplete rank coverage remains visible to the caller."
+status = "pending"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "A trace without required NCCL tables returns a handled capability diagnostic, while a supported trace with no rows matching the requested scope returns a successful empty canonical list."
+status = "pending"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Synthetic schema variants and representative local real profiles verify process-qualified identity, collective-to-GPU-operation matching, filtering, ordering, totals, missing evidence, and single-host straggler calculations without committing private trace details."
+status = "pending"
+category = "chore"
+
+[verification]
+required_guards = [
+    "GUARD-NSYS-WIRE-CONTRACT",
+    "GUARD-ROW-WIRE-CONTRACT",
+]
