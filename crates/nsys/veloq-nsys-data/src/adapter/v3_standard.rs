@@ -31,6 +31,18 @@ const PROBE_TABLES: &[(&str, &[&str])] = &[
     ("CUPTI_ACTIVITY_KIND_MEMSET", &["start", "end"]),
     ("CUPTI_ACTIVITY_KIND_RUNTIME", &["start", "end"]),
     ("CUPTI_ACTIVITY_KIND_SYNCHRONIZATION", &["start", "end"]),
+    (
+        "NVTX_EVENTS",
+        &[
+            "start",
+            "end",
+            "eventType",
+            "globalTid",
+            "domainId",
+            "text",
+            "textId",
+        ],
+    ),
     ("GPU_METRICS", &["timestamp", "typeId", "metricId", "value"]),
     (
         "NET_NIC_METRIC",
@@ -142,6 +154,36 @@ mod tests {
             "CREATE TABLE GPU_METRICS (timestamp BIGINT, typeId BIGINT, metricId BIGINT, value DOUBLE);",
         )?;
         assert!(StandardAdapter.probe(dir.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn probe_accepts_nvtx_only_pqtdir() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        write_parquet(
+            dir.path(),
+            "NVTX_EVENTS",
+            r#"CREATE TABLE NVTX_EVENTS (
+                start BIGINT, "end" BIGINT, eventType BIGINT,
+                globalTid BIGINT, domainId BIGINT, text TEXT, textId BIGINT
+            );"#,
+        )?;
+        assert!(StandardAdapter.probe(dir.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn probe_rejects_nvtx_table_missing_canonical_columns() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        write_parquet(
+            dir.path(),
+            "NVTX_EVENTS",
+            r#"CREATE TABLE NVTX_EVENTS (
+                start BIGINT, "end" BIGINT, globalTid BIGINT,
+                domainId BIGINT, text TEXT, textId BIGINT
+            );"#,
+        )?;
+        assert!(!StandardAdapter.probe(dir.path()));
         Ok(())
     }
 

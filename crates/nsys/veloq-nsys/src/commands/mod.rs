@@ -46,8 +46,8 @@ use next_steps::{
 use parse::{kinds_csv, parse_duration_filter, parse_row_id, parse_sort_spec};
 use prep_status::collect_prep_response;
 use scope::{
-    resolve_or_refuse, scope_request_from, scope_request_from_device,
-    scope_request_from_device_with_implicit_all,
+    KindScopeRequest, resolve_kind_scope_or_refuse, resolve_or_refuse, scope_request_from,
+    scope_request_from_device, scope_request_from_device_with_implicit_all,
 };
 
 fn render_context<'a>(
@@ -194,24 +194,27 @@ pub(crate) fn run(
             // top of Cmd::Stats.
             match by {
                 crate::cli::StatsBy::Ns => {
+                    let kinds = gpu.kinds(&STATS_ALLOWED_KINDS)?;
                     // Resolve scope before opening DuckDB for the
                     // query. On ambiguity, the resolver emits an
                     // EnvelopeError with `meta.warnings[multi-device-ambiguous]`
                     // and we return without running the query.
-                    let scope = match resolve_or_refuse(
+                    let scope = match resolve_kind_scope_or_refuse(
                         query_trace,
                         resident_trace,
                         fmt,
                         "stats",
                         trace_span,
-                        scope_request_from(&location),
+                        KindScopeRequest {
+                            kinds: &kinds,
+                            location: &location,
+                        },
                         output,
                     )? {
                         Some(s) => s,
                         None => return Ok(1),
                     };
 
-                    let kinds = gpu.kinds(&STATS_ALLOWED_KINDS)?;
                     let kind_echo = kinds_csv(&kinds);
                     let sort = parse_sort_spec(&sort)?;
                     let time_window = common.time_window()?;
@@ -350,19 +353,22 @@ pub(crate) fn run(
             common,
             ..
         } => {
-            let scope = match resolve_or_refuse(
+            let kinds = gpu.kinds(EventKind::ALL)?;
+            let scope = match resolve_kind_scope_or_refuse(
                 query_trace,
                 resident_trace,
                 fmt,
                 "search",
                 trace_span,
-                scope_request_from(&location),
+                KindScopeRequest {
+                    kinds: &kinds,
+                    location: &location,
+                },
                 output,
             )? {
                 Some(s) => s,
                 None => return Ok(1),
             };
-            let kinds = gpu.kinds(EventKind::ALL)?;
             let kind_echo = kinds_csv(&kinds);
             let duration = match duration.as_deref() {
                 Some(s) => Some(parse_duration_filter(s)?),

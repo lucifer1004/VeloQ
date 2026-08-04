@@ -1,6 +1,7 @@
 use std::path::Path;
-use veloq_core::{OutputFormat, SourceExecution, TraceSpan};
+use veloq_core::{AppliedScope, OutputFormat, SourceExecution, TraceSpan};
 use veloq_nsys_data::scope::{ResolveError, ResolvedScope, ScopeRequest, resolve_scope};
+use veloq_nsys_query::KindFilter;
 
 use crate::error::{NsysSourceError, NsysSourceResult};
 use crate::filters::{DeviceLocationFilters, GpuLocationFilters};
@@ -47,6 +48,63 @@ pub(super) fn resolve_or_refuse(
         }
         Err(ResolveError::Probe(e)) => Err(NsysSourceError::from(*e)),
     }
+}
+
+pub(super) struct KindScopeRequest<'a> {
+    pub kinds: &'a KindFilter,
+    pub location: &'a GpuLocationFilters,
+}
+
+/// Resolve a kind-aware list query without fabricating a CUDA location
+/// filter for an explicitly host-only kind set.
+///
+/// The ordinary resolver auto-selects the sole process/device scope so
+/// CUDA queries work without flags. Runtime, OS runtime, NVTX, and the
+/// other non-location-bearing kinds have no device/stream columns, so
+/// feeding that inferred device back into their SQL is invalid. Keep an
+/// explicit process selector, but leave the CUDA axes unset when the user
+/// did not request them. Explicit CUDA location flags still take the
+/// ordinary resolver and validation path unchanged.
+pub(super) fn resolve_kind_scope_or_refuse(
+    trace_path: &Path,
+    resident_trace: Option<&veloq_nsys_data::Trace>,
+    fmt: OutputFormat,
+    verb: &str,
+    trace_span: Option<TraceSpan>,
+    req: KindScopeRequest<'_>,
+    output: &mut SourceExecution,
+) -> NsysSourceResult<Option<ResolvedScope>> {
+    let explicitly_host_only = matches!(
+        req.kinds,
+        KindFilter::Only(explicit)
+            if !explicit.is_empty() && explicit.iter().all(|kind| !kind.is_location_bearing())
+    );
+    let has_cuda_location_request =
+        req.location.device.is_some() || req.location.stream.is_some() || req.location.all_devices;
+
+    if explicitly_host_only && !has_cuda_location_request {
+        return Ok(Some(ResolvedScope {
+            applied: AppliedScope {
+                device: None,
+                stream: None,
+                native_pid: req.location.process,
+                kind: None,
+                nvtx_pattern: None,
+                time_window_ns: None,
+                aggregated_over: Vec::new(),
+            },
+        }));
+    }
+
+    resolve_or_refuse(
+        trace_path,
+        resident_trace,
+        fmt,
+        verb,
+        trace_span,
+        scope_request_from(req.location),
+        output,
+    )
 }
 
 /// Convenience: build a `ScopeRequest` from the CLI args a list verb

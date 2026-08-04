@@ -1,0 +1,48 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-04-004"
+title = "Repair NSys NVTX and host-only queryability"
+status = "done"
+created = "2026-08-04"
+started = "2026-08-04"
+completed = "2026-08-04"
+refs = [
+    "RFC-0002:C-ERROR-RESPONSE",
+    "RFC-0006:C-SUPPORTED-INPUTS",
+    "RFC-0006:C-COMMAND-SURFACE",
+    "RFC-0006:C-NVTX-IDENTITY",
+    "RFC-0006:C-CUDA-IDENTITY",
+    "RFC-0006:C-COMPATIBILITY",
+]
+
+[content]
+description = "Restore existing NSys summary and host-event queries for valid schema-3.x traces whose only canonical event table is NVTX_EVENTS, and prevent implicit single-device fallback from becoming an invalid location filter for NVTX, runtime, or OS runtime selections, without adding dynamic-payload behavior."
+
+[[content.acceptance_criteria]]
+text = "A schema-3.x parquetdir with canonical NVTX_EVENTS columns is accepted by the standard adapter even when CUDA activity, metric, and scheduler tables are absent, while malformed or unsupported schemas remain rejected."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Summary and applicable NVTX search, inspect, stats, and slices queries operate on NVTX-only reports without requiring a CUDA table, while commands whose own evidence is absent retain handled capability diagnostics."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Stats and search requests selecting only NVTX, runtime, or OS runtime events and no explicit location filter do not receive an implicit device filter and succeed without requiring --all-devices."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Explicit process, device, stream, and all-device validation and process-local CUDA ambiguity handling remain unchanged for requests that actually select a CUDA location scope."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Synthetic NVTX-only parquetdir tests and locally generated current-NSys reports cover adapter selection, successful host-only queries, missing-capability diagnostics, and single-device fallback regression without committing private trace data."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-NSYS-WIRE-CONTRACT"]

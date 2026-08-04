@@ -32,6 +32,8 @@ mod ncu;
 mod nsys_artifacts;
 #[path = "cli_smoke/nsys_errors.rs"]
 mod nsys_errors;
+#[path = "cli_smoke/nsys_host_only.rs"]
+mod nsys_host_only;
 #[path = "cli_smoke/nsys_ncu_command.rs"]
 mod nsys_ncu_command;
 #[path = "cli_smoke/pytorch.rs"]
