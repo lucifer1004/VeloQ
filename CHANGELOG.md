@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Active NCU installation discovery** — resolve a PATH-selected `ncu`
+  symlink before locating its bundled `extras/python/ncu_report.py`, so
+  package environments use their matching Nsight Compute installation before
+  unrelated platform-wide installs.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added

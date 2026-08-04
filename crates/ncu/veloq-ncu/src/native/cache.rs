@@ -367,8 +367,8 @@ fn python_candidates(override_py: Option<OsString>) -> Vec<(String, Vec<String>)
 /// Locate an optional full-install `ncu_report` module directory. `None`
 /// means the selected interpreter should use its normal import path, which
 /// supports the official PyPI package. Precedence:
-/// `VELOQ_NCU_REPORT_DIR` override → per-platform install roots → `ncu` on
-/// `PATH`. Extends pre-deletion gate 4 to macOS/Windows.
+/// `VELOQ_NCU_REPORT_DIR` override → `ncu` on `PATH` → per-platform
+/// install roots. Extends pre-deletion gate 4 to macOS/Windows.
 pub fn locate_ncu_report() -> NcuSourceResult<Option<PathBuf>> {
     locate_ncu_report_impl(std::env::var_os(ENV_NCU_REPORT_DIR))
 }
@@ -383,13 +383,13 @@ fn locate_ncu_report_impl(override_dir: Option<OsString>) -> NcuSourceResult<Opt
         }
         return Err(NcuSourceError::native_ncu_report_override_invalid(&p));
     }
+    if let Some(p) = ncu_on_path_module_dir() {
+        return Ok(Some(p));
+    }
     for (base, pattern) in platform_search_roots() {
         if let Some(p) = newest_glob_with_module(&base, &pattern) {
             return Ok(Some(p));
         }
-    }
-    if let Some(p) = ncu_on_path_module_dir() {
-        return Ok(Some(p));
     }
     Ok(None)
 }
@@ -545,16 +545,36 @@ fn ncu_on_path_module_dir() -> Option<PathBuf> {
         if !bin.is_file() {
             continue;
         }
-        let mut up = bin.parent();
-        while let Some(d) = up {
-            for sub in ["extras/python", "python", "../python"] {
-                let cand = d.join(sub);
-                if cand.join("ncu_report.py").is_file() {
-                    return Some(cand);
-                }
-            }
-            up = d.parent();
+        if let Some(module_dir) = ncu_module_dir_from_executable(&bin) {
+            return Some(module_dir);
         }
+    }
+    None
+}
+
+/// Resolve the installation behind an `ncu` executable before inspecting its
+/// ancestors. Package environments commonly expose `ncu` as a symlink whose
+/// target is a sibling installation directory, which is unreachable by walking
+/// only the link's lexical parents.
+fn ncu_module_dir_from_executable(executable: &Path) -> Option<PathBuf> {
+    let resolved = fs::canonicalize(executable).ok();
+    resolved
+        .as_deref()
+        .into_iter()
+        .chain(std::iter::once(executable))
+        .find_map(ncu_module_dir_from_ancestors)
+}
+
+fn ncu_module_dir_from_ancestors(executable: &Path) -> Option<PathBuf> {
+    let mut up = executable.parent();
+    while let Some(d) = up {
+        for sub in ["extras/python", "python", "../python"] {
+            let cand = d.join(sub);
+            if cand.join("ncu_report.py").is_file() {
+                return Some(cand);
+            }
+        }
+        up = d.parent();
     }
     None
 }
@@ -760,6 +780,43 @@ mod tests {
         assert_eq!(err.code().as_str(), "ncu.input.ncu-report-override-invalid");
 
         fs::remove_dir_all(&empty).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn ncu_executable_resolves_adjacent_module() -> Result<()> {
+        let root = unique_temp_path("ncu-direct-install");
+        let module_dir = root.join("extras/python");
+        fs::create_dir_all(&module_dir)?;
+        fs::write(root.join("ncu"), b"")?;
+        fs::write(module_dir.join("ncu_report.py"), b"# stub\n")?;
+
+        let got = ncu_module_dir_from_executable(&root.join("ncu"));
+        assert_eq!(got, Some(module_dir));
+
+        fs::remove_dir_all(root).ok();
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ncu_executable_follows_package_environment_symlink() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let env_root = unique_temp_path("ncu-symlink-install");
+        let install = env_root.join("nsight-compute-2026.2.1");
+        let module_dir = install.join("extras/python");
+        let bin_dir = env_root.join("bin");
+        fs::create_dir_all(&module_dir)?;
+        fs::create_dir_all(&bin_dir)?;
+        fs::write(install.join("ncu"), b"")?;
+        fs::write(module_dir.join("ncu_report.py"), b"# stub\n")?;
+        symlink("../nsight-compute-2026.2.1/ncu", bin_dir.join("ncu"))?;
+
+        let got = ncu_module_dir_from_executable(&bin_dir.join("ncu"));
+        assert_eq!(got, Some(module_dir));
+
+        fs::remove_dir_all(env_root).ok();
         Ok(())
     }
 

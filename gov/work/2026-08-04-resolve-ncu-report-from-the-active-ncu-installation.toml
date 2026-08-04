@@ -1,0 +1,31 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-04-001"
+title = "Resolve ncu_report from the active NCU installation"
+status = "done"
+created = "2026-08-04"
+started = "2026-08-04"
+completed = "2026-08-04"
+refs = ["RFC-0008"]
+
+[content]
+description = "Correct full-install ncu_report discovery so an NCU executable selected through PATH can resolve the Python module shipped by the same installation when the executable is exposed through a symlink, while preserving explicit overrides and existing fallback sources."
+
+[[content.acceptance_criteria]]
+text = "Full-install discovery follows a PATH-selected ncu symlink to the matching installation's extras/python/ncu_report.py."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Explicit VELOQ_NCU_REPORT_DIR selection and platform-root fallback discovery retain their existing behavior."
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "Focused NCU tests cover direct executable and symlinked executable discovery without mutating the process PATH."
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-NCU-WIRE-CONTRACT"]
