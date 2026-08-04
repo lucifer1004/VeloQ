@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-08-04
+
 ### Fixed
 
 - **Active NCU installation discovery** — resolve a PATH-selected `ncu`
   symlink before locating its bundled `extras/python/ncu_report.py`, so
   package environments use their matching Nsight Compute installation before
   unrelated platform-wide installs.
+- **NSys host-only queryability** — accept canonical NVTX-only schema 3.x
+  exports and keep implicit single-device resolution from becoming an invalid
+  device filter for explicit NVTX, CUDA runtime, and OS runtime queries.
 
 ## [0.6.0] - 2026-07-30
 

@@ -8,7 +8,7 @@
     {
       "name": "veloq",
       "description": "Agent Skills for NSys, NCU, and PyTorch profile analysis using the VeloQ CLI.",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "source": "./plugins/veloq"
     }
   ]
