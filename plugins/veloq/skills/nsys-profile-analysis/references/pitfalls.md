@@ -26,7 +26,10 @@ veloq search T --type runtime --name 'cudaGraphLaunch*' --limit 1 | jq '.data.to
 - Node-mode captures (`--cuda-graph-trace=node`) are the opposite:
   graph kernels DO land in the kernel table with `graph_id` /
   `graph_node_id` set — answer with `--group-by graph_node`, not
-  `--type graph`.
+  `--type graph`. Caveat: some node captures (observed with Nsight
+  2025.3) omit those kernel columns entirely; veloq then reports NULL
+  attribution — that means "unattributable", not "no graphs" (check
+  `has_graph_nodes` / the runtime table for `cudaGraphLaunch`).
 
 ## Thread identity
 
