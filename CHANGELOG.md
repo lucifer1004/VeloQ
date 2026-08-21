@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-08-20
+
+### Added
+
+- **Checkout-free agent plugin install** — `veloq agent install <agent>` now
+  defaults to the Git marketplace `lucifer1004/veloq`, so binary-only users
+  can install VeloQ Agent Skills without a source checkout;
+  `--from-checkout` remains the validated local path, unchanged
+  (WI-2026-08-20-001).
+
+### Changed
+
+- **Slimmed `nsys-profile-analysis` skill for strong models** — SKILL.md
+  289 → 113 lines, value-proposition-first with answer-changing pitfalls
+  promoted to first-class (incl. two bench-discovered traps: GRAPH_TRACE
+  presence ≠ coverage, and globalTid TID extraction); command detail defers
+  to `--help` / `veloq schema` / `veloq recipes`; references consolidated
+  from five files to three (`pitfalls.md`, `capabilities.md`,
+  `inspect-shapes.md`).
+
 ## [0.6.1] - 2026-08-04
 
 ### Fixed
