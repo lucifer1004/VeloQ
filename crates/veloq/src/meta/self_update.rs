@@ -180,6 +180,26 @@ fn latest_release() -> MetaResult<self_update::update::Release> {
         .ok_or(MetaError::SelfUpdateReleaseMissing)
 }
 
+/// Map a build target to the release-archive target. `self_update` defaults
+/// to the build target (`env!("TARGET")`), which for `cargo install` builds
+/// is the host default (`*-unknown-linux-gnu`) while release.yml ships
+/// musl-only Linux archives — map those to the musl triple of the same arch
+/// (the static musl binary runs on gnu hosts). Other targets match their
+/// archives directly.
+fn release_target_for(build_target: &str) -> &str {
+    match build_target {
+        "x86_64-unknown-linux-gnu" => "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-gnu" => "aarch64-unknown-linux-musl",
+        target => target,
+    }
+}
+
+/// Target triple used to select the release archive; see
+/// `release_target_for`.
+fn release_target() -> &'static str {
+    release_target_for(self_update::get_target())
+}
+
 /// Download the matching release archive and atomically replace the running
 /// binary. Output is suppressed so the JSON envelope is the only thing on
 /// stdout; the run never prompts (`no_confirm`). Returns whether the binary
@@ -190,6 +210,7 @@ fn perform_binary_update(current: &str) -> MetaResult<bool> {
         .repo_name(REPO_NAME)
         .bin_name(BIN_NAME)
         .bin_path_in_archive(BIN_PATH_IN_ARCHIVE)
+        .target(release_target())
         .current_version(current)
         .show_output(false)
         .show_download_progress(false)
@@ -368,6 +389,33 @@ mod tests {
     use anyhow::{Context, Result};
     use std::fs;
     use veloq_core::VeloqDiagnostic;
+
+    #[test]
+    fn gnu_linux_builds_download_the_musl_archive() {
+        // cargo-install builds are host-default gnu; the release ships
+        // musl-only Linux archives.
+        assert_eq!(
+            release_target_for("x86_64-unknown-linux-gnu"),
+            "x86_64-unknown-linux-musl"
+        );
+        assert_eq!(
+            release_target_for("aarch64-unknown-linux-gnu"),
+            "aarch64-unknown-linux-musl"
+        );
+    }
+
+    #[test]
+    fn release_targets_pass_through_unchanged() {
+        for target in [
+            "x86_64-unknown-linux-musl",
+            "aarch64-unknown-linux-musl",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-gnu",
+        ] {
+            assert_eq!(release_target_for(target), target);
+        }
+    }
 
     #[test]
     fn newer_release_is_an_update() -> Result<()> {

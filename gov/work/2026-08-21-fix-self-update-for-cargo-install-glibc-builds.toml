@@ -1,0 +1,34 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-21-001"
+title = "Fix self-update for cargo-install (glibc) builds"
+status = "done"
+created = "2026-08-21"
+started = "2026-08-21"
+completed = "2026-08-21"
+refs = [
+    "RFC-0010:C-JSON-RESPONSE",
+    "RFC-0002:C-ERROR-RESPONSE",
+]
+
+[content]
+description = """veloq ships on crates.io, and cargo install builds with the host default target (x86_64-unknown-linux-gnu on Linux). self_update's github backend defaults to the build target (env!("TARGET")) for both release-asset filtering and bin_path_in_archive expansion, but release.yml ships musl-only Linux archives (cargo-zigbuild), so a gnu-built binary looks for veloq-v<ver>-x86_64-unknown-linux-gnu/veloq inside the musl archive and fails with meta.self-update.binary-install. Normalize the download target for Linux gnu builds to the shipped musl triples; the musl static binary runs on gnu hosts. macOS/Windows targets already match the asset names and stay untouched."""
+
+[[content.acceptance_criteria]]
+text = "a veloq binary built for x86_64-unknown-linux-gnu or aarch64-unknown-linux-gnu (cargo install) self-updates by downloading the shipped musl archive of the same arch"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "release-built (musl) binaries keep resolving the musl archive; macOS and Windows target resolution is unchanged"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "unit tests cover the gnu->musl mapping and the pass-through of unchanged targets"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-CLI-IO-CONTRACT"]

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **self-update for `cargo install` builds** — map glibc Linux build targets
+  (`*-unknown-linux-gnu`) to the shipped musl release archives, so
+  cargo-installed binaries can self-update instead of failing with
+  `meta.self-update.binary-install` (WI-2026-08-21-001).
+
 ## [0.6.2] - 2026-08-20
 
 ### Added
