@@ -40,6 +40,7 @@ __pycache__/
 
 # Local/private scratch artifacts
 .omc/
+.tmp/
 
 # CI / pre-commit local state (cache + downloads); keep tracked configs
 /.cargo/*

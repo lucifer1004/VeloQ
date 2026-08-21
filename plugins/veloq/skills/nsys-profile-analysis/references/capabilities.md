@@ -1,29 +1,12 @@
 # Capability gate + trust signals
 
-## Why a capability gate
-
-Most VeloQ calls are conditional on what's actually in the trace.
-NSys exports different table sets depending on capture flags
-(`--gpu-metrics-devices`, `--sample`, `--cuda-graph-trace=…`, etc.)
-and on the NSys version itself. An agent that issues `slices
---name '*step*'` against a trace with no `NVTX_EVENTS` table burns
-both wall-clock time and patience.
-
-**Always probe `summary.data.auxiliary.capabilities` first.** It's
-cheap (every flag is a `SELECT 1 … LIMIT 0` probe, sub-millisecond),
-cached to `<trace>.veloq/meta.bin` on first call, and gives you a boolean
-per table VeloQ cares about. (Capabilities live in
-`data.auxiliary` next to `full_time_range_ns`; `data.rows[]`
-carries the per-table summary.)
+Most verbs are conditional on what's actually in the trace — NSys
+exports different table sets per capture flags and version. Always
+probe first (sub-millisecond probes, cached to `meta.bin`;
+field types via `veloq schema summary`):
 
 ```bash
 veloq summary T | jq '.data.auxiliary.capabilities'
-```
-
-For strict-typed access:
-
-```bash
-veloq schema summary | jq '.data.schema.$defs.CapabilityFlags'
 ```
 
 ## Capability flags — what each unlocks
@@ -50,25 +33,21 @@ veloq schema summary | jq '.data.schema.$defs.CapabilityFlags'
 | `has_nic_metrics`         | `NET_NIC_METRIC` + `TARGET_INFO_NETWORK_METRICS` (dictionary) + `NIC_ID_MAP` + `TARGET_INFO_NIC_INFO` | `metrics --type nic`                                                                                                                                   |
 | `has_target_info`         | `TARGET_INFO_SYSTEM_ENV`                                                                              | `hardware` (returns empty `rows[]` otherwise)                                                                                                          |
 
-`has_graph_trace` and `has_graph_nodes` are **mutually exclusive** in
-practice — NSys's `--cuda-graph-trace` flag picks one. `has_graph_events`
-can coexist with either.
+`has_graph_trace` and `has_graph_nodes` are mutually exclusive
+(`--cuda-graph-trace` picks one); `has_graph_events` coexists with
+either. `has_graph_trace: true` does NOT imply complete graph
+coverage — see `pitfalls.md` "Graph coverage".
 
 ## Schema support — strict 3.x
 
-Today VeloQ ships a single adapter (`v3_standard`) for NSys schema
-3.x. Pre-3.x traces fail at `Trace::open` with a clear error rather
-than being papered over, so a successful `summary` already implies
-canonical column positions and reliable numbers. `summary` does not
-expose an `adapter` block — the trace either opened on 3.x or it
-didn't.
+Single adapter (`v3_standard`) for NSys schema 3.x; pre-3.x traces
+fail at open with a clear error. A successful `summary` already
+implies canonical column positions and reliable numbers.
 
 ## Trust signals on `metrics`
 
-The `coverage` block is universal across all four `--type` variants
-(`gpu`, `nic`, `cpu-sampling`, `cpu-sched`) and lives under
-`.data.auxiliary.common` on every response so the gate is one
-navigation step away regardless of source:
+Universal `coverage` block under `.data.auxiliary.common` on all four
+`--type` variants:
 
 | Field           | Meaning                                                                                                                             |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -77,70 +56,42 @@ navigation step away regardless of source:
 | `trace_ns`      | Primary span duration                                                                                                               |
 | `ratio`         | `covered_ns / trace_ns` clamped to [0,1]                                                                                            |
 
-**Read `coverage.ratio` before trusting metric values.** nsys's GPU
-metric buffer, CPU sample buffer, and SCHED_EVENTS buffer can all
-silently drop data on long captures. For example, if GPU metrics cover
-only a small slice of a longer trace, the reported `mean` for SMs
-Active may describe only that slice rather than the full workload.
+**Read `coverage.ratio` before trusting metric values** — nsys
+buffers (GPU metrics, CPU sampling, SCHED_EVENTS) silently drop on
+long captures, so a reported mean may describe only the covered
+slice. Ratio < ~0.9 ⇒ re-capture: lower `--gpu-metrics-frequency`,
+drop `--cpuctxsw=system-wide`, or cap with `--duration`.
 
-A ratio < ~0.9 typically means re-capture is warranted. Practical
-mitigations on capture side:
+## CPU-sampling-specific signals
 
-- GPU: lower `--gpu-metrics-frequency` (default cadence is high, fewer
-  samples = longer coverage)
-- CPU: drop `--cpuctxsw=system-wide` if it's enabled (more events =
-  faster buffer fill)
-- Always: shorter capture windows or `nsys profile --duration` cap
+On `.data.auxiliary`:
 
-## CPU-sampling-specific trust signals
+| Field                   | What it means                                                             | High value (>0.5) implies                                                                             |
+| ----------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `unresolved_leaf_share` | Fraction of leaf frames with `unresolved=1` (no debug info)               | Most samples are unresolved kernel addresses — usually CPU sleeping in syscalls, not user-code burn   |
+| `kernel_leaf_share`     | Fraction of leaves in kernel mode (`kernelMode=1`)                        | Threads caught inside the kernel — pair with `unresolved` for "blocked" vs "syscall-in-progress"      |
+| `truncated_stack_share` | Fraction of stacks whose deepest frame is `"[Max depth]"` (nsys sentinel) | Stack walks ran out of slots — raise capture-side `--samples-per-backtrace`                           |
 
-`metrics --type cpu-sampling` adds three more:
+High `unresolved_leaf_share` + high `kernel_leaf_share` = CPU mostly
+idle/waiting on GPU. Low values + concrete leaf symbols = real
+user-space work.
 
-| Field                   | What it means                                                             | High value (>0.5) implies                                                                                                         |
-| ----------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `unresolved_leaf_share` | Fraction of leaf frames with `unresolved=1` (no debug info)               | Most "samples" are unresolved kernel addresses — usually CPU sleeping in syscalls (futex_wait, poll, etc.), not user-code burning |
-| `kernel_leaf_share`     | Fraction of leaves in kernel mode (`kernelMode=1`)                        | Most samples caught threads inside the kernel — pair with `unresolved` for the "blocked" vs "syscall-in-progress" distinction     |
-| `truncated_stack_share` | Fraction of stacks whose deepest frame is `"[Max depth]"` (nsys sentinel) | Stack walks ran out of slots — raise capture-side `--samples-per-backtrace` for fuller stacks                                     |
+## CPU-sched-specific signals
 
-**Interpretation pattern**: high `unresolved_leaf_share` +
-high `kernel_leaf_share` = "CPU is mostly idle / waiting on the
-GPU". Low values + concrete leaf symbols (`blas_thread_server`,
-`_PyEval_EvalFrameDefault`, etc.) = "CPU is genuinely doing
-work in user-space". The two together let an agent classify the
-workload's nature without reading any stack.
+On `.data.auxiliary` (next to `.common`):
 
-## CPU-sched-specific trust signals
-
-`metrics --type cpu-sched` adds two:
-
-| Field                    | What it means                                                     | High value implies                                                                                                                                                    |
-| ------------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unresolved_state_share` | Fraction of `SCHED_EVENTS` rows with `threadState = Unknown`      | Kernel didn't label sched-out reasons; the `state` axis is unreliable for this capture (use `tid` / `cpu` axes instead)                                               |
-| `per_cpu_max_gap_ns`     | Max gap (ns) between consecutive `SCHED_EVENTS` on any single CPU | That CPU's stream stopped logging — sched buffer drops or genuine idle. Compare to `bucket_ns` / `coverage.covered_ns` to judge severity. `null` when <2 events match |
-
-These are on `.data.auxiliary` (next to `.common`) because they're
-specific to the cpu-sched source — coverage lives on `.common` so
-the universal gate stays one navigation step across every
-`--type`, while per-source signals stay where they're scoped.
+| Field                    | What it means                                                     | High value implies                                                                                                                |
+| ------------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `unresolved_state_share` | Fraction of `SCHED_EVENTS` rows with `threadState = Unknown`      | Kernel didn't label sched-out reasons; the `state` axis is unreliable — use `tid` / `cpu` axes instead                            |
+| `per_cpu_max_gap_ns`     | Max gap (ns) between consecutive `SCHED_EVENTS` on any single CPU | That CPU's stream stopped logging (buffer drops or genuine idle); compare to `bucket_ns` / `covered_ns`. `null` when <2 events    |
 
 ## When the gate matters most
 
-- **Long traces** (>30 s, especially with `--gpu-metrics-devices=all`):
-  `coverage.ratio` will likely be low.
-- **Cluster traces** without OFED user-space: `TARGET_INFO_NIC_INFO`
-  can be present even when `NET_NIC_METRIC` is absent. In that case
-  `hardware` lists NICs, but `summary.auxiliary.capabilities.has_nic_metrics`
-  is false and `metrics --type nic` will ask for a recapture with
-  `--nic-metrics=lf` or `=hf`.
-- **Multi-process traces**: `has_cuda_contexts` is required for
-  `correlate` and for `--nvtx`-scoped queries on GPU-side kinds
-  (kernel / memcpy / memset / sync) to disambiguate which (dev, ctx)
-  a runtime call targeted. Without it the verb bails up-front for
-  GPU-side scopes rather than silently mis-attributing; runtime-only
-  scopes (`--type runtime --nvtx`) still work because they walk on
-  thread id alone.
-- **Node-mode CUDA graph captures**: kernels-inside-graphs are in
-  `CUPTI_ACTIVITY_KIND_KERNEL` (with `graphId` / `graphNodeId`
-  populated), not in `CUPTI_ACTIVITY_KIND_GRAPH_TRACE`. `stats
---type graph` returns nothing; use `--group-by graph` or
-  `--group-by graph_node` on `--type kernel` instead.
+- Long traces (>30 s, especially `--gpu-metrics-devices=all`):
+  expect low `coverage.ratio`.
+- Cluster traces without OFED user-space: `hardware` may list NICs
+  while `has_nic_metrics` is false — `metrics --type nic` asks for
+  recapture with `--nic-metrics=lf|hf`.
+- Multi-process traces: `has_cuda_contexts` gates `correlate` and
+  GPU-side `--nvtx` scopes; without it verbs bail up-front rather
+  than mis-attribute (runtime-only scopes still work).
