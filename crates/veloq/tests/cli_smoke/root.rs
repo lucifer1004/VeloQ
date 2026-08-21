@@ -142,6 +142,24 @@ fn agent_install_missing_checkout_errors_before_cli() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn agent_install_and_update_help_name_the_default_marketplace_source() -> Result<()> {
+    for sub in ["install", "update"] {
+        let out = run_veloq(["agent", sub, "--help"])?;
+        assert!(
+            out.status.success(),
+            "agent {sub} --help failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("lucifer1004/veloq"),
+            "agent {sub} --help must name the default Git marketplace source; got: {stdout}"
+        );
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn agent_install_codex_uses_native_cli_without_leaking_child_stdout() -> Result<()> {
@@ -365,6 +383,185 @@ exit 0
     assert!(
         !log.lines().any(|line| line == "plugin add veloq@veloq"),
         "codex install side effect ran before claude preflight failed: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_codex_defaults_to_git_marketplace() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+exit 0
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "install", "codex"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent install codex failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing install row: {v}"))?;
+    assert_eq!(row.get("agent").and_then(Value::as_str), Some("codex"));
+    assert_eq!(row.get("status").and_then(Value::as_str), Some("installed"));
+    assert!(
+        row.get("checkout").is_none(),
+        "marketplace install must not report a checkout: {row}"
+    );
+    assert_eq!(
+        row.get("message").and_then(Value::as_str),
+        Some("installed from Git marketplace lucifer1004/veloq")
+    );
+    let commands = row
+        .get("commands")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing commands: {row}"))?;
+    assert_eq!(
+        commands,
+        &vec![
+            Value::String("codex plugin marketplace add lucifer1004/veloq".to_string()),
+            Value::String("codex plugin add veloq@veloq".to_string()),
+        ]
+    );
+
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        log.contains("plugin marketplace add lucifer1004/veloq"),
+        "Git marketplace add command not invoked: {log}"
+    );
+    assert!(
+        log.contains("plugin add veloq@veloq"),
+        "plugin add command not invoked: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_claude_defaults_to_git_marketplace() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("claude.log");
+    let fake_claude = bin_dir.join("claude");
+    write_executable(
+        &fake_claude,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CLAUDE_LOG"
+exit 0
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "install", "claude"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CLAUDE_LOG", log.to_string_lossy().to_string()),
+        ],
+    )?;
+    assert!(
+        out.status.success(),
+        "agent install claude failed: stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).context("agent install stdout JSON")?;
+    let row = v
+        .pointer("/data/rows")
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow!("missing install row: {v}"))?;
+    assert_eq!(row.get("agent").and_then(Value::as_str), Some("claude"));
+    assert_eq!(row.get("status").and_then(Value::as_str), Some("installed"));
+    assert!(
+        row.get("checkout").is_none(),
+        "marketplace install must not report a checkout: {row}"
+    );
+
+    let log = std::fs::read_to_string(&log).context("read fake claude log")?;
+    assert!(
+        log.contains("plugin marketplace add lucifer1004/veloq"),
+        "Git marketplace add command not invoked: {log}"
+    );
+    assert!(
+        log.contains("plugin install veloq@veloq"),
+        "plugin install command not invoked: {log}"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_marketplace_native_failure_is_handled() -> Result<()> {
+    let temp = tempfile::tempdir().context("create agent install tempdir")?;
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create fake bin dir")?;
+    let log = temp.path().join("codex.log");
+    let fake_codex = bin_dir.join("codex");
+    write_executable(
+        &fake_codex,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$VELOQ_FAKE_CODEX_LOG"
+case "$*" in
+  *--help) exit 0 ;;
+esac
+printf '%s\n' "fatal: unable to reach Git host" >&2
+exit 1
+"#,
+    )?;
+    let out = run_veloq_with_env(
+        ["agent", "install", "codex"],
+        [
+            ("PATH", bin_dir.to_string_lossy().to_string()),
+            ("VELOQ_FAKE_CODEX_LOG", log.to_string_lossy().to_string()),
+            (
+                "CODEX_HOME",
+                temp.path().join("codex-home").to_string_lossy().to_string(),
+            ),
+        ],
+    )?;
+    let v = assert_error_code(&out, "meta.agent.cli-failed")?;
+    assert_eq!(v.get("command").and_then(Value::as_str), Some("agent"));
+    let message = v
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing error.message: {v}"))?;
+    assert!(
+        message.contains("codex"),
+        "error must carry the agent context: {message}"
+    );
+    assert!(
+        message.contains("plugin marketplace add lucifer1004/veloq"),
+        "error must carry the failed marketplace command: {message}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).is_empty(),
+        "JSON mode should keep stderr quiet"
+    );
+    let log = std::fs::read_to_string(&log).context("read fake codex log")?;
+    assert!(
+        !log.lines().any(|line| line == "plugin add veloq@veloq"),
+        "plugin add must not run after the marketplace add failed: {log}"
     );
     Ok(())
 }

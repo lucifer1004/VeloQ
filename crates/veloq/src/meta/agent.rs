@@ -8,8 +8,8 @@
 use agent_plugin_installer::{
     AgentPluginError, AgentPluginOperation, AgentRuntime, AgentSelector as InstallerAgentSelector,
     BatchFailure, BatchOperationError, BatchStatus, DoctorStatus, FailurePolicy, InstallRequest,
-    OperationError, PluginRef, SourceUpdateRequest, UninstallRequest, UpdateRequest,
-    check_operation as check_runtime_operation, doctor as doctor_runtime,
+    MarketplaceSource, OperationError, PluginRef, SourceUpdateRequest, UninstallRequest,
+    UpdateRequest, check_operation as check_runtime_operation, doctor as doctor_runtime,
     install as install_runtime, uninstall as uninstall_runtime, update as update_runtime,
     update_from_source_many,
 };
@@ -28,6 +28,7 @@ const VELOQ_PLUGIN: PluginRef<'static> = PluginRef {
     selector: "veloq@veloq",
     name: "veloq",
 };
+const VELOQ_MARKETPLACE_SOURCE: &str = "lucifer1004/veloq";
 const AGENT_VALUES: [&str; 3] = ["codex", "claude", "all"];
 
 #[derive(Debug)]
@@ -108,14 +109,19 @@ pub fn cli() -> Command {
         )
         .subcommand(
             Command::new("install")
-                .about("Install VeloQ Agent Skills into a supported agent runtime")
+                .about(
+                    "Install VeloQ Agent Skills into a supported agent runtime \
+                     (default source: Git marketplace lucifer1004/veloq)",
+                )
                 .arg(agent_arg(true))
                 .arg(
                     Arg::new(FROM_CHECKOUT)
                         .long(FROM_CHECKOUT)
                         .value_name("PATH")
-                        .required(true)
-                        .help("Install from a local VeloQ checkout with plugin package metadata"),
+                        .help(
+                            "Install from a local VeloQ checkout with plugin package metadata; \
+                             omit to install from the Git marketplace lucifer1004/veloq",
+                        ),
                 ),
         )
         .subcommand(
@@ -127,7 +133,9 @@ pub fn cli() -> Command {
                         .long(FROM_CHECKOUT)
                         .value_name("PATH")
                         .help(
-                            "Update from a local VeloQ checkout; omit for a registered Git marketplace",
+                            "Update from a local VeloQ checkout; omit to update through the \
+                             registered `veloq` Git marketplace (default source: \
+                             lucifer1004/veloq)",
                         ),
                 ),
         )
@@ -195,29 +203,52 @@ fn doctor(matches: &ArgMatches) -> MetaResult<AgentPayload> {
 
 fn install(matches: &ArgMatches) -> MetaResult<AgentPayload> {
     let agents = selected_agents(matches.get_one::<String>(SELECTOR).map(String::as_str));
-    let checkout = matches
-        .get_one::<String>(FROM_CHECKOUT)
-        .map(PathBuf::from)
-        .ok_or_else(|| MetaError::missing_argument(FROM_CHECKOUT))?;
-    for agent in &agents {
-        validate_checkout(*agent, &checkout)?;
+    if let Some(checkout) = matches.get_one::<String>(FROM_CHECKOUT).map(PathBuf::from) {
+        for agent in &agents {
+            validate_checkout(*agent, &checkout)?;
+        }
+        preflight_agents(&agents, AgentPluginOperation::Install)?;
+        let mut rows = Vec::with_capacity(agents.len());
+        for agent in agents {
+            let install_checkout = install_checkout(agent, &checkout)?;
+            let outcome = install_runtime(
+                agent,
+                InstallRequest::local(&install_checkout, VELOQ_PLUGIN),
+            )
+            .map_err(map_operation_error)?;
+            rows.push(success_row(
+                outcome.runtime,
+                "install",
+                AgentStatus::Installed,
+                outcome.commands,
+                Some(&checkout),
+            ));
+        }
+        return Ok(payload(rows));
     }
+
     preflight_agents(&agents, AgentPluginOperation::Install)?;
     let mut rows = Vec::with_capacity(agents.len());
     for agent in agents {
-        let install_checkout = install_checkout(agent, &checkout)?;
         let outcome = install_runtime(
             agent,
-            InstallRequest::local(&install_checkout, VELOQ_PLUGIN),
+            InstallRequest::new(
+                MarketplaceSource::new(VELOQ_MARKETPLACE_SOURCE),
+                VELOQ_PLUGIN,
+            ),
         )
         .map_err(map_operation_error)?;
-        rows.push(success_row(
+        let mut row = success_row(
             outcome.runtime,
             "install",
             AgentStatus::Installed,
             outcome.commands,
-            Some(&checkout),
+            None,
+        );
+        row.message = Some(format!(
+            "installed from Git marketplace {VELOQ_MARKETPLACE_SOURCE}"
         ));
+        rows.push(row);
     }
     Ok(payload(rows))
 }

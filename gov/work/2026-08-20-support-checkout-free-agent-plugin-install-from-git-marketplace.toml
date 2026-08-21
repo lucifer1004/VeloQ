@@ -1,0 +1,41 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-20-001"
+title = "Support checkout-free agent plugin install from Git marketplace"
+status = "done"
+created = "2026-08-20"
+started = "2026-08-20"
+completed = "2026-08-20"
+refs = [
+    "RFC-0010:C-PACKAGE-SOURCE",
+    "RFC-0010:C-COMMAND-SURFACE",
+    "RFC-0010:C-SUPPORTED-AGENTS",
+    "RFC-0010:C-NATIVE-CLI-ORCHESTRATION",
+]
+
+[content]
+description = "veloq agent install currently requires --from-checkout PATH, so users who installed the veloq binary via install.sh cannot install VeloQ Agent Skills without cloning the source repo. RFC-0010:C-PACKAGE-SOURCE explicitly permits release-/URL-based package sources, and the update operation already assumes a registered Git marketplace named veloq — which only a checkout install can register today (dead end). Make --from-checkout optional: when omitted, install from the canonical Git marketplace source lucifer1004/veloq (the repo root already carries .claude-plugin/marketplace.json and .agents/plugins/marketplace.json, both named veloq), preserving every existing local-checkout behavior including package-metadata validation. Interpretation note (owner-reviewed): RFC-0010:C-COMMAND-SURFACE's install-readiness clause about local checkout package metadata is scoped to the local-checkout path by C-PACKAGE-SOURCE's extension clause; the marketplace path's readiness is CLI discoverability plus native non-interactive subcommands, and native CLI failures surface as handled diagnostic errors per RFC-0010:C-NATIVE-CLI-ORCHESTRATION."
+
+[[content.acceptance_criteria]]
+text = "install without --from-checkout installs veloq@veloq from the Git marketplace source lucifer1004/veloq for codex and claude (native marketplace add + plugin install), and a subsequent checkout-free update keeps working against the registered veloq marketplace"
+status = "done"
+category = "added"
+
+[[content.acceptance_criteria]]
+text = "install with --from-checkout keeps the existing local-checkout behavior byte-for-byte, including per-runtime package-metadata validation and the handled diagnostic on missing metadata"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "native CLI failures on the marketplace path (network, unknown repo, native errors) surface as handled structured diagnostic errors with agent/operation context, never as unhandled exits"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "CLI contract/smoke tests cover both install paths (mocked native CLIs) and install/update help text documents the default marketplace source"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-CLI-IO-CONTRACT"]
