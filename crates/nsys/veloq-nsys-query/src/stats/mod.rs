@@ -560,14 +560,22 @@ fn run_after_limit(trace: &Trace, req: StatsRequest) -> NsysQueryResult<StatsRes
         None => None,
     };
 
-    // Probe schema once so optional columns (currently only
-    // `mangledName` on the kernel table) can resolve to
+    // Probe schema once so optional columns (`mangledName` on the
+    // kernel table; `graphId` / `graphNodeId` on kernel/memcpy/memset,
+    // which Nsight 2025.3 node-mode exports may omit) can resolve to
     // a real ref or NULL without a per-kind reprobe inside
     // `per_kind_subquery`. The probe is cheap (one
     // information_schema query) and the result is also consulted to
     // pick the effective name axis when `--group-by mangled` would
     // otherwise hit an absent column.
-    let columns = crate::column_map::load_columns(trace.conn(), &["CUPTI_ACTIVITY_KIND_KERNEL"])?;
+    let columns = crate::column_map::load_columns(
+        trace.conn(),
+        &[
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            "CUPTI_ACTIVITY_KIND_MEMCPY",
+            "CUPTI_ACTIVITY_KIND_MEMSET",
+        ],
+    )?;
     let axis_resolution = resolve_name_axis(req.group_by.name, &columns);
     let effective_group_by = GroupBy {
         name: axis_resolution.effective,

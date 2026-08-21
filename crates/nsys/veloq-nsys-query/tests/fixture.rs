@@ -2250,6 +2250,120 @@ pub fn with_graph_nodes() -> Result<Fixture> {
     finalize_to_pqtdir(&conn, dir)
 }
 
+/// Nsight 2025.3 `--cuda-graph-trace=node` shape observed on real
+/// exports: `CUDA_GRAPH_NODE_EVENTS` is present, but the
+/// kernel/memcpy/memset tables are exported WITHOUT the `graphId` /
+/// `graphNodeId` columns. Query paths must degrade to NULL graph
+/// attribution (and zero node-mode replays) instead of failing SQL
+/// compilation.
+///
+/// Layout:
+///   - 2 kernel rows sharing correlationId 7100 (would-be graph
+///     nodes, but the trace has no columns to say so).
+///   - 1 `cudaGraphLaunch_v10000` runtime row (correlationId 7100).
+///   - 1 NODE_EVENTS row, so the trace still reads as node-mode.
+pub fn with_graph_nodes_missing_graph_columns() -> Result<Fixture> {
+    let dir = tempfile::tempdir().context("create tempdir")?;
+    let conn = Connection::open_in_memory().context("open in-memory duckdb")?;
+
+    // Canonical schema minus GRAPH_TRACE (node-mode) and minus the
+    // three GPU-work tables, which we re-create below without the
+    // graph columns.
+    setup_canonical_schema_minus(
+        &conn,
+        &[
+            "CUPTI_ACTIVITY_KIND_GRAPH_TRACE",
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            "CUPTI_ACTIVITY_KIND_MEMCPY",
+            "CUPTI_ACTIVITY_KIND_MEMSET",
+        ],
+    )?;
+    conn.execute_batch(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (\
+            start BIGINT, \"end\" BIGINT, \
+            deviceId BIGINT, contextId BIGINT, streamId BIGINT, \
+            shortName BIGINT, demangledName BIGINT, mangledName BIGINT, \
+            gridX BIGINT, gridY BIGINT, gridZ BIGINT, \
+            blockX BIGINT, blockY BIGINT, blockZ BIGINT, \
+            correlationId BIGINT, \
+            registersPerThread BIGINT, \
+            staticSharedMemory BIGINT, \
+            dynamicSharedMemory BIGINT, \
+            globalPid BIGINT\
+         );\
+         CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY (\
+            start BIGINT, \"end\" BIGINT, \
+            deviceId BIGINT, contextId BIGINT, streamId BIGINT, \
+            bytes BIGINT, copyKind BIGINT, correlationId BIGINT\
+         );\
+         CREATE TABLE CUPTI_ACTIVITY_KIND_MEMSET (\
+            start BIGINT, \"end\" BIGINT, \
+            deviceId BIGINT, contextId BIGINT, streamId BIGINT, \
+            bytes BIGINT, value BIGINT, correlationId BIGINT\
+         );",
+    )?;
+
+    let pid: i64 = 12345;
+    let global_tid: i64 = pid << 24;
+    conn.execute(
+        "INSERT INTO TARGET_INFO_CUDA_CONTEXT_INFO (deviceId, contextId, processId) \
+         VALUES (?, ?, ?)",
+        params![0i32, 1i64, pid],
+    )?;
+    conn.execute(
+        "INSERT INTO StringIds (id, value) VALUES (?, ?)",
+        params![1i64, "graph_inner_kernel"],
+    )?;
+    conn.execute(
+        "INSERT INTO StringIds (id, value) VALUES (?, ?)",
+        params![2i64, "cudaGraphLaunch_v10000"],
+    )?;
+    conn.execute(
+        "INSERT INTO StringIds (id, value) VALUES (?, ?)",
+        params![3i64, "Graph Node Creation"],
+    )?;
+    conn.execute(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME \
+         (start, \"end\", globalTid, correlationId, nameId) \
+         VALUES (?, ?, ?, ?, ?)",
+        params![99_950_000i64, 100_000_000i64, global_tid, 7100i64, 2i64],
+    )?;
+
+    for (s, e) in [(100_000_000i64, 105_000_000i64), (105_500_000, 115_500_000)] {
+        conn.execute(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL \
+             (start, \"end\", deviceId, contextId, streamId, \
+              shortName, demangledName, gridX, gridY, gridZ, \
+              blockX, blockY, blockZ, correlationId, \
+              registersPerThread, staticSharedMemory, dynamicSharedMemory, globalPid) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                s, e, 0i32, 1i64, 7i64, 1i64, 1i64, 1i64, 1i64, 1i64, 128i64, 1i64, 1i64, 7100i64,
+                32i64, 0i64, 0i64, 0i64,
+            ],
+        )?;
+    }
+
+    // One NODE_EVENTS row keeps the node-mode shape (has_graph_nodes
+    // stays true) even though the kernel table carries no node ids.
+    conn.execute(
+        "INSERT INTO CUDA_GRAPH_NODE_EVENTS \
+         (start, \"end\", eventClass, globalTid, nameId, graphNodeId, originalGraphNodeId) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            10_000_000i64,
+            10_000_000i64,
+            77i64,
+            global_tid,
+            3i64,
+            1001i64,
+            Option::<i64>::None
+        ],
+    )?;
+
+    finalize_to_pqtdir(&conn, dir)
+}
+
 /// Two rank processes expose one private CUDA device each, so both
 /// reuse the exact local identity `(device=0, context=1, stream=7,
 /// correlationId=42)`. Their graph replays are 635ms apart. This is the

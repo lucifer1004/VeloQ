@@ -1,4 +1,5 @@
 use crate::EventKind;
+use crate::column_map::{self, ColumnMap};
 
 /// Per-kind SQL facts shared across NSys query verbs.
 #[derive(Debug, Clone, Copy)]
@@ -73,19 +74,33 @@ impl EventSemantics {
         }
     }
 
-    pub(crate) fn graph_id_expr(self) -> &'static str {
+    /// `graphId` projection for the kind's table. Kernel is
+    /// schema-aware: Nsight 2025.3 `--cuda-graph-trace=node` exports
+    /// may omit the column entirely, in which case we project NULL
+    /// (no graph attribution to report). `EventKind::Graph` reads
+    /// `CUPTI_ACTIVITY_KIND_GRAPH_TRACE.graphId`, which is part of
+    /// that table's core schema and stays unconditional.
+    pub(crate) fn graph_id_expr(self, columns: &ColumnMap) -> String {
         match self.kind {
-            EventKind::Kernel | EventKind::Graph => "CAST(t.graphId AS BIGINT)",
-            _ => "CAST(NULL AS BIGINT)",
+            EventKind::Kernel => format!(
+                "CAST({} AS BIGINT)",
+                column_map::maybe_col(columns, self.kind.table(), "graphId")
+            ),
+            EventKind::Graph => "CAST(t.graphId AS BIGINT)".to_string(),
+            _ => "CAST(NULL AS BIGINT)".to_string(),
         }
     }
 
-    pub(crate) fn graph_node_id_expr(self) -> &'static str {
+    /// `graphNodeId` projection for the kind's table. Schema-aware
+    /// for the same reason as [`Self::graph_id_expr`]: node-mode traces may
+    /// lack the column on kernel/memcpy/memset.
+    pub(crate) fn graph_node_id_expr(self, columns: &ColumnMap) -> String {
         match self.kind {
-            EventKind::Kernel | EventKind::Memcpy | EventKind::Memset => {
-                "CAST(t.graphNodeId AS BIGINT)"
-            }
-            _ => "CAST(NULL AS BIGINT)",
+            EventKind::Kernel | EventKind::Memcpy | EventKind::Memset => format!(
+                "CAST({} AS BIGINT)",
+                column_map::maybe_col(columns, self.kind.table(), "graphNodeId")
+            ),
+            _ => "CAST(NULL AS BIGINT)".to_string(),
         }
     }
 
@@ -158,6 +173,17 @@ mod tests {
 
     #[test]
     fn graph_and_byte_expressions_are_kind_specific() {
+        let mut columns = ColumnMap::new();
+        columns.insert(
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            ["graphId".to_string(), "graphNodeId".to_string()]
+                .into_iter()
+                .collect(),
+        );
+        columns.insert(
+            "CUPTI_ACTIVITY_KIND_MEMCPY",
+            ["graphNodeId".to_string()].into_iter().collect(),
+        );
         assert_eq!(
             EventSemantics::new(EventKind::Memcpy).stats_bytes_expr(),
             "CAST(COALESCE(t.bytes, 0) AS BIGINT)"
@@ -166,13 +192,35 @@ mod tests {
             EventSemantics::new(EventKind::Kernel).stats_bytes_expr(),
             "CAST(NULL AS BIGINT)"
         );
+        // GRAPH_TRACE's graphId is core schema — no probing.
         assert_eq!(
-            EventSemantics::new(EventKind::Graph).graph_id_expr(),
+            EventSemantics::new(EventKind::Graph).graph_id_expr(&ColumnMap::new()),
             "CAST(t.graphId AS BIGINT)"
         );
         assert_eq!(
-            EventSemantics::new(EventKind::Memcpy).graph_node_id_expr(),
-            "CAST(t.graphNodeId AS BIGINT)"
+            EventSemantics::new(EventKind::Kernel).graph_id_expr(&columns),
+            "CAST(t.\"graphId\" AS BIGINT)"
+        );
+        assert_eq!(
+            EventSemantics::new(EventKind::Memcpy).graph_node_id_expr(&columns),
+            "CAST(t.\"graphNodeId\" AS BIGINT)"
+        );
+    }
+
+    #[test]
+    fn graph_expressions_project_null_when_columns_absent() {
+        let columns = ColumnMap::new();
+        assert_eq!(
+            EventSemantics::new(EventKind::Kernel).graph_id_expr(&columns),
+            "CAST(NULL AS BIGINT)"
+        );
+        assert_eq!(
+            EventSemantics::new(EventKind::Kernel).graph_node_id_expr(&columns),
+            "CAST(NULL AS BIGINT)"
+        );
+        assert_eq!(
+            EventSemantics::new(EventKind::Memset).graph_node_id_expr(&columns),
+            "CAST(NULL AS BIGINT)"
         );
     }
 }

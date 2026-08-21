@@ -24,8 +24,8 @@ pub(crate) struct StatsEventScan {
     pub(crate) context_expr: &'static str,
     pub(crate) stream_expr: &'static str,
     pub(crate) bytes_expr: &'static str,
-    pub(crate) graph_id_expr: &'static str,
-    pub(crate) graph_node_id_expr: &'static str,
+    pub(crate) graph_id_expr: String,
+    pub(crate) graph_node_id_expr: String,
     pub(crate) event_type_expr: &'static str,
     pub(crate) where_clause: String,
     pub(crate) params: Vec<Value>,
@@ -114,6 +114,10 @@ pub(crate) fn search_rank_select(
 
 /// Build the common scan semantics for one `stats` event table.
 ///
+/// `columns` is the probed schema map; schema-optional columns
+/// (`graphId` / `graphNodeId` on kernel/memcpy/memset) project NULL
+/// when the trace omits them.
+///
 /// When a time window is present the returned params are ordered as:
 /// clipped-duration `end,start`, then overlap-filter `end,start`.
 pub(crate) fn stats_event_scan(
@@ -121,6 +125,7 @@ pub(crate) fn stats_event_scan(
     abs_window: Option<(i64, i64)>,
     nvtx_scope: crate::nvtx_attribution::NvtxScope,
     collapse_versioned: bool,
+    columns: &crate::column_map::ColumnMap,
 ) -> NsysQueryResult<StatsEventScan> {
     ensure_stats_scan_kind(kind)?;
     let sem = EventSemantics::new(kind);
@@ -146,8 +151,8 @@ pub(crate) fn stats_event_scan(
         context_expr: sem.context_expr(),
         stream_expr: sem.stream_expr(),
         bytes_expr: sem.stats_bytes_expr(),
-        graph_id_expr: sem.graph_id_expr(),
-        graph_node_id_expr: sem.graph_node_id_expr(),
+        graph_id_expr: sem.graph_id_expr(columns),
+        graph_node_id_expr: sem.graph_node_id_expr(columns),
         event_type_expr: sem.event_type_expr(),
         where_clause,
         params,
@@ -464,6 +469,7 @@ mod tests {
             Some((10, 20)),
             crate::nvtx_attribution::NvtxScope::None,
             false,
+            &crate::column_map::ColumnMap::new(),
         )?;
         assert_eq!(
             scan.duration_expr,
@@ -490,6 +496,7 @@ mod tests {
             None,
             crate::nvtx_attribution::NvtxScope::None,
             true,
+            &crate::column_map::ColumnMap::new(),
         )?;
         assert!(scan.display_expr.starts_with("regexp_replace("));
         assert!(scan.short_expr.starts_with("regexp_replace("));
@@ -509,6 +516,7 @@ mod tests {
             None,
             crate::nvtx_attribution::NvtxScope::None,
             false,
+            &crate::column_map::ColumnMap::new(),
         )?;
         assert_eq!(nvtx.where_clause, r#"WHERE t."end" IS NOT NULL"#);
 
@@ -517,6 +525,7 @@ mod tests {
             None,
             crate::nvtx_attribution::NvtxScope::Attributed,
             false,
+            &crate::column_map::ColumnMap::new(),
         )?;
         assert_eq!(graph.where_clause, "WHERE FALSE");
         assert!(graph.params.is_empty());

@@ -70,10 +70,15 @@ pub struct CapabilityFlags {
     /// `CUDA_GRAPH_NODE_EVENTS` present — per-node-within-a-graph
     /// metadata. Set when the workload was captured with
     /// `--cuda-graph-trace=node`. In that mode kernels-inside-graphs
-    /// *are* present in `CUPTI_ACTIVITY_KIND_KERNEL` with `graphId` and
-    /// `graphNodeId` populated, and this table holds per-node creation
-    /// metadata. Mutually exclusive in practice with `has_graph_trace`
-    /// — NSys produces one or the other depending on the capture flag.
+    /// are present in `CUPTI_ACTIVITY_KIND_KERNEL`, usually with
+    /// `graphId` and `graphNodeId` populated — but some node-mode
+    /// exports (observed with Nsight 2025.3) omit those two columns
+    /// entirely, so
+    /// consumers must treat them as schema-optional (query paths
+    /// project NULL and report no graph attribution when absent).
+    /// This table holds per-node creation metadata. Mutually
+    /// exclusive in practice with `has_graph_trace` — NSys produces
+    /// one or the other depending on the capture flag.
     pub has_graph_nodes: bool,
     /// `CUDA_GRAPH_EVENTS` present — host-side graph construction
     /// events (`Graph Creation` / `GraphExec Creation`), captured via

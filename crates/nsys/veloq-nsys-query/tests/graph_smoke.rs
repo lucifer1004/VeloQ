@@ -867,3 +867,92 @@ fn inspect_overhead_returns_details_with_label() -> Result<()> {
     }
     Ok(())
 }
+
+// ===== Node-mode without graph columns (Nsight 2025.3) ======================
+//
+// Real Nsight 2025.3 `--cuda-graph-trace=node` exports may omit the
+// `graphId` / `graphNodeId` columns from the kernel/memcpy/memset
+// tables entirely (NODE_EVENTS is still present). These tests pin the
+// degrade-to-NULL behaviour: verbs succeed, graph attribution is NULL,
+// and graph-replays reports no node-mode replays rather than failing.
+
+#[test]
+fn stats_tolerates_kernel_table_without_graph_columns() -> Result<()> {
+    let trace = fixture::with_graph_nodes_missing_graph_columns()?;
+    let req = veloq_nsys_query::stats::StatsRequest {
+        kinds: KindFilter::Only(vec![EventKind::Kernel]),
+        group_by: veloq_nsys_query::stats::GroupBy::from_arg("no-name,graph")?,
+        ..Default::default()
+    };
+    let r = veloq_nsys_query::stats::run(trace.path(), req)?;
+    // Both kernels land in the single graph_id=NULL bucket.
+    assert_eq!(r.total_matched, 1);
+    let row = r
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected one stats row"))?;
+    assert_eq!(row.count, 2);
+    assert_eq!(row.total_ns, 15_000_000, "5ms + 10ms");
+    assert!(row.graph_id.is_none(), "graph column absent → NULL");
+    assert!(row.graph_node_id.is_none(), "graph column absent → NULL");
+    Ok(())
+}
+
+#[test]
+fn search_tolerates_kernel_table_without_graph_columns() -> Result<()> {
+    let trace = fixture::with_graph_nodes_missing_graph_columns()?;
+    let req = veloq_nsys_query::search::SearchRequest {
+        kinds: KindFilter::Only(vec![EventKind::Kernel]),
+        limit: 10,
+        ..Default::default()
+    };
+    let r = veloq_nsys_query::search::run(trace.path(), req)?;
+    assert_eq!(r.rows.len(), 2);
+    for h in &r.rows {
+        let b = h.base();
+        assert_eq!(b.row_id.kind, EventKind::Kernel);
+        assert_eq!(b.name, "graph_inner_kernel");
+    }
+    Ok(())
+}
+
+#[test]
+fn graph_replays_reports_no_node_replays_without_graph_columns() -> Result<()> {
+    let trace = fixture::with_graph_nodes_missing_graph_columns()?;
+    let r = veloq_nsys_query::graph_replays::run(
+        trace.path(),
+        veloq_nsys_query::graph_replays::GraphReplaysRequest::default(),
+    )?;
+    // No graphNodeId column → the node-event scan yields zero rows, so
+    // the trace has no replay evidence to report (not an error).
+    assert_eq!(r.capture_mode.to_string(), "none");
+    assert_eq!(r.total_matched, 0);
+    assert!(r.rows.is_empty());
+    Ok(())
+}
+
+#[test]
+fn inspect_graph_node_tolerates_kernel_table_without_graph_columns() -> Result<()> {
+    let trace = fixture::with_graph_nodes_missing_graph_columns()?;
+    // NODE_EVENTS rowid 1 (graphNodeId 1001). The kernel table has no
+    // graphId/graphNodeId columns, so the enrichment join key is gone:
+    // graph_id / graph_exec_id must degrade to None, not a SQL error.
+    let id = RowId::new(EventKind::GraphNode, 1);
+    let r = veloq_nsys_query::inspect::run(trace.path(), &[id])?;
+    let first = r
+        .rows
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected one event"))?;
+    match first {
+        veloq_nsys_query::inspect::EventDetails::GraphNode(n) => {
+            assert_eq!(n.graph_node_id, 1001);
+            assert!(n.graph_id.is_none(), "no kernel graphId column → None");
+            assert!(
+                n.graph_exec_id.is_none(),
+                "graph_exec_id chains off graph_id → None"
+            );
+        }
+        other => anyhow::bail!("expected EventDetails::GraphNode, got {other:?}"),
+    }
+    Ok(())
+}

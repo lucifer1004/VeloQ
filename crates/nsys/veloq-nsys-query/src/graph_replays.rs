@@ -7,7 +7,10 @@
 //! - `--cuda-graph-trace=node`: graph-captured GPU work lands in the
 //!   normal kernel/memcpy/memset tables with `graphNodeId` populated.
 //!   Replays are keyed by the process-aware correlation identity
-//!   `(native_pid, deviceId, contextId, correlationId)`.
+//!   `(native_pid, deviceId, contextId, correlationId)`. Some node-mode
+//!   exports (observed with Nsight 2025.3) omit the `graphId` /
+//!   `graphNodeId` columns entirely; those traces report zero node-mode replays rather than
+//!   failing.
 //!
 //! Raw `correlationId` is never used alone. Every public row carries
 //! the [`veloq_nsys_data::SyntheticId`] display value for the full
@@ -383,7 +386,7 @@ pub fn ensure_resident_index(trace: &Trace) -> NsysQueryResult<bool> {
             Ok(true)
         }
         CaptureMode::GraphNodes => {
-            let source = source_node_event_subqueries(trace).join(" UNION ALL ");
+            let source = source_node_event_subqueries(trace)?.join(" UNION ALL ");
             let sql = format!(
                 "CREATE TEMP TABLE {RESIDENT_GRAPH_NODE_TABLE} AS \
                  SELECT * FROM ({source}) \
@@ -420,8 +423,9 @@ fn capture_mode(trace: &Trace) -> NsysQueryResult<CaptureMode> {
         }
     }
 
-    if !node_event_subqueries(trace).is_empty() {
-        let union = node_event_subqueries(trace).join(" UNION ALL ");
+    let subqueries = node_event_subqueries(trace)?;
+    if !subqueries.is_empty() {
+        let union = subqueries.join(" UNION ALL ");
         let sql = format!("WITH event_rows AS ({union}) SELECT COUNT(*) FROM event_rows");
         let count = count_capture_mode_rows(trace.conn(), &sql)?;
         if count > 0 {
@@ -517,7 +521,7 @@ fn query_graph_nodes(
     if abs_window.is_none() && resident_table_available(trace, RESIDENT_REPLAY_SUMMARY_TABLE) {
         return query_resident_graph_node_summaries(trace, req);
     }
-    let subqueries = node_event_subqueries(trace);
+    let subqueries = node_event_subqueries(trace)?;
     if subqueries.is_empty() {
         return Ok(Vec::new());
     }
@@ -697,14 +701,28 @@ fn graph_trace_source_sql(trace: &Trace) -> String {
     )
 }
 
-fn node_event_subqueries(trace: &Trace) -> Vec<String> {
+fn node_event_subqueries(trace: &Trace) -> NsysQueryResult<Vec<String>> {
     if resident_table_available(trace, RESIDENT_GRAPH_NODE_TABLE) {
-        return vec![format!("SELECT * FROM {RESIDENT_GRAPH_NODE_TABLE}")];
+        return Ok(vec![format!("SELECT * FROM {RESIDENT_GRAPH_NODE_TABLE}")]);
     }
     source_node_event_subqueries(trace)
 }
 
-fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
+fn source_node_event_subqueries(trace: &Trace) -> NsysQueryResult<Vec<String>> {
+    // `graphId` / `graphNodeId` are schema-optional: some
+    // `--cuda-graph-trace=node` exports (observed with Nsight 2025.3)
+    // omit them from the
+    // kernel/memcpy/memset tables. `maybe_col` degrades to NULL, so
+    // the `IS NOT NULL` predicate below naturally yields zero rows —
+    // no node attribution to report on such traces.
+    let columns = crate::column_map::load_columns(
+        trace.conn(),
+        &[
+            "CUPTI_ACTIVITY_KIND_KERNEL",
+            "CUPTI_ACTIVITY_KIND_MEMCPY",
+            "CUPTI_ACTIVITY_KIND_MEMSET",
+        ],
+    )?;
     let mut out = Vec::new();
     if trace.table_exists("CUPTI_ACTIVITY_KIND_KERNEL") {
         let process = veloq_nsys_data::process_sql_projection(
@@ -714,6 +732,10 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
             "proc",
             "t.start",
         );
+        let graph_id =
+            crate::column_map::maybe_col(&columns, "CUPTI_ACTIVITY_KIND_KERNEL", "graphId");
+        let graph_node_id =
+            crate::column_map::maybe_col(&columns, "CUPTI_ACTIVITY_KIND_KERNEL", "graphNodeId");
         out.push(format!(
             r#"
             SELECT
@@ -726,13 +748,13 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
                 CAST(t.correlationId AS BIGINT) AS correlation_id,
                 CAST(t.start AS BIGINT) AS start_ns,
                 CAST(t."end" AS BIGINT) AS end_ns,
-                CAST(t.graphId AS BIGINT) AS graph_id,
-                CAST(t.graphNodeId AS BIGINT) AS graph_node_id,
+                CAST({graph_id} AS BIGINT) AS graph_id,
+                CAST({graph_node_id} AS BIGINT) AS graph_node_id,
                 COALESCE(s.value, CONCAT('kernel:', CAST(t.shortName AS VARCHAR)), '<unnamed>') AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL t
             LEFT JOIN nsight.StringIds s ON t.shortName = s.id
             {process_join}
-            WHERE t.graphNodeId IS NOT NULL
+            WHERE {graph_node_id} IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
               AND t.contextId IS NOT NULL
@@ -751,6 +773,8 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
             "proc",
             "t.start",
         );
+        let graph_node_id =
+            crate::column_map::maybe_col(&columns, "CUPTI_ACTIVITY_KIND_MEMCPY", "graphNodeId");
         out.push(format!(
             r#"
             SELECT
@@ -764,11 +788,11 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
                 CAST(t.start AS BIGINT) AS start_ns,
                 CAST(t."end" AS BIGINT) AS end_ns,
                 CAST(NULL AS BIGINT) AS graph_id,
-                CAST(t.graphNodeId AS BIGINT) AS graph_node_id,
+                CAST({graph_node_id} AS BIGINT) AS graph_node_id,
                 CONCAT('memcpy:', CAST(COALESCE(t.copyKind, -1) AS VARCHAR)) AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_MEMCPY t
             {process_join}
-            WHERE t.graphNodeId IS NOT NULL
+            WHERE {graph_node_id} IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
               AND t.contextId IS NOT NULL
@@ -787,6 +811,8 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
             "proc",
             "t.start",
         );
+        let graph_node_id =
+            crate::column_map::maybe_col(&columns, "CUPTI_ACTIVITY_KIND_MEMSET", "graphNodeId");
         out.push(format!(
             r#"
             SELECT
@@ -800,11 +826,11 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
                 CAST(t.start AS BIGINT) AS start_ns,
                 CAST(t."end" AS BIGINT) AS end_ns,
                 CAST(NULL AS BIGINT) AS graph_id,
-                CAST(t.graphNodeId AS BIGINT) AS graph_node_id,
+                CAST({graph_node_id} AS BIGINT) AS graph_node_id,
                 'memset' AS name
             FROM nsight.CUPTI_ACTIVITY_KIND_MEMSET t
             {process_join}
-            WHERE t.graphNodeId IS NOT NULL
+            WHERE {graph_node_id} IS NOT NULL
               AND t.correlationId IS NOT NULL
               AND t.deviceId IS NOT NULL
               AND t.contextId IS NOT NULL
@@ -815,7 +841,7 @@ fn source_node_event_subqueries(trace: &Trace) -> Vec<String> {
             process_join = process.join,
         ));
     }
-    out
+    Ok(out)
 }
 
 fn resident_table_available(trace: &Trace, table: &str) -> bool {
@@ -1298,7 +1324,7 @@ fn load_node_events(
     if replays.is_empty() {
         return Ok(HashMap::new());
     }
-    let subqueries = node_event_subqueries(trace);
+    let subqueries = node_event_subqueries(trace)?;
     if subqueries.is_empty() {
         return Ok(HashMap::new());
     }

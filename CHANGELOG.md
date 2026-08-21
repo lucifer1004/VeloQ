@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`*-unknown-linux-gnu`) to the shipped musl release archives, so
   cargo-installed binaries can self-update instead of failing with
   `meta.self-update.binary-install` (WI-2026-08-21-001).
+- **Kernel tables without graph columns** — tolerate
+  `CUPTI_ACTIVITY_KIND_KERNEL` exports that lack `graphId`/`graphNodeId`
+  (seen on Nsight 2025.3 node-mode captures) in `stats`, `search`,
+  `graph-replays`, and `inspect graph_node`, reporting NULL graph
+  attribution instead of hard errors (WI-2026-08-21-002).
 
 ## [0.6.2] - 2026-08-20
 

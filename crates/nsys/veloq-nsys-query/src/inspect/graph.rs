@@ -75,7 +75,9 @@ pub struct GraphNodeDetails {
     /// (any kernel row sharing this `graphNodeId` carries its
     /// `graphId`). `None` on traces that lack populated kernel
     /// rows for this node (e.g. graph-mode captures, or unused
-    /// nodes that were created but never executed).
+    /// nodes that were created but never executed), or whose kernel
+    /// table omits the `graphId`/`graphNodeId` columns entirely
+    /// (observed on Nsight 2025.3 `--cuda-graph-trace=node` exports).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_id: Option<i64>,
     /// Graph-executable id. Looked up via `CUDA_GRAPH_EVENTS`
@@ -187,15 +189,20 @@ pub(super) fn query_graph_node(
     //     matches the one found above. Absent in pure
     //     `--cuda-graph-trace=node` captures (the API hook log
     //     table isn't produced) — in that case the field is NULL.
-    let has_kernel = cols.contains_key("CUPTI_ACTIVITY_KIND_KERNEL");
+    // The kernel table's `graphId` / `graphNodeId` are schema-optional
+    // (Nsight 2025.3 node-mode exports may omit both): without them
+    // there is no join key, so the enrichment degrades to NULL.
+    const KERNEL: &str = "CUPTI_ACTIVITY_KIND_KERNEL";
+    let has_kernel_graph_cols = crate::column_map::has(cols, KERNEL, "graphId")
+        && crate::column_map::has(cols, KERNEL, "graphNodeId");
     let has_graph_events = cols.contains_key("CUDA_GRAPH_EVENTS");
-    let graph_id_subq = if has_kernel {
+    let graph_id_subq = if has_kernel_graph_cols {
         "(SELECT k.graphId FROM nsight.CUPTI_ACTIVITY_KIND_KERNEL k \
           WHERE k.graphNodeId = t.graphNodeId LIMIT 1)"
     } else {
         "NULL"
     };
-    let graph_exec_id_subq = if has_kernel && has_graph_events {
+    let graph_exec_id_subq = if has_kernel_graph_cols && has_graph_events {
         "(SELECT ge.graphExecId FROM nsight.CUDA_GRAPH_EVENTS ge \
           WHERE ge.eventClass = 94 \
             AND ge.graphId = (SELECT k.graphId \

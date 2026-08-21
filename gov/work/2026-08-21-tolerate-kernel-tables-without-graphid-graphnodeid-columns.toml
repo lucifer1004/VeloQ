@@ -1,0 +1,30 @@
+#:schema ../schema/work.schema.json
+
+[govctl]
+id = "WI-2026-08-21-002"
+title = "Tolerate kernel tables without graphId/graphNodeId columns"
+status = "done"
+created = "2026-08-21"
+started = "2026-08-21"
+completed = "2026-08-21"
+
+[content]
+description = "Nsight 2025.3 node-mode captures (and other capture shapes) export CUPTI_ACTIVITY_KIND_KERNEL without graphId/graphNodeId columns, but stats/graph-replays build SQL that references t.graphId/t.graphNodeId unconditionally: EventSemantics::graph_id_expr/graph_node_id_expr (event_semantics.rs) are compile-time-constant strings consumed by event_scan.rs -> stats/sql.rs, and graph_replays.rs source_node_event_subqueries references both columns guarded only by table existence. Result: stats/search/graph-replays hard-error on such traces instead of treating graph attribution as absent. Make graph column references schema-aware via the existing column_map::maybe_col pattern (NULL when absent; WHERE graphNodeId IS NOT NULL then cleanly yields zero rows), and correct capabilities.rs' has_graph_nodes doc assumption that node mode always populates those kernel columns."
+
+[[content.acceptance_criteria]]
+text = "stats/search/inspect on kernel rows and graph-replays succeed on a kernel table lacking graphId/graphNodeId, reporting NULL graph attribution"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "traces that do carry graphId/graphNodeId (node-mode with populated columns) keep returning real attribution values unchanged"
+status = "done"
+category = "fixed"
+
+[[content.acceptance_criteria]]
+text = "regression tests synthesize a kernel table without the graph columns (no new unwrap/expect/indexing; clippy --all-targets clean)"
+status = "done"
+category = "chore"
+
+[verification]
+required_guards = ["GUARD-NSYS-WIRE-CONTRACT"]

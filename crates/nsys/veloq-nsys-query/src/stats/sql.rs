@@ -39,6 +39,7 @@ pub(super) fn per_kind_subquery(
         options.abs_window,
         options.nvtx_scope,
         options.collapse_versioned,
+        options.columns,
     )?;
     let process =
         veloq_nsys_data::process_sql_projection(trace, scan.table, "t", "event_proc", "t.start");
