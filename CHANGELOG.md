@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-08-21
+
 ### Fixed
 
 - **self-update for `cargo install` builds** — map glibc Linux build targets
   (`*-unknown-linux-gnu`) to the shipped musl release archives, so
   cargo-installed binaries can self-update instead of failing with
-  `meta.self-update.binary-install` (WI-2026-08-21-001).
+  `meta.self-update.binary-install` (WI-2026-08-21-001). Affected users must
+  update once by hand (`cargo install veloq --force` or the release binary);
+  self-update works normally from 0.6.3 onward.
 - **Kernel tables without graph columns** — tolerate
   `CUPTI_ACTIVITY_KIND_KERNEL` exports that lack `graphId`/`graphNodeId`
   (seen on Nsight 2025.3 node-mode captures) in `stats`, `search`,
